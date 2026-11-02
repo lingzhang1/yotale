@@ -335,7 +335,32 @@ def normalize_plan(plan: dict, inputs: EditPlanInputs) -> tuple[dict, list[str]]
     import copy
     out = copy.deepcopy(plan)
     notes: list[str] = []
+    # Moment durations by lowercased id (same key space the validator uses), for the source-range clamp below.
+    _moment_dur = {str(m["id"]).lower(): float(m.get("duration_seconds") or 0.0) for m in inputs.moments}
     for i, s in enumerate(out.get("segments", [])):
+        # SOURCE-RANGE CLAMP (owner 2026-11-02 — never-block). A segment whose source_end exceeds its clip's
+        # real duration is NOT an editorial choice to preserve: it references footage that does not exist, so
+        # it can never render. Historically this failed the plan as `source_exceeds_duration` and went to model
+        # repair, which often did not fix it -> a terminal `invalid_after_repair` the user saw as a generic
+        # "couldn't apply your instruction". Clamping source_end DOWN to the clip's real length is always safe
+        # and fully playable (unlike the speed clamp, which WOULD change editorial intent and is deliberately
+        # left to the model). We only ever REMOVE nonexistent footage, never stretch or reselect. The derived
+        # output_duration is re-snapped from the clamped span at the UNCHANGED speed so the plan stays
+        # self-consistent. A shorter total is fine: target duration is advisory, never a blocking constraint.
+        aid = str(s.get("asset_id")).lower() if s.get("asset_id") is not None else None
+        dur = _moment_dur.get(aid)
+        a = s.get("source_start_seconds"); b = s.get("source_end_seconds")
+        if (dur is not None and dur > 0 and isinstance(a, (int, float)) and isinstance(b, (int, float))
+                and b > dur + ROUND_SNAP_ABS and a < dur):
+            before = b
+            s["source_end_seconds"] = round(dur, 3)
+            sp = _coerce_speed(s.get("speed"))
+            if math.isfinite(sp) and sp > 0:
+                span = s["source_end_seconds"] - float(a)
+                if span > 0:
+                    s["output_duration_seconds"] = round(span / sp, 3)
+            notes.append(f"seg{i}: clamped source_end {before}->{s['source_end_seconds']}s "
+                         f"(exceeded Moment duration {dur}s; footage does not exist — never-block)")
         tl = _segment_timeline(s)
         if tl.is_output_snappable():
             exact = round(tl.expected_output, 2)
