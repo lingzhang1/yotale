@@ -487,18 +487,18 @@ private struct FeaturedSceneCard: View {
 
     @State private var image: SceneImageDTO?
     @State private var whyExpanded = false
+    // Per-scene image memo. The featured (hero) scene can change while the user browses — coverage updates
+    // (e.g. an in-flight AU import flipping isCovered) reselect the hero, which re-fires `.task(id: scene.id)`.
+    // Caching the resolved image per scene id lets a hero the user already saw render INSTANTLY from memory
+    // instead of blanking + re-fetching, and prevents a transient re-fetch miss from erasing a shown image.
+    @State private var imagesBySceneId: [String: SceneImageDTO] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Prominent reference image (lazy, hotlinked) — only occupies space once an image exists.
             if let img = image, let url = URL(string: img.imageURL) {
                 ZStack(alignment: .bottomLeading) {
-                    AsyncImage(url: url, transaction: Transaction(animation: .easeIn(duration: 0.25))) { phase in
-                        switch phase {
-                        case .success(let i): i.resizable().scaledToFill()
-                        default: placeholderBand
-                        }
-                    }
+                    CachedSceneImage(url: url) { placeholderBand }
                     .frame(height: 210).frame(maxWidth: .infinity).clipped()
                     // source chip bottom-left (reference: "kyotanuki.com")
                     if let host = sourceHost(img) {
@@ -586,9 +586,19 @@ private struct FeaturedSceneCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(StoryTheme.cream.opacity(0.08), lineWidth: 1))
         .task(id: scene.id) {
-            // Featured scene can change (user taps an "Other scene") -> reload image for the new hero.
-            image = nil
+            // Featured scene can change (user taps an "Other scene", or coverage updates reselect the hero
+            // while an import is still analyzing). Show the cached image for THIS scene immediately if we
+            // have one — never blank first. Only fetch (and fire download-tracking ONCE) the first time a
+            // scene is resolved, so a re-fired task cannot erase an already-shown image on a transient miss.
+            if let cached = imagesBySceneId[scene.id] {
+                image = cached
+                return
+            }
+            image = nil  // genuinely new scene with no cached image yet: show the text-only card until resolved
             if let img = await fetchImage() {
+                // `.task(id:)` cancels + replaces this task if the hero changes mid-fetch, so reaching here
+                // means `scene` is still the shown hero. Cache and display; fire download-tracking once.
+                imagesBySceneId[scene.id] = img
                 image = img
                 await trackImageUse(img)
             }
@@ -605,6 +615,62 @@ private struct FeaturedSceneCard: View {
     private var placeholderBand: some View {
         LinearGradient(colors: [StoryTheme.cream.opacity(0.06), StoryTheme.cream.opacity(0.02)],
                        startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
+
+// Process-wide in-memory cache of decoded scene-reference images, keyed by absolute URL string. SwiftUI's
+// built-in AsyncImage keeps NOTHING: it re-downloads on every re-render, so a transient failure from the
+// remote image host (e.g. Unsplash hotlink throttling) makes a previously-shown image fall to the
+// placeholder — and since every scene card loads from the same host, ALL of them can blank at once. This
+// cache keeps the first successful decode so a later reload failure can fall back to the cached bytes
+// instead of a blank band. Bounded so it never grows unbounded during a long browsing session.
+private final class SceneImageMemoryCache {
+    static let shared = SceneImageMemoryCache()
+    private let cache = NSCache<NSString, UIImage>()
+    private init() { cache.countLimit = 60 }
+    func image(for key: String) -> UIImage? { cache.object(forKey: key as NSString) }
+    func set(_ img: UIImage, for key: String) { cache.setObject(img, forKey: key as NSString) }
+}
+
+/// A cached reference-image view. Shows the cached image instantly if present; otherwise loads once,
+/// caches the result, and — crucially — on a load FAILURE falls back to any cached image rather than a
+/// blank placeholder. This is what keeps scene images on screen across re-renders and transient host
+/// failures (the cause of "all stories' images disappeared suddenly").
+private struct CachedSceneImage<Placeholder: View>: View {
+    let url: URL
+    @ViewBuilder var placeholder: () -> Placeholder
+    @State private var uiImage: UIImage?
+
+    var body: some View {
+        Group {
+            if let ui = uiImage {
+                Image(uiImage: ui).resizable().scaledToFill()
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url.absoluteString) {
+            let key = url.absoluteString
+            if let cached = SceneImageMemoryCache.shared.image(for: key) {
+                uiImage = cached
+                return
+            }
+            do {
+                let (data, resp) = try await URLSession.shared.data(from: url)
+                if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                    // Host rejected (e.g. 429/5xx): keep any prior cached image, don't blank.
+                    uiImage = SceneImageMemoryCache.shared.image(for: key)
+                    return
+                }
+                if let ui = UIImage(data: data) {
+                    SceneImageMemoryCache.shared.set(ui, for: key)
+                    uiImage = ui
+                }
+            } catch {
+                // Network/transport failure: fall back to the cached image if we have one, else placeholder.
+                uiImage = SceneImageMemoryCache.shared.image(for: key)
+            }
+        }
     }
 }
 
