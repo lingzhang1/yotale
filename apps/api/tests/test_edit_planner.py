@@ -19,6 +19,7 @@ from edit_planner import (
     EditPlanInfeasibleError,
     MockEditPlannerEngine,
     RealEditPlannerEngine,
+    normalize_plan,
     validate_plan,
 )
 from model_gateway import FakeModelGateway, ProviderError, StructuredOutputError
@@ -186,6 +187,35 @@ def test_useful_range_outside_is_never_a_hard_error(monkeypatch):
     over["segments"][0]["source_end_seconds"] = 99.0   # exceeds M1 duration 11s
     over["segments"][0]["output_duration_seconds"] = 1.0
     assert any("exceeds Moment duration" in e for e in validate_plan(over, _inputs()))
+
+
+def test_normalize_clamps_source_end_to_moment_duration_never_blocks():
+    """never-block (owner 2026-11-02): a segment whose source_end exceeds its clip's real duration must be
+    CLAMPED down by normalize_plan to a valid, renderable range — not left to fail as source_exceeds_duration.
+    This is the exact failure the owner hit: a revise reaching for a longer total stretched a clip's source
+    range past its length, and the model-repair path did not fix it, so the whole generation failed."""
+    p = _good_plan()
+    # M1 is 11s; ask for 2s..40s (40 > 11). Un-normalized this is a hard validator error.
+    p["segments"][0]["source_start_seconds"] = 2.0
+    p["segments"][0]["source_end_seconds"] = 40.0
+    p["segments"][0]["speed"] = 1.0
+    p["segments"][0]["output_duration_seconds"] = 38.0
+    assert any("exceeds Moment duration" in e for e in validate_plan(p, _inputs()))  # pre-clamp: fails
+
+    norm, notes = normalize_plan(p, _inputs())
+    # source_end clamped DOWN to the clip's real duration (11s); start preserved; output re-derived at speed 1.
+    assert norm["segments"][0]["source_end_seconds"] == 11.0
+    assert norm["segments"][0]["source_start_seconds"] == 2.0
+    assert abs(norm["segments"][0]["output_duration_seconds"] - 9.0) < 0.05
+    assert any("clamped source_end" in n for n in notes)
+    # post-clamp: the normalized plan is fully valid — generation is NOT blocked.
+    assert not any("exceeds Moment duration" in e for e in validate_plan(norm, _inputs()))
+
+    # A within-bounds range is untouched by the clamp (no false positives).
+    good = _good_plan()
+    gnorm, gnotes = normalize_plan(good, _inputs())
+    assert gnorm["segments"][0]["source_end_seconds"] == 9.0
+    assert not any("clamped source_end" in n for n in gnotes)
 
 
 # ---- Part A: deterministic structural directive-placement repair ----
