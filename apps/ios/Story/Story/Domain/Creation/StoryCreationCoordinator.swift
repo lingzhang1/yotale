@@ -90,8 +90,19 @@ enum StoryCreationError: Error, LocalizedError, Equatable {
         case .invalidPlan(let r): return "The plan can't be rendered: \(r)"
         case .renderFailed(let r): return "Rendering failed: \(r)"
         case .alreadyCreating: return "A video is already being created for this Story."
-        case .directivesUnsatisfiable:
-            return "Your instruction couldn't be applied to this footage — it may exclude too much or conflict. Try adjusting it (for example, exclude fewer Moments)."
+        case .directivesUnsatisfiable(let detail):
+            // Only blame the INSTRUCTION when the failure is genuinely about the directives conflicting with
+            // each other / the footage (e.g. an explicit exclude set that leaves nothing, or contradictory
+            // opening/ending/order). A MECHANICAL planner error that merely happened to occur on a request
+            // that also carried directives (e.g. the model over-ran a clip's real length -> source-exceeds-
+            // duration) is NOT the user's fault and must not tell them to "exclude fewer Moments". Classify by
+            // the backend detail and fall back to an honest, non-blaming technical message.
+            let d = detail.lowercased()
+            let mechanical = ["source", "duration", "render", "speed", "output", "timeline", "segment"]
+            if mechanical.contains(where: d.contains) {
+                return "I couldn't put together a valid edit this time — this is on my side, not your instruction. Please try again."
+            }
+            return "Your instruction couldn't be fully applied to this footage — some parts may conflict (for example an ordering or an exclude that leaves too little to work with). Try adjusting it."
         case .invalidPlanOutput:
             // No user directives were involved — do NOT blame the instruction. Honest technical message.
             return "I couldn't put together a valid edit this time. This is on my side, not your footage — please try again."
