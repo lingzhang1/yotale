@@ -21,3 +21,8 @@ source control — here.
 | `milestone-editorial-pipeline-v2-highlights-fullstory-phase-a.md` | Phase A architecture audit & design (complete; reference) |
 | `milestone-editorial-pipeline-v2-p0-evidence-reliability.md` | P0 — evidence reliability + never-block policy. Status: **DEV ACCEPTED** (merged `5a5e5e2`, dev-deployed) |
 | `milestone-editorial-pipeline-v2-p1-implementation-design.md` | P1 implementation-ready design (approved; P1-A in progress) |
+
+## Billing (`billing/`)
+| Document | Role |
+|---|---|
+| `per-video-cost-and-pricing-inputs.md` | **Measured per-video / per-capability AI cost** from live beta (2026-11-02) + $10-plan margin math. Cost-of-goods input for pricing. Status: **MEASURED (single-session sample; widen before launch)** |
