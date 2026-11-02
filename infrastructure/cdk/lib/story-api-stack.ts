@@ -519,7 +519,7 @@ export class StoryApiStack extends cdk.Stack {
               { name: "STORY_USER_USAGE_TABLE", value: userUsageTableName },
               { name: "STORY_QUOTA_MODE", value: process.env.STORY_QUOTA_MODE ?? "observe" },
               { name: "STORY_QUOTA_USER_MONTHLY_USD", value: process.env.STORY_QUOTA_USER_MONTHLY_USD ?? "8" },
-              { name: "STORY_QUOTA_USER_DAILY_GENS", value: process.env.STORY_QUOTA_USER_DAILY_GENS ?? "20" },
+              { name: "STORY_QUOTA_USER_DAILY_GENS", value: process.env.STORY_QUOTA_USER_DAILY_GENS ?? "500" },
               { name: "STORY_QUOTA_MAX_ACTIVE_JOBS", value: process.env.STORY_QUOTA_MAX_ACTIVE_JOBS ?? "2" },
               { name: "STORY_QUOTA_GLOBAL_MONTHLY_USD", value: process.env.STORY_QUOTA_GLOBAL_MONTHLY_USD ?? "60" },
               // Music provider (Epidemic) — without these the provider is disabled and /v1/music/candidates 404s.
