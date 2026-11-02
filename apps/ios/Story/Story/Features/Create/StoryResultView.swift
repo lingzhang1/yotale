@@ -414,7 +414,12 @@ struct StoryResultView: View {
     private func failureMessage(_ category: String) -> String {
         switch category {
         case "invalid_after_repair":
-            return "Your instruction couldn't be applied to this footage — try adjusting it (for example, exclude fewer Moments)."
+            // This category alone does NOT tell us the instruction was at fault (it also covers mechanical
+            // planner errors and requests with no directives). Don't blame the user's instruction or tell them
+            // to "exclude fewer Moments" — give an honest, non-blaming message. The coordinator path, which
+            // knows whether hard directives were present and the specific failure detail, phrases the rare
+            // genuine directive-conflict case more specifically.
+            return "I couldn't put together a valid edit this time — this is on my side, not your footage. Please try again."
         case "material_infeasible":
             return "There isn't enough usable footage for that length — try a shorter video."
         case "unsupported_operation":
