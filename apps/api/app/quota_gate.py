@@ -47,6 +47,14 @@ except Exception:  # pragma: no cover - import-safe
 # The expensive classes that cost real money and therefore get a quota reservation.
 PAID_CLASSES = frozenset({"ai_sync", "music_provider", "ai_job_submit"})
 
+# Fraction of SYNC-op settlements that also run a bounded terminal-marker prune (owner §2/§3): sampled so the
+# reservation hot path does not take an extra prune write on every op, while still bounding growth (each prune
+# removes up to 100 terminal markers). Env-tunable; 0 disables. Default 0.1 (~1 in 10 sync settlements).
+try:
+    _SYNC_PRUNE_SAMPLE = float(os.environ.get("STORY_QUOTA_SYNC_PRUNE_SAMPLE", "0.1"))
+except ValueError:
+    _SYNC_PRUNE_SAMPLE = 0.1
+
 # A conservative per-op ESTIMATE in USD used at reserve time (actual is settled afterward, correction 8).
 # Per-class so a batch Opus coverage reserves more headroom than a single Sonnet call. Overridable by env.
 _DEFAULT_ESTIMATE_USD: dict[str, float] = {
@@ -178,6 +186,16 @@ async def quota_middleware(request: Request, call_next):
             _metric(request, "QuotaReleased", cls)
     except Exception:  # noqa: BLE001
         pass  # settlement drift is reconcilable; never break the response
+    # Bounded ledger for SYNC ops (owner §3): ai_sync/music_provider settle/release in THIS request path (not
+    # the worker), so their res#/gres# markers would otherwise accumulate — AU alone fires once per imported
+    # clip. Prune terminal markers, but SAMPLED (not every request) so we never add a prune write to the
+    # reservation hot path on every op (owner §2). Best-effort; never affects the response.
+    try:
+        import random
+        if random.random() < _SYNC_PRUNE_SAMPLE:
+            _prune_terminal_markers_best_effort(q, uid)
+    except Exception:  # noqa: BLE001
+        pass
     return response
 
 
