@@ -1,7 +1,35 @@
 # Quota Ledger — Phantom-429 Fix & Beta Cleanup Runbook
 
-Status: **CODE FIX OFFLINE-COMPLETE on `fix/p0-quota-ledger-bounded`. NO live beta mutation performed or
-authorized. This runbook is PREPARED, not executed.**
+Status: **CLOSED — ACCEPTED (2026-11-03).** Merged `ac4ab8a` (PR #82), deployed to dev and beta, beta-verified
+end-to-end. No manual ledger cleanup was needed or performed.
+
+## 0. Closeout summary (owner-accepted 2026-11-03)
+- **Root cause (proven):** `_is_conditional_failure()` classified ANY `TransactionCanceledException` as a
+  conditional (quota) failure, so a transient `TransactionConflict` on the shared `__global__` item — or a
+  validation/throughput error — became a false `QuotaDenied` (observed: a `quota_ai_job_submit` 429 while the
+  ledger showed `active_jobs=0` and no cap breached). **NOT item-size** (items were 57–64 KB ≪ 400 KB).
+- **Historical exact cancellation reason:** UNAVAILABLE — the module swallowed the raw DynamoDB cause before
+  the fix. Now logged via `quota_store_error` (type + `CancellationReasons`). The fix is correct for all three
+  failure classes regardless.
+- **429 vs 503:** real cap → 429 (accurate scope); transient conflict → bounded retry; conflict exhaustion /
+  validation / store failure → **503** "try again", never a false active-job 429.
+- **PR / revisions:** PR #82, merge `ac4ab8a`. Dev deploy run 41717218647 (`git-ac4ab8a`), beta deploy run
+  41719131417 (`git-ac4ab8a`). Both App Runner RUNNING, health 200, worker redeployed, env no-regression.
+- **Beta acceptance (enforce mode):** owner Create → `POST /v1/edit-plan-jobs 202`, `worker_outcome: completed`,
+  quota metrics Reserved/Settled/Released with **0 Denied, 0 StoreError**. Phantom 429 gone.
+- **Self-healing markers (verified live):** terminal markers prune on settlement — owner `2026-11` item
+  `res#` 343→164, `slot#` 26→15; `__global__` `2026-11` `gres#` 343→152. `active_jobs=0` preserved; spend
+  aggregates intact.
+- **October markers:** intentionally left untouched — last-month, inert, under the size limit. The cleanup
+  procedure below remains available but is NOT required.
+- **Future scaling risk:** the shared `__global__` item is a write-contention hotspot that grows with traffic.
+  Offline conflict tests pass with bounded retry, but production TPS is NOT established; sharded global
+  counters is a separate, approval-gated follow-up — not needed for current beta volume.
+
+---
+
+### Original fix notes (retained for reference)
+Prior status: code fix offline-complete on `fix/p0-quota-ledger-bounded`; runbook prepared, cleanup NOT run.
 
 ## 1. What was wrong (proven)
 A beta Create returned HTTP 429 `quota_ai_job_submit` while the owner's ledger showed `active_jobs=0` and no

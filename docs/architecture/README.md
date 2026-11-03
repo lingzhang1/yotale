@@ -21,3 +21,11 @@ source control — here.
 | `milestone-editorial-pipeline-v2-highlights-fullstory-phase-a.md` | Phase A architecture audit & design (complete; reference) |
 | `milestone-editorial-pipeline-v2-p0-evidence-reliability.md` | P0 — evidence reliability + never-block policy. Status: **DEV ACCEPTED** (merged `5a5e5e2`, dev-deployed) |
 | `milestone-editorial-pipeline-v2-p1-implementation-design.md` | P1 implementation-ready design (approved; P1-A in progress) |
+
+## Release Engineering (`release-engineering/`)
+| Document | Role |
+|---|---|
+| `testflight-email-self-signup.md` | TestFlight self-signup milestone (Option A) |
+| `p1g0-config-inventory.md` | P1-G0 running-config inventory (dev baseline) |
+| `quota-ledger-bounded-runbook.md` | Quota phantom-429 fix + bounded-ledger + beta-cleanup runbook. Status: **CLOSED — ACCEPTED** (merged `ac4ab8a` / PR #82, dev+beta deployed, beta-verified) |
+| `pre-beta-loose-ends-2026-11-03.md` | Open-item disposition: quota P0 closed; iOS audio branch audit; gamma/prod OIDC CDK fix; P1 roadmap status |
