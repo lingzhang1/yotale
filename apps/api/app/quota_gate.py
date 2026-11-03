@@ -195,6 +195,15 @@ def submit_reserve(request: Request, uid: str, scoped_op_id: str, job_id: str,
     cls = "ai_job_submit"
     enforce = quota_mode() == "enforce"
     estimate = estimate_for(cls)
+    # IDEMPOTENCY GUARD (owner §4/§5): only RESERVE when the job was newly created. A recovered duplicate
+    # (created=False — same operation_id already has a job row, the durable idempotency key) must reserve
+    # NOTHING: the allowance + slot were counted at first submit. Previously reserve() ran on every submit and
+    # relied on the res#/slot# MARKERS alone for dedup — which made terminal-marker PRUNING unsafe (a prune +
+    # re-submit would re-reserve and double-count). Gating on `created` makes the durable job row the dedup
+    # authority, so pruning terminal markers can never cause a double reserve/settle/slot.
+    if not created:
+        _metric(request, "QuotaReserveSkippedRecovered", cls)
+        return None
     try:
         q.reserve(uid, scoped_op_id, estimate_usd=estimate, gens=1)
         # reserve a queued+running slot keyed by the deterministic job id (same identity the store uses)
@@ -229,6 +238,7 @@ def worker_settle(uid: str, scoped_op_id: str, job_id: str, *, actual_usd: float
         q.settle(uid, scoped_op_id, actual_usd=actual_usd)
     finally:
         q.release_slot(uid, job_id)
+        _prune_terminal_markers_best_effort(q, uid)
 
 
 def worker_release(uid: str, scoped_op_id: str, job_id: str, *, incurred_usd: float = 0.0,
@@ -243,6 +253,20 @@ def worker_release(uid: str, scoped_op_id: str, job_id: str, *, incurred_usd: fl
         q.release_allowance(uid, scoped_op_id, gens=1, incurred_usd=incurred_usd)
     finally:
         q.release_slot(uid, job_id)
+        _prune_terminal_markers_best_effort(q, uid)
+
+
+def _prune_terminal_markers_best_effort(q, uid: str) -> None:
+    """Bounded ledger (owner §5): after a worker-side terminal settlement/release, prune this ONE user's
+    already-terminal markers so the monthly item cannot grow without bound. Chosen invocation point because
+    the worker terminal path ALREADY touches exactly this user's item — so pruning adds NO extra read/write to
+    the hot shared __global__ item and NEVER scans other users. Best-effort: a prune failure must never break
+    the worker's terminal accounting (which already committed above). Safe because `submit_reserve` now gates
+    reserve on the durable job row (`created`), so a pruned marker can never cause a re-reserve."""
+    try:
+        q.prune_terminal_markers(uid)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _env_table() -> str:

@@ -621,3 +621,62 @@ def test_prune_never_touches_reserved_or_held():
     after = ddb.get_item(TableName="t", Key={"story_user_id": {"S": "u1"}, "quota_period": {"S": _period()}})["Item"]
     assert f"res#{reservation_id('op-active')}" in after
     assert "slot#job-active" in after
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Shared __global__ item contention (owner §6): competing reservations must succeed under transient conflicts
+# where capacity permits, with NO false 429 and NO double reservation side effects.
+# ---------------------------------------------------------------------------------------------------------
+class _FlakyGlobalDDB(FakeDDB):
+    """Injects a bounded number of TransactionConflict cancellations on the shared __global__ leg to model
+    hot-item contention, then lets the retry succeed — proving reserve() retries transient conflicts rather
+    than denying, without double-applying (the transaction only commits once)."""
+    def __init__(self, conflicts_per_rid=1):
+        super().__init__(support_transact=True)
+        self._left = {}
+        self._conflicts_per_rid = conflicts_per_rid
+    def transact_write_items(self, TransactItems):
+        # Identify the reservation by its user marker name (stable per rid).
+        rid_key = None
+        for ti in TransactItems:
+            up = ti.get("Update", {})
+            nm = up.get("ExpressionAttributeNames", {})
+            rid_key = nm.get("#r") or rid_key
+        n = self._left.get(rid_key, self._conflicts_per_rid)
+        if n > 0:
+            self._left[rid_key] = n - 1
+            raise _TxnCanceled(["None", "TransactionConflict"])
+        return super().transact_write_items(TransactItems=TransactItems)
+
+
+def test_concurrent_reservers_survive_transient_global_conflicts_no_false_denial():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    ddb = _FlakyGlobalDDB(conflicts_per_rid=1)
+    # generous caps so NOTHING is a real denial — any failure here would be a false 429 (the bug)
+    q = UserQuota(ddb=ddb, usage_table="t",
+                  cfg=_cfg(user_monthly_usd=100, user_daily_gens=999, max_active_jobs=99, global_monthly_usd=100))
+    errors = []
+    reserved = []
+    def go(i):
+        try:
+            r = q.reserve(f"u{i}", f"op-{i}", estimate_usd=0.05, gens=1)
+            reserved.append(r.reservation_id)
+        except Exception as e:  # noqa: BLE001
+            errors.append(type(e).__name__)
+    ts = [threading.Thread(target=go, args=(i,)) for i in range(10)]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    assert errors == [], f"no reserver should fail under transient conflicts with capacity: {errors}"
+    assert len(set(reserved)) == 10, "each distinct user reserved exactly once"
+    # Global aggregate reflects exactly 10 reservations (no double-apply from the retried transaction).
+    g = ddb.get_item(TableName="t", Key={"story_user_id": {"S": GLOBAL_PK}, "quota_period": {"S": _period()}})["Item"]
+    assert abs(float(g["reserved_usd"]["N"]) - 0.5) < 1e-9, "10 x 0.05 reserved once each, not doubled"
+
+
+def test_exhausted_global_conflict_is_store_error_not_false_denial():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    ddb = _FlakyGlobalDDB(conflicts_per_rid=99)   # never resolves within the bounded retries
+    q = UserQuota(ddb=ddb, usage_table="t",
+                  cfg=_cfg(user_monthly_usd=100, user_daily_gens=999, max_active_jobs=99, global_monthly_usd=100))
+    with pytest.raises(QuotaStoreError):   # exhausted conflict -> technical 503, NOT a quota 429
+        q.reserve("u1", "op-stuck", estimate_usd=0.05, gens=1)

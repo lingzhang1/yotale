@@ -213,6 +213,35 @@ def test_submit_reserve_helper_reserves_once_and_caps_slots():
     assert json.loads(bytes(resp.body))["scope"] == "active_jobs"
 
 
+def test_prune_then_recovered_resubmit_does_not_double_reserve():
+    """owner §4: prove terminal-marker PRUNING is idempotency-safe. Reserve once (created=True), settle +
+    release the slot, PRUNE the terminal markers, then a RECOVERED re-submit (created=False) must reserve
+    NOTHING — no double allowance, no double spend, no slot resurrection — because `created` (the durable job
+    row) is the dedup authority, not the pruned markers."""
+    from user_quota import _period, _day
+    q = _quota(QuotaConfig(user_monthly_usd=5, user_daily_gens=40, max_active_jobs=2, global_monthly_usd=60))
+    app = _app(quota=q, qmode="enforce")
+
+    class Req:
+        def __init__(self): self.app = app; self.state = type("S", (), {})()
+    req = Req()
+    uid = "story-u1"
+    assert quota_gate.submit_reserve(req, uid, "scoped:opP", "job-P", created=True) is None
+    # terminal: settle the reservation + release the slot
+    q.settle(uid, "scoped:opP", actual_usd=0.09)
+    q.release_slot(uid, "job-P")
+    # capture aggregates, then PRUNE terminal markers
+    it = q._ddb.items[(uid, _period())]
+    agg = {k: it.get(k) for k in ("reserved_usd", "settled_usd", "active_jobs", _day())}
+    removed = q.prune_terminal_markers(uid)
+    assert removed >= 2  # the res# (settled) + slot# (released) markers
+    # RECOVERED re-submit (created=False) — must be a pure no-op (no re-reserve)
+    assert quota_gate.submit_reserve(req, uid, "scoped:opP", "job-P", created=False) is None
+    it2 = q._ddb.items[(uid, _period())]
+    assert {k: it2.get(k) for k in ("reserved_usd", "settled_usd", "active_jobs", _day())} == agg
+    assert float(it2.get("active_jobs", {}).get("N", "0")) == 0.0   # no slot resurrection
+
+
 def test_submit_reserve_store_error_fails_closed_in_enforce():
     app = _app(quota=BoomQuota(), qmode="enforce")
 
