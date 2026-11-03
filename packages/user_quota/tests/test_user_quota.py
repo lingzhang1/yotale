@@ -488,3 +488,226 @@ def test_slot_redelivery_then_terminal_never_negative():
     for t in ts: t.start()
     for t in ts: t.join()
     assert float(q._ddb.items[("u1", _P())]["active_jobs"]["N"]) == 0   # exactly once, never negative
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Phantom-429 fix (owner §6): a transient/store failure must NOT become a quota denial; a real cap still does.
+# ---------------------------------------------------------------------------------------------------------
+from user_quota import _is_conditional_failure, _is_transient_conflict, _cancellation_reasons  # noqa: E402
+
+
+class _TxnCanceled(Exception):
+    """Mimics botocore TransactionCanceledException: name + a .response carrying CancellationReasons."""
+    def __init__(self, reasons):
+        super().__init__("TransactionCanceledException")
+        self.__class__.__name__ = "TransactionCanceledException"
+        self.response = {"CancellationReasons": [{"Code": c} for c in reasons]}
+
+
+class _CondFailed(Exception):
+    def __init__(self):
+        super().__init__("ConditionalCheckFailedException")
+        self.__class__.__name__ = "ConditionalCheckFailedException"
+
+
+def test_classify_plain_conditional_failure_is_conditional():
+    assert _is_conditional_failure(_CondFailed()) is True
+    assert _is_transient_conflict(_CondFailed()) is False
+
+
+def test_classify_txn_conflict_is_transient_not_conditional():
+    # A transaction cancelled by a TransactionConflict is TRANSIENT — never a quota denial.
+    e = _TxnCanceled(["None", "TransactionConflict"])
+    assert _is_transient_conflict(e) is True
+    assert _is_conditional_failure(e) is False
+
+
+def test_classify_txn_all_conditional_is_genuine():
+    # Every cancelled leg is a real conditional check -> genuine conditional failure (idempotency/cap guard).
+    e = _TxnCanceled(["ConditionalCheckFailed", "None"])
+    assert _is_conditional_failure(e) is True
+    assert _is_transient_conflict(e) is False
+
+
+def test_classify_txn_validation_is_store_error_not_conditional():
+    e = _TxnCanceled(["None", "ValidationError"])
+    assert _is_conditional_failure(e) is False   # -> caller raises QuotaStoreError (503), not a false 429
+    assert _is_transient_conflict(e) is False
+
+
+def test_classify_txn_no_reasons_is_conservative_store_error():
+    e = _TxnCanceled([])  # no structured reasons -> be conservative, treat as store error
+    assert _is_conditional_failure(e) is False
+
+
+class _ConflictOnceDDB(FakeDDB):
+    """Raises a TransactionConflict on the first transact_write_items, then succeeds — to prove reserve RETRIES
+    a transient conflict rather than denying."""
+    def __init__(self):
+        super().__init__(support_transact=True)
+        self._conflicts = 1
+    def transact_write_items(self, TransactItems):
+        if self._conflicts > 0:
+            self._conflicts -= 1
+            raise _TxnCanceled(["None", "TransactionConflict"])
+        return super().transact_write_items(TransactItems=TransactItems)
+
+
+def test_reserve_retries_transient_conflict_and_succeeds():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    q = UserQuota(ddb=_ConflictOnceDDB(), usage_table="t", cfg=_cfg(user_monthly_usd=50))
+    r = q.reserve("u1", "op-conflict", estimate_usd=0.15, gens=1)   # must NOT raise QuotaDenied
+    assert r.state == "reserved"
+
+
+class _AlwaysConflictDDB(FakeDDB):
+    def __init__(self):
+        super().__init__(support_transact=True)
+    def transact_write_items(self, TransactItems):
+        raise _TxnCanceled(["None", "TransactionConflict"])
+
+
+def test_reserve_exhausted_conflict_is_store_error_not_denial():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    q = UserQuota(ddb=_AlwaysConflictDDB(), usage_table="t", cfg=_cfg(user_monthly_usd=50))
+    with pytest.raises(QuotaStoreError):   # NOT QuotaDenied — a store failure, surfaced as 503 upstream
+        q.reserve("u1", "op-x", estimate_usd=0.15, gens=1)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Bounded ledger (owner §5/§7): prune terminal markers, preserve active ones + aggregates.
+# ---------------------------------------------------------------------------------------------------------
+def test_prune_removes_terminal_markers_preserves_active_and_aggregates():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    ddb = FakeDDB()
+    q = UserQuota(ddb=ddb, usage_table="t", cfg=_cfg(user_monthly_usd=50, user_daily_gens=99, max_active_jobs=5))
+    # Three ops reserved + one held slot; settle/release two, leave one reserved + the slot held.
+    q.reserve("u1", "op-keep", estimate_usd=0.10, gens=1)       # stays reserved
+    q.reserve("u1", "op-settle", estimate_usd=0.10, gens=1)
+    q.reserve("u1", "op-release", estimate_usd=0.10, gens=1)
+    q.reserve_slot("u1", "job-held")                            # stays held
+    q.reserve_slot("u1", "job-done")
+    q.settle("u1", "op-settle", actual_usd=0.08)
+    q.release_allowance("u1", "op-release", gens=1, incurred_usd=0.0)
+    q.release_slot("u1", "job-done")
+
+    before = ddb.get_item(TableName="t", Key={"story_user_id": {"S": "u1"}, "quota_period": {"S": _period()}})["Item"]
+    agg_before = {k: before.get(k) for k in ("reserved_usd", "settled_usd", "active_jobs", _day())}
+
+    removed = q.prune_terminal_markers("u1")
+    assert removed == 3   # op-settle (settled), op-release (released), job-done (released)
+
+    after = ddb.get_item(TableName="t", Key={"story_user_id": {"S": "u1"}, "quota_period": {"S": _period()}})["Item"]
+    # Active markers preserved:
+    assert f"res#{reservation_id('op-keep')}" in after
+    assert f"slot#job-held" in after
+    # Terminal markers gone:
+    assert f"res#{reservation_id('op-settle')}" not in after
+    assert f"res#{reservation_id('op-release')}" not in after
+    assert f"slot#job-done" not in after
+    # Aggregates UNCHANGED by pruning (pruning is bookkeeping cleanup, not accounting):
+    assert {k: after.get(k) for k in ("reserved_usd", "settled_usd", "active_jobs", _day())} == agg_before
+    # Re-running prune is a no-op (nothing terminal left to remove beyond what's gone).
+    assert q.prune_terminal_markers("u1") == 0
+
+
+def test_prune_never_touches_reserved_or_held():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    ddb = FakeDDB()
+    q = UserQuota(ddb=ddb, usage_table="t", cfg=_cfg(user_monthly_usd=50, max_active_jobs=5))
+    q.reserve("u1", "op-active", estimate_usd=0.10, gens=1)
+    q.reserve_slot("u1", "job-active")
+    assert q.prune_terminal_markers("u1") == 0   # nothing terminal -> no removals
+    after = ddb.get_item(TableName="t", Key={"story_user_id": {"S": "u1"}, "quota_period": {"S": _period()}})["Item"]
+    assert f"res#{reservation_id('op-active')}" in after
+    assert "slot#job-active" in after
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Shared __global__ item contention (owner §6): competing reservations must succeed under transient conflicts
+# where capacity permits, with NO false 429 and NO double reservation side effects.
+# ---------------------------------------------------------------------------------------------------------
+class _FlakyGlobalDDB(FakeDDB):
+    """Injects a bounded number of TransactionConflict cancellations on the shared __global__ leg to model
+    hot-item contention, then lets the retry succeed — proving reserve() retries transient conflicts rather
+    than denying, without double-applying (the transaction only commits once)."""
+    def __init__(self, conflicts_per_rid=1):
+        super().__init__(support_transact=True)
+        self._left = {}
+        self._conflicts_per_rid = conflicts_per_rid
+    def transact_write_items(self, TransactItems):
+        # Identify the reservation by its user marker name (stable per rid).
+        rid_key = None
+        for ti in TransactItems:
+            up = ti.get("Update", {})
+            nm = up.get("ExpressionAttributeNames", {})
+            rid_key = nm.get("#r") or rid_key
+        n = self._left.get(rid_key, self._conflicts_per_rid)
+        if n > 0:
+            self._left[rid_key] = n - 1
+            raise _TxnCanceled(["None", "TransactionConflict"])
+        return super().transact_write_items(TransactItems=TransactItems)
+
+
+def test_concurrent_reservers_survive_transient_global_conflicts_no_false_denial():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    ddb = _FlakyGlobalDDB(conflicts_per_rid=1)
+    # generous caps so NOTHING is a real denial — any failure here would be a false 429 (the bug)
+    q = UserQuota(ddb=ddb, usage_table="t",
+                  cfg=_cfg(user_monthly_usd=100, user_daily_gens=999, max_active_jobs=99, global_monthly_usd=100))
+    errors = []
+    reserved = []
+    def go(i):
+        try:
+            r = q.reserve(f"u{i}", f"op-{i}", estimate_usd=0.05, gens=1)
+            reserved.append(r.reservation_id)
+        except Exception as e:  # noqa: BLE001
+            errors.append(type(e).__name__)
+    ts = [threading.Thread(target=go, args=(i,)) for i in range(10)]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    assert errors == [], f"no reserver should fail under transient conflicts with capacity: {errors}"
+    assert len(set(reserved)) == 10, "each distinct user reserved exactly once"
+    # Global aggregate reflects exactly 10 reservations (no double-apply from the retried transaction).
+    g = ddb.get_item(TableName="t", Key={"story_user_id": {"S": GLOBAL_PK}, "quota_period": {"S": _period()}})["Item"]
+    assert abs(float(g["reserved_usd"]["N"]) - 0.5) < 1e-9, "10 x 0.05 reserved once each, not doubled"
+
+
+def test_exhausted_global_conflict_is_store_error_not_false_denial():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    ddb = _FlakyGlobalDDB(conflicts_per_rid=99)   # never resolves within the bounded retries
+    q = UserQuota(ddb=ddb, usage_table="t",
+                  cfg=_cfg(user_monthly_usd=100, user_daily_gens=999, max_active_jobs=99, global_monthly_usd=100))
+    with pytest.raises(QuotaStoreError):   # exhausted conflict -> technical 503, NOT a quota 429
+        q.reserve("u1", "op-stuck", estimate_usd=0.05, gens=1)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Global-item bounded ledger (owner §2): terminal gres# markers must be prunable too, WITHOUT touching a
+# still-reserved gres# (which may be another user's in-flight reservation) or the global settled_usd.
+# ---------------------------------------------------------------------------------------------------------
+def test_prune_global_removes_terminal_gres_preserves_reserved_and_counters():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    ddb = FakeDDB()
+    q = UserQuota(ddb=ddb, usage_table="t",
+                  cfg=_cfg(user_monthly_usd=100, user_daily_gens=999, max_active_jobs=99, global_monthly_usd=100))
+    # Three users reserve (each writes a gres# on __global__). Settle two; leave one reserved (in-flight).
+    q.reserve("uA", "opA", estimate_usd=0.10, gens=1)
+    q.reserve("uB", "opB", estimate_usd=0.10, gens=1)
+    q.reserve("uC", "opC", estimate_usd=0.10, gens=1)
+    q.settle("uA", "opA", actual_usd=0.08)                       # gres#A -> settled
+    q.release_allowance("uB", "opB", gens=1, incurred_usd=0.0)   # gres#B -> released
+    # opC stays reserved (in-flight, e.g. another user's live reservation)
+
+    g_before = ddb.get_item(TableName="t", Key={"story_user_id": {"S": GLOBAL_PK}, "quota_period": {"S": _period()}})["Item"]
+    settled_before = g_before.get("settled_usd")
+
+    removed = q.prune_terminal_markers(GLOBAL_PK)
+    assert removed == 2   # gres#A (settled) + gres#B (released)
+
+    g_after = ddb.get_item(TableName="t", Key={"story_user_id": {"S": GLOBAL_PK}, "quota_period": {"S": _period()}})["Item"]
+    from user_quota import reservation_id as _rid
+    assert f"gres#{_rid('opA')}" not in g_after          # terminal pruned
+    assert f"gres#{_rid('opB')}" not in g_after          # terminal pruned
+    assert f"gres#{_rid('opC')}" in g_after              # RESERVED preserved (in-flight, maybe another user)
+    assert g_after.get("settled_usd") == settled_before  # global spend counter UNCHANGED by pruning

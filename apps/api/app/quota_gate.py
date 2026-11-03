@@ -47,6 +47,14 @@ except Exception:  # pragma: no cover - import-safe
 # The expensive classes that cost real money and therefore get a quota reservation.
 PAID_CLASSES = frozenset({"ai_sync", "music_provider", "ai_job_submit"})
 
+# Fraction of SYNC-op settlements that also run a bounded terminal-marker prune (owner §2/§3): sampled so the
+# reservation hot path does not take an extra prune write on every op, while still bounding growth (each prune
+# removes up to 100 terminal markers). Env-tunable; 0 disables. Default 0.1 (~1 in 10 sync settlements).
+try:
+    _SYNC_PRUNE_SAMPLE = float(os.environ.get("STORY_QUOTA_SYNC_PRUNE_SAMPLE", "0.1"))
+except ValueError:
+    _SYNC_PRUNE_SAMPLE = 0.1
+
 # A conservative per-op ESTIMATE in USD used at reserve time (actual is settled afterward, correction 8).
 # Per-class so a batch Opus coverage reserves more headroom than a single Sonnet call. Overridable by env.
 _DEFAULT_ESTIMATE_USD: dict[str, float] = {
@@ -178,6 +186,16 @@ async def quota_middleware(request: Request, call_next):
             _metric(request, "QuotaReleased", cls)
     except Exception:  # noqa: BLE001
         pass  # settlement drift is reconcilable; never break the response
+    # Bounded ledger for SYNC ops (owner §3): ai_sync/music_provider settle/release in THIS request path (not
+    # the worker), so their res#/gres# markers would otherwise accumulate — AU alone fires once per imported
+    # clip. Prune terminal markers, but SAMPLED (not every request) so we never add a prune write to the
+    # reservation hot path on every op (owner §2). Best-effort; never affects the response.
+    try:
+        import random
+        if random.random() < _SYNC_PRUNE_SAMPLE:
+            _prune_terminal_markers_best_effort(q, uid)
+    except Exception:  # noqa: BLE001
+        pass
     return response
 
 
@@ -195,6 +213,15 @@ def submit_reserve(request: Request, uid: str, scoped_op_id: str, job_id: str,
     cls = "ai_job_submit"
     enforce = quota_mode() == "enforce"
     estimate = estimate_for(cls)
+    # IDEMPOTENCY GUARD (owner §4/§5): only RESERVE when the job was newly created. A recovered duplicate
+    # (created=False — same operation_id already has a job row, the durable idempotency key) must reserve
+    # NOTHING: the allowance + slot were counted at first submit. Previously reserve() ran on every submit and
+    # relied on the res#/slot# MARKERS alone for dedup — which made terminal-marker PRUNING unsafe (a prune +
+    # re-submit would re-reserve and double-count). Gating on `created` makes the durable job row the dedup
+    # authority, so pruning terminal markers can never cause a double reserve/settle/slot.
+    if not created:
+        _metric(request, "QuotaReserveSkippedRecovered", cls)
+        return None
     try:
         q.reserve(uid, scoped_op_id, estimate_usd=estimate, gens=1)
         # reserve a queued+running slot keyed by the deterministic job id (same identity the store uses)
@@ -229,6 +256,7 @@ def worker_settle(uid: str, scoped_op_id: str, job_id: str, *, actual_usd: float
         q.settle(uid, scoped_op_id, actual_usd=actual_usd)
     finally:
         q.release_slot(uid, job_id)
+        _prune_terminal_markers_best_effort(q, uid)
 
 
 def worker_release(uid: str, scoped_op_id: str, job_id: str, *, incurred_usd: float = 0.0,
@@ -243,6 +271,33 @@ def worker_release(uid: str, scoped_op_id: str, job_id: str, *, incurred_usd: fl
         q.release_allowance(uid, scoped_op_id, gens=1, incurred_usd=incurred_usd)
     finally:
         q.release_slot(uid, job_id)
+        _prune_terminal_markers_best_effort(q, uid)
+
+
+def _prune_terminal_markers_best_effort(q, uid: str) -> None:
+    """Bounded ledger (owner §5/§2): after a worker-side terminal settlement/release, prune already-terminal
+    markers so monthly items cannot grow without bound. Invoked from the worker TERMINAL path (once per job),
+    NOT per reserve — so it adds NO hot write to the shared __global__ item on the reservation hot path.
+
+    Prunes BOTH:
+      - this ONE user's item (res#/slot# that are settled/released), and
+      - the shared __global__ item's terminal gres# markers (owner §2: _global_settle/_global_release set
+        gres# to settled/released but never removed them, so __global__ grew unbounded too). The global prune
+        is conditionally guarded per marker (a concurrent re-use no-ops) and bounded, and NEVER touches a
+        `reserved` gres# (which may be another user's in-flight reservation) or the settled_usd aggregate.
+
+    Best-effort: a prune failure never breaks the worker's terminal accounting (already committed). Safe
+    because submit_reserve now gates reserve on the durable job row (`created`), so a pruned marker cannot
+    cause a re-reserve."""
+    try:
+        q.prune_terminal_markers(uid)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from user_quota import GLOBAL_PK
+        q.prune_terminal_markers(GLOBAL_PK)   # bounded, guarded; only terminal gres# removed
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _env_table() -> str:
