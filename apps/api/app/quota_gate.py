@@ -257,14 +257,27 @@ def worker_release(uid: str, scoped_op_id: str, job_id: str, *, incurred_usd: fl
 
 
 def _prune_terminal_markers_best_effort(q, uid: str) -> None:
-    """Bounded ledger (owner §5): after a worker-side terminal settlement/release, prune this ONE user's
-    already-terminal markers so the monthly item cannot grow without bound. Chosen invocation point because
-    the worker terminal path ALREADY touches exactly this user's item — so pruning adds NO extra read/write to
-    the hot shared __global__ item and NEVER scans other users. Best-effort: a prune failure must never break
-    the worker's terminal accounting (which already committed above). Safe because `submit_reserve` now gates
-    reserve on the durable job row (`created`), so a pruned marker can never cause a re-reserve."""
+    """Bounded ledger (owner §5/§2): after a worker-side terminal settlement/release, prune already-terminal
+    markers so monthly items cannot grow without bound. Invoked from the worker TERMINAL path (once per job),
+    NOT per reserve — so it adds NO hot write to the shared __global__ item on the reservation hot path.
+
+    Prunes BOTH:
+      - this ONE user's item (res#/slot# that are settled/released), and
+      - the shared __global__ item's terminal gres# markers (owner §2: _global_settle/_global_release set
+        gres# to settled/released but never removed them, so __global__ grew unbounded too). The global prune
+        is conditionally guarded per marker (a concurrent re-use no-ops) and bounded, and NEVER touches a
+        `reserved` gres# (which may be another user's in-flight reservation) or the settled_usd aggregate.
+
+    Best-effort: a prune failure never breaks the worker's terminal accounting (already committed). Safe
+    because submit_reserve now gates reserve on the durable job row (`created`), so a pruned marker cannot
+    cause a re-reserve."""
     try:
         q.prune_terminal_markers(uid)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from user_quota import GLOBAL_PK
+        q.prune_terminal_markers(GLOBAL_PK)   # bounded, guarded; only terminal gres# removed
     except Exception:  # noqa: BLE001
         pass
 

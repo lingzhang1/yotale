@@ -680,3 +680,34 @@ def test_exhausted_global_conflict_is_store_error_not_false_denial():
                   cfg=_cfg(user_monthly_usd=100, user_daily_gens=999, max_active_jobs=99, global_monthly_usd=100))
     with pytest.raises(QuotaStoreError):   # exhausted conflict -> technical 503, NOT a quota 429
         q.reserve("u1", "op-stuck", estimate_usd=0.05, gens=1)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Global-item bounded ledger (owner §2): terminal gres# markers must be prunable too, WITHOUT touching a
+# still-reserved gres# (which may be another user's in-flight reservation) or the global settled_usd.
+# ---------------------------------------------------------------------------------------------------------
+def test_prune_global_removes_terminal_gres_preserves_reserved_and_counters():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    ddb = FakeDDB()
+    q = UserQuota(ddb=ddb, usage_table="t",
+                  cfg=_cfg(user_monthly_usd=100, user_daily_gens=999, max_active_jobs=99, global_monthly_usd=100))
+    # Three users reserve (each writes a gres# on __global__). Settle two; leave one reserved (in-flight).
+    q.reserve("uA", "opA", estimate_usd=0.10, gens=1)
+    q.reserve("uB", "opB", estimate_usd=0.10, gens=1)
+    q.reserve("uC", "opC", estimate_usd=0.10, gens=1)
+    q.settle("uA", "opA", actual_usd=0.08)                       # gres#A -> settled
+    q.release_allowance("uB", "opB", gens=1, incurred_usd=0.0)   # gres#B -> released
+    # opC stays reserved (in-flight, e.g. another user's live reservation)
+
+    g_before = ddb.get_item(TableName="t", Key={"story_user_id": {"S": GLOBAL_PK}, "quota_period": {"S": _period()}})["Item"]
+    settled_before = g_before.get("settled_usd")
+
+    removed = q.prune_terminal_markers(GLOBAL_PK)
+    assert removed == 2   # gres#A (settled) + gres#B (released)
+
+    g_after = ddb.get_item(TableName="t", Key={"story_user_id": {"S": GLOBAL_PK}, "quota_period": {"S": _period()}})["Item"]
+    from user_quota import reservation_id as _rid
+    assert f"gres#{_rid('opA')}" not in g_after          # terminal pruned
+    assert f"gres#{_rid('opB')}" not in g_after          # terminal pruned
+    assert f"gres#{_rid('opC')}" in g_after              # RESERVED preserved (in-flight, maybe another user)
+    assert g_after.get("settled_usd") == settled_before  # global spend counter UNCHANGED by pruning
