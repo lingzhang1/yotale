@@ -75,6 +75,12 @@ class FakeDDB:
                     st = it.get(names[mk], {}).get("M", {}).get("state", {}).get("S")
                     if st != "held":
                         raise Cancel()
+            # prune_terminal_markers guard: `#m.#st = :s` — the marker must STILL be in the expected terminal
+            # state, else the guarded REMOVE no-ops (a concurrent re-use changed it under us).
+            if "#m.#st = :s" in cond:
+                st = it.get(names["#m"], {}).get("M", {}).get("state", {}).get("S")
+                if st != vals[":s"]["S"]:
+                    raise Cancel()
             if "<= :umax" in cond:
                 est = float(vals[":eu"]["N"]); umax = float(vals[":umax"]["N"])
                 if num("reserved_usd") + num("settled_usd") + est > umax:
@@ -113,6 +119,9 @@ class FakeDDB:
                        ("#gm", ":settled"), ("#gm", ":released")):
             if f"{mk}.#st = {sv}" in ue:
                 it.setdefault(names[mk], {"M": {}})["M"]["state"] = {"S": vals[sv]["S"]}
+        # prune_terminal_markers: `REMOVE #m` drops the whole marker attribute.
+        if ue.strip() == "REMOVE #m" and names.get("#m") in it:
+            del it[names["#m"]]
 
     def update_item(self, TableName, Key, UpdateExpression, ConditionExpression=None,
                     ExpressionAttributeNames=None, ExpressionAttributeValues=None):

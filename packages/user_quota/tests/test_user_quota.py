@@ -488,3 +488,136 @@ def test_slot_redelivery_then_terminal_never_negative():
     for t in ts: t.start()
     for t in ts: t.join()
     assert float(q._ddb.items[("u1", _P())]["active_jobs"]["N"]) == 0   # exactly once, never negative
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Phantom-429 fix (owner §6): a transient/store failure must NOT become a quota denial; a real cap still does.
+# ---------------------------------------------------------------------------------------------------------
+from user_quota import _is_conditional_failure, _is_transient_conflict, _cancellation_reasons  # noqa: E402
+
+
+class _TxnCanceled(Exception):
+    """Mimics botocore TransactionCanceledException: name + a .response carrying CancellationReasons."""
+    def __init__(self, reasons):
+        super().__init__("TransactionCanceledException")
+        self.__class__.__name__ = "TransactionCanceledException"
+        self.response = {"CancellationReasons": [{"Code": c} for c in reasons]}
+
+
+class _CondFailed(Exception):
+    def __init__(self):
+        super().__init__("ConditionalCheckFailedException")
+        self.__class__.__name__ = "ConditionalCheckFailedException"
+
+
+def test_classify_plain_conditional_failure_is_conditional():
+    assert _is_conditional_failure(_CondFailed()) is True
+    assert _is_transient_conflict(_CondFailed()) is False
+
+
+def test_classify_txn_conflict_is_transient_not_conditional():
+    # A transaction cancelled by a TransactionConflict is TRANSIENT — never a quota denial.
+    e = _TxnCanceled(["None", "TransactionConflict"])
+    assert _is_transient_conflict(e) is True
+    assert _is_conditional_failure(e) is False
+
+
+def test_classify_txn_all_conditional_is_genuine():
+    # Every cancelled leg is a real conditional check -> genuine conditional failure (idempotency/cap guard).
+    e = _TxnCanceled(["ConditionalCheckFailed", "None"])
+    assert _is_conditional_failure(e) is True
+    assert _is_transient_conflict(e) is False
+
+
+def test_classify_txn_validation_is_store_error_not_conditional():
+    e = _TxnCanceled(["None", "ValidationError"])
+    assert _is_conditional_failure(e) is False   # -> caller raises QuotaStoreError (503), not a false 429
+    assert _is_transient_conflict(e) is False
+
+
+def test_classify_txn_no_reasons_is_conservative_store_error():
+    e = _TxnCanceled([])  # no structured reasons -> be conservative, treat as store error
+    assert _is_conditional_failure(e) is False
+
+
+class _ConflictOnceDDB(FakeDDB):
+    """Raises a TransactionConflict on the first transact_write_items, then succeeds — to prove reserve RETRIES
+    a transient conflict rather than denying."""
+    def __init__(self):
+        super().__init__(support_transact=True)
+        self._conflicts = 1
+    def transact_write_items(self, TransactItems):
+        if self._conflicts > 0:
+            self._conflicts -= 1
+            raise _TxnCanceled(["None", "TransactionConflict"])
+        return super().transact_write_items(TransactItems=TransactItems)
+
+
+def test_reserve_retries_transient_conflict_and_succeeds():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    q = UserQuota(ddb=_ConflictOnceDDB(), usage_table="t", cfg=_cfg(user_monthly_usd=50))
+    r = q.reserve("u1", "op-conflict", estimate_usd=0.15, gens=1)   # must NOT raise QuotaDenied
+    assert r.state == "reserved"
+
+
+class _AlwaysConflictDDB(FakeDDB):
+    def __init__(self):
+        super().__init__(support_transact=True)
+    def transact_write_items(self, TransactItems):
+        raise _TxnCanceled(["None", "TransactionConflict"])
+
+
+def test_reserve_exhausted_conflict_is_store_error_not_denial():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    q = UserQuota(ddb=_AlwaysConflictDDB(), usage_table="t", cfg=_cfg(user_monthly_usd=50))
+    with pytest.raises(QuotaStoreError):   # NOT QuotaDenied — a store failure, surfaced as 503 upstream
+        q.reserve("u1", "op-x", estimate_usd=0.15, gens=1)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Bounded ledger (owner §5/§7): prune terminal markers, preserve active ones + aggregates.
+# ---------------------------------------------------------------------------------------------------------
+def test_prune_removes_terminal_markers_preserves_active_and_aggregates():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    ddb = FakeDDB()
+    q = UserQuota(ddb=ddb, usage_table="t", cfg=_cfg(user_monthly_usd=50, user_daily_gens=99, max_active_jobs=5))
+    # Three ops reserved + one held slot; settle/release two, leave one reserved + the slot held.
+    q.reserve("u1", "op-keep", estimate_usd=0.10, gens=1)       # stays reserved
+    q.reserve("u1", "op-settle", estimate_usd=0.10, gens=1)
+    q.reserve("u1", "op-release", estimate_usd=0.10, gens=1)
+    q.reserve_slot("u1", "job-held")                            # stays held
+    q.reserve_slot("u1", "job-done")
+    q.settle("u1", "op-settle", actual_usd=0.08)
+    q.release_allowance("u1", "op-release", gens=1, incurred_usd=0.0)
+    q.release_slot("u1", "job-done")
+
+    before = ddb.get_item(TableName="t", Key={"story_user_id": {"S": "u1"}, "quota_period": {"S": _period()}})["Item"]
+    agg_before = {k: before.get(k) for k in ("reserved_usd", "settled_usd", "active_jobs", _day())}
+
+    removed = q.prune_terminal_markers("u1")
+    assert removed == 3   # op-settle (settled), op-release (released), job-done (released)
+
+    after = ddb.get_item(TableName="t", Key={"story_user_id": {"S": "u1"}, "quota_period": {"S": _period()}})["Item"]
+    # Active markers preserved:
+    assert f"res#{reservation_id('op-keep')}" in after
+    assert f"slot#job-held" in after
+    # Terminal markers gone:
+    assert f"res#{reservation_id('op-settle')}" not in after
+    assert f"res#{reservation_id('op-release')}" not in after
+    assert f"slot#job-done" not in after
+    # Aggregates UNCHANGED by pruning (pruning is bookkeeping cleanup, not accounting):
+    assert {k: after.get(k) for k in ("reserved_usd", "settled_usd", "active_jobs", _day())} == agg_before
+    # Re-running prune is a no-op (nothing terminal left to remove beyond what's gone).
+    assert q.prune_terminal_markers("u1") == 0
+
+
+def test_prune_never_touches_reserved_or_held():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    ddb = FakeDDB()
+    q = UserQuota(ddb=ddb, usage_table="t", cfg=_cfg(user_monthly_usd=50, max_active_jobs=5))
+    q.reserve("u1", "op-active", estimate_usd=0.10, gens=1)
+    q.reserve_slot("u1", "job-active")
+    assert q.prune_terminal_markers("u1") == 0   # nothing terminal -> no removals
+    after = ddb.get_item(TableName="t", Key={"story_user_id": {"S": "u1"}, "quota_period": {"S": _period()}})["Item"]
+    assert f"res#{reservation_id('op-active')}" in after
+    assert "slot#job-active" in after

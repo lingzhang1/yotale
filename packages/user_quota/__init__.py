@@ -31,6 +31,7 @@ This module is pure logic over an injectable DynamoDB client; main.py / worker w
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -106,10 +107,70 @@ class Reservation:
     state: str = "reserved"  # reserved -> settled | released
 
 
+def _log_quota_store_error(where: str, e: Exception) -> None:
+    """Privacy-safe diagnostic for a quota-store failure: the operation, exception type, and (for a
+    transaction) the per-leg CancellationReasons — NEVER a user id, amount, or request body. This is what was
+    missing when a spurious 429 occurred: the raw DynamoDB cause was swallowed into QuotaDenied. Emits a plain
+    structured line the API/worker log captures; best-effort (never raises)."""
+    try:
+        reasons = _cancellation_reasons(e)
+        print(json.dumps({"msg": "quota_store_error", "where": where,
+                          "exc_type": type(e).__name__,
+                          "cancellation_reasons": reasons,
+                          "detail": str(e)[:200]}))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cancellation_reasons(e: Exception) -> list[str]:
+    """Pull the per-item CancellationReasons codes from a botocore TransactionCanceledException. These say WHY
+    each transaction leg was cancelled: 'ConditionalCheckFailed' (our guard/idempotency), 'TransactionConflict'
+    (a concurrent write to the same item — TRANSIENT, retryable), 'ValidationError', 'ItemCollectionSizeLimit',
+    'ProvisionedThroughputExceeded', or 'None' (that leg was fine). Returns [] when not a transaction error."""
+    reasons: list[str] = []
+    resp = getattr(e, "response", None)
+    if isinstance(resp, dict):
+        for r in (resp.get("CancellationReasons") or []):
+            code = r.get("Code")
+            if code:
+                reasons.append(str(code))
+    return reasons
+
+
 def _is_conditional_failure(e: Exception) -> bool:
+    """A GENUINE conditional-check failure: our ConditionExpression guard was the reason the write/transaction
+    was rejected (idempotency marker already present, or a cap/state guard tripped). This is the ONLY class a
+    caller may interpret as 'the guard decided' — NEVER a transient conflict or a store/validation error, which
+    must surface as QuotaStoreError (-> fail-closed 503), not a false QuotaDenied (owner §6).
+
+    A plain ConditionalCheckFailedException is a genuine conditional failure. A TransactionCanceledException is
+    a genuine conditional failure ONLY when its CancellationReasons are exclusively ConditionalCheckFailed /
+    None — i.e. no leg was cancelled by a TransactionConflict or a validation/throughput/size error."""
     n = type(e).__name__
-    return "ConditionalCheckFailed" in n or "ConditionalCheckFailed" in str(e) \
-        or "TransactionCanceled" in n or "ConditionalCheckFailed" in str(e)
+    if "ConditionalCheckFailedException" in n:
+        return True
+    if "TransactionCanceled" in n:
+        reasons = _cancellation_reasons(e)
+        if not reasons:
+            # No structured reasons available: be conservative — treat as a STORE error (not a cap), so a
+            # genuinely transient/ambiguous cancellation never masquerades as a quota denial.
+            return False
+        # Genuine only if every cancelled leg is a conditional check (or None); any conflict/validation/size/
+        # throughput reason means this was NOT our guard deciding.
+        return all(code in ("ConditionalCheckFailed", "None") for code in reasons)
+    return False
+
+
+def _is_transient_conflict(e: Exception) -> bool:
+    """True when a transaction was cancelled by a TransactionConflict (a concurrent write to a shared item,
+    e.g. the hot __global__ row) or a throttling/throughput signal — a TRANSIENT condition that is safe to
+    retry with the SAME idempotent keys, and must NEVER be reported as a quota denial."""
+    n = type(e).__name__
+    if "TransactionConflict" in str(e) or "ProvisionedThroughputExceeded" in n or "ThrottlingException" in n:
+        return True
+    reasons = _cancellation_reasons(e)
+    return any(code in ("TransactionConflict", "ProvisionedThroughputExceeded", "ThrottlingError")
+               for code in reasons)
 
 
 class UserQuota:
@@ -221,6 +282,31 @@ class UserQuota:
                     if _is_conditional_failure(e):
                         return self._reserve_conditional_recover(story_user_id, period, marker, rid,
                                                                  estimate_usd, gens)
+                    # TRANSIENT conflict on the shared __global__ item (concurrent reservers): retry the SAME
+                    # idempotent transaction a few times before giving up. A conflict is NOT a quota denial.
+                    if _is_transient_conflict(e):
+                        for _attempt in range(3):
+                            try:
+                                self._c().transact_write_items(TransactItems=[
+                                    {"Update": {k: v for k, v in user_update.items()}},
+                                    {"Update": {"TableName": self.usage_table, "Key": self._key(GLOBAL_PK, period),
+                                                "UpdateExpression": "ADD #gru :eu SET #gm = :gm",
+                                                "ConditionExpression": gcond,
+                                                "ExpressionAttributeNames": gnames,
+                                                "ExpressionAttributeValues": gvals}},
+                                ])
+                                return Reservation(rid, story_user_id, estimate_usd, gens, state="reserved")
+                            except Exception as e2:  # noqa: BLE001
+                                if _is_conditional_failure(e2):
+                                    return self._reserve_conditional_recover(story_user_id, period, marker,
+                                                                             rid, estimate_usd, gens)
+                                if _is_transient_conflict(e2):
+                                    time.sleep(0.05 * (_attempt + 1)); continue
+                                _log_quota_store_error("reserve.transact.retry", e2)
+                                raise QuotaStoreError(str(e2)[:200]) from e2
+                        _log_quota_store_error("reserve.transact.conflict_exhausted", e)
+                        raise QuotaStoreError("transaction_conflict_exhausted") from e
+                    _log_quota_store_error("reserve.transact", e)
                     raise QuotaStoreError(str(e)[:200]) from e
 
             # Fallback (no transact support): per-user atomic first, then best-effort global add.
@@ -233,6 +319,8 @@ class UserQuota:
         except Exception as e:  # noqa: BLE001
             if _is_conditional_failure(e):
                 return self._reserve_conditional_recover(story_user_id, period, marker, rid, estimate_usd, gens)
+            # A transient conflict or any other store error is a STORE failure, never a quota denial (owner §6).
+            _log_quota_store_error("reserve.fallback", e)
             raise QuotaStoreError(str(e)[:200]) from e
 
     def _reserve_conditional_recover(self, story_user_id, period, marker, rid, estimate_usd, gens):
@@ -251,8 +339,23 @@ class UserQuota:
             raise QuotaDenied("user_daily_gens")
         if cur_res + cur_set + estimate_usd > c.user_monthly_usd:
             raise QuotaDenied("user_monthly_usd")
-        # Neither per-user bound explains it -> the global transaction leg failed (global breaker).
-        raise QuotaDenied("global_monthly_usd")
+        # Neither per-user bound is breached. The ONLY remaining genuine conditional cause is the GLOBAL
+        # breaker, and ONLY if the global spend actually exceeds the cap — confirm against the live __global__
+        # item rather than assuming (owner §2/§6: a conditional failure that is NOT an actual cap must become a
+        # STORE error, never a phantom quota denial). The global write's own guard is idempotency-only
+        # (attribute_not_exists(#gm)), so a genuine conditional failure there means the gres# marker already
+        # exists -> an idempotent retry, not a cap.
+        if c.global_monthly_usd > 0:
+            g = self._c().get_item(
+                TableName=self.usage_table, Key=self._key(GLOBAL_PK, period)).get("Item") or {}
+            if f"gres#{rid}" in g:
+                return Reservation(rid, story_user_id, estimate_usd, gens, state="reserved")  # idempotent
+            g_res = float(g.get("reserved_usd", {}).get("N", "0"))
+            g_set = float(g.get("settled_usd", {}).get("N", "0"))
+            if g_res + g_set + estimate_usd > c.global_monthly_usd:
+                raise QuotaDenied("global_monthly_usd")   # a REAL global breaker trip
+        # No cap is actually breached -> this was a store/transaction anomaly, not a quota decision.
+        raise QuotaStoreError("reserve_conditional_unexplained")
 
     def _global_add(self, period: str, rid: str, estimate_usd: float) -> None:
         """Best-effort idempotent global reserve add (fallback path only). Marker gres#<rid> keeps it
@@ -425,16 +528,24 @@ class UserQuota:
         except QuotaDenied:
             raise
         except Exception as e:  # noqa: BLE001
+            # A TRANSIENT conflict (concurrent slot writes on the same item) is retryable and must NEVER become
+            # a quota denial (owner §6) — check it BEFORE the conditional-failure branch, since a transaction
+            # conflict can co-surface. Reported as a store error so the caller fails closed (503), not 429.
+            if _is_transient_conflict(e):
+                _log_quota_store_error("reserve_slot.transient_conflict", e)
+                raise QuotaStoreError("reserve_slot_transient_conflict") from e
             if _is_conditional_failure(e):
-                # The conditional write was rejected. Distinguish the two reasons: (a) this job already holds a
-                # slot (idempotent success — a redelivery/retry raced the first write), vs (b) the cap guard
-                # `#aj < :max` failed (genuine over-cap denial). Re-read and decide; NEVER report a cap denial
-                # for a job that in fact holds its slot.
+                # OUR guard rejected the write. Two reasons: (a) this job already holds a slot (idempotent
+                # success — a redelivery/retry raced the first write) -> return True; (b) the atomic cap guard
+                # `#aj < :max` failed -> a GENUINE active-job cap denial. The guard IS the authority on the cap
+                # (it evaluates against the live committed item), so a non-held conditional failure is a real
+                # active_jobs denial — do NOT second-guess it with a possibly-stale re-read.
                 again = self._c().get_item(
                     TableName=self.usage_table, Key=self._key(story_user_id, period)).get("Item") or {}
                 if again.get(marker, {}).get("M", {}).get("state", {}).get("S") == "held":
                     return True  # raced to held — idempotent
-                raise QuotaDenied("active_jobs")
+                raise QuotaDenied("active_jobs")   # the cap guard tripped against the live item -> real cap
+            _log_quota_store_error("reserve_slot.store_error", e)
             raise QuotaStoreError(str(e)[:200]) from e
 
     def release_slot(self, story_user_id: str, job_id: str) -> None:
@@ -455,3 +566,51 @@ class UserQuota:
             if _is_conditional_failure(e):
                 return  # not held / already released — idempotent no-op
             raise QuotaStoreError(str(e)[:200]) from e
+
+    # -- bounded ledger: prune terminal markers ----------------------------------------------------------
+    def prune_terminal_markers(self, story_user_id: str, period: Optional[str] = None, *,
+                               max_remove: int = 100) -> int:
+        """Remove TERMINAL per-operation markers so a monthly item cannot grow without bound (owner §5/§7).
+
+        SAFE BY CONSTRUCTION:
+        - Only markers in a terminal state are removed: `res#`/`gres#` with state settled|released, and `slot#`
+          with state released. A `reserved`/`held` marker (an in-flight reservation or an active job slot) is
+          NEVER touched, so active accounting and the active-job cap are preserved.
+        - Each REMOVE is guarded by a ConditionExpression that the marker is STILL in that terminal state, so a
+          concurrent re-use of the same rid (new reservation writing state=reserved) cannot be clobbered — the
+          guarded remove simply no-ops.
+        - Aggregates (`reserved_usd`, `settled_usd`, `gens#YYYY-MM-DD`, `active_jobs`) are NEVER modified: the
+          markers are already-accounted bookkeeping, so removing them does not change any total.
+        - Idempotency: once a job is terminal its dedup is provided by the durable job-store row (terminal
+          state) + the deterministic operation_id/job_id, so the transient marker is no longer needed.
+
+        Returns the number of markers removed. Bounded by `max_remove` per call (the reconcile sweep calls it
+        repeatedly across users without scanning unrelated accounts)."""
+        period = period or _period()
+        item = self._c().get_item(
+            TableName=self.usage_table, Key=self._key(story_user_id, period)).get("Item") or {}
+        removed = 0
+        for key, val in list(item.items()):
+            if removed >= max_remove:
+                break
+            is_res = key.startswith("res#") or key.startswith("gres#")
+            is_slot = key.startswith("slot#")
+            if not (is_res or is_slot):
+                continue
+            state = val.get("M", {}).get("state", {}).get("S")
+            terminal = (is_res and state in ("settled", "released")) or (is_slot and state == "released")
+            if not terminal:
+                continue
+            try:
+                self._c().update_item(
+                    TableName=self.usage_table, Key=self._key(story_user_id, period),
+                    UpdateExpression="REMOVE #m",
+                    ConditionExpression="#m.#st = :s",   # still terminal -> safe to drop; else no-op
+                    ExpressionAttributeNames={"#m": key, "#st": "state"},
+                    ExpressionAttributeValues={":s": {"S": state}})
+                removed += 1
+            except Exception as e:  # noqa: BLE001
+                if _is_conditional_failure(e):
+                    continue  # marker changed under us (re-used) — leave it, not an error
+                raise QuotaStoreError(str(e)[:200]) from e
+        return removed
