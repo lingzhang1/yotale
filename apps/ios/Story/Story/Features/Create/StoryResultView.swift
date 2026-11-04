@@ -213,9 +213,9 @@ struct StoryResultView: View {
                     VideoPlayer(player: player)
                         .onDisappear {
                             player.pause()
-                            // Release the playback audio session so it does not clobber the capture session
-                            // (camera uses .record/.playAndRecord). Best-effort; never throws into the UI.
-                            try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+                            // Release the playback audio session (off the main actor) so it does not clobber
+                            // the capture session (camera uses .record/.playAndRecord). Never blocks the UI.
+                            Task { await AudioSessionCoordinator.shared.apply(.deactivate) }
                         }
                 } else {
                     StoryTheme.surface
@@ -235,10 +235,9 @@ struct StoryResultView: View {
                 // The app records video (AVAudioSession left in .record/.playAndRecord), and a bare AVPlayer
                 // inherits that category, which does not route playback to the speaker. Put the session into
                 // .playback (movie playback) and activate it BEFORE creating the player so the preview is
-                // audible. Best-effort: a failure never blocks playback or the UI. Released in onDisappear.
-                let session = AVAudioSession.sharedInstance()
-                try? session.setCategory(.playback, mode: .moviePlayback)
-                try? session.setActive(true)
+                // audible. The activation runs OFF the main actor (AudioSessionCoordinator) so it never blocks
+                // the UI; the player is created back on the main actor after it returns. Released in onDisappear.
+                await AudioSessionCoordinator.shared.apply(.moviePlayback)
                 player = AVPlayer(url: RenderOutputStore.shared.absoluteURL(for: relativePath))
             }
             .task { await observePendingRecovery() }
@@ -664,30 +663,34 @@ struct StoryResultView: View {
     private func togglePlay() {
         guard let player else { return }
         if isPlaying { player.pause() } else {
-            // ROBUST AUDIO (v2): the first fix set the session at player CREATION, but the capture session
-            // (AVCaptureSession manages the app audio session) or a version-swap can leave/reset it to a
-            // non-playback, inactive, or silenced state by the time the user taps play. Reassert .playback +
-            // active RIGHT HERE, every play, and ensure the player itself is audible. Best-effort; never blocks.
-            let session = AVAudioSession.sharedInstance()
-            try? session.setCategory(.playback, mode: .moviePlayback, options: [])
-            try? session.setActive(true)
+            // ROBUST AUDIO (v3): the capture session (AVCaptureSession manages the app audio session) or a
+            // version-swap can leave/reset the session to a non-playback / inactive / silenced state by the
+            // time the user taps play, so reassert .playback + active on EVERY play. The reassertion runs OFF
+            // the main actor (AudioSessionCoordinator) so it never blocks the tap; we then play back on main.
+            // invalidate() first because an external owner (capture) may have changed the session underneath us.
             player.isMuted = false
             player.volume = 1.0
-            #if DEBUG
-            // INSTRUMENT (owner lesson: print resolved values, do not keep guessing). Surfaces the REAL audio
-            // state at play time so a device run tells us the true cause if this still fails.
-            let item = player.currentItem
-            let aTracks = item?.tracks.filter { $0.assetTrack?.mediaType == .audio }.count ?? -1
-            StoryCreativeRefinement.lastMusicNote =
-                "preview play: cat=\(session.category.rawValue) mode=\(session.mode.rawValue) "
-                + "outVol=\(session.outputVolume) playerVol=\(player.volume) muted=\(player.isMuted) "
-                + "itemAudioTracks=\(aTracks) status=\(item?.status.rawValue ?? -1)"
-            print("AUDIO-DIAG \(StoryCreativeRefinement.lastMusicNote)")
-            #endif
             if player.currentTime() >= (player.currentItem?.duration ?? .zero) {
                 player.seek(to: .zero)
             }
-            player.play()
+            Task {
+                await AudioSessionCoordinator.shared.invalidate()
+                await AudioSessionCoordinator.shared.apply(.moviePlayback)
+                await MainActor.run {
+                    #if DEBUG
+                    // INSTRUMENT (owner lesson: print resolved values). Surfaces the REAL audio state at play.
+                    let session = AVAudioSession.sharedInstance()
+                    let item = player.currentItem
+                    let aTracks = item?.tracks.filter { $0.assetTrack?.mediaType == .audio }.count ?? -1
+                    StoryCreativeRefinement.lastMusicNote =
+                        "preview play: cat=\(session.category.rawValue) mode=\(session.mode.rawValue) "
+                        + "outVol=\(session.outputVolume) playerVol=\(player.volume) muted=\(player.isMuted) "
+                        + "itemAudioTracks=\(aTracks) status=\(item?.status.rawValue ?? -1)"
+                    print("AUDIO-DIAG \(StoryCreativeRefinement.lastMusicNote)")
+                    #endif
+                    player.play()
+                }
+            }
         }
         isPlaying.toggle()
     }
