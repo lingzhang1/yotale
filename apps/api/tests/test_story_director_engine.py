@@ -192,7 +192,7 @@ def _with_queries():
     alt = _cand("altA", "Film your hands zipping the bag.")
     alt["shot"][REFERENCE_QUERY_KEY] = "Hands Zipping   Backpack Close Up"
     bad = _cand("altB", "Film the window light on the bag.")
-    bad["shot"][REFERENCE_QUERY_KEY] = "see https://example.com"
+    bad["shot"][REFERENCE_QUERY_KEY] = "https://example.com 42 !!!"   # nothing usable after normalizing
     r["candidates"] = [{"action": "capture_shot", "shot": dict(r["decision"]["shot"])}, alt, bad]
     r["director_state"]["last_decision"] = {"action": "capture_shot", "shot": dict(r["decision"]["shot"])}
     return r
@@ -230,7 +230,7 @@ def test_reference_queries_keyed_by_minted_ids_and_sanitized():
     assert str(out.candidates[0].shot.id) == str(out.decision.shot.id)
     # alt candidate: whitespace-collapsed + lowercased
     assert q[str(out.candidates[1].shot.id)] == "hands zipping backpack close up"
-    # URL query rejected => no entry => text-only card for that idea
+    # query with no usable words after normalization => no entry => text-only card for that idea
     assert str(out.candidates[2].shot.id) not in q
     # every key is a real minted shot id
     ids = {str(s.id) for s in out.plan.shots} | {str(c.shot.id) for c in out.candidates if c.shot}
@@ -258,16 +258,35 @@ def test_reference_query_does_not_leak_into_validated_shots():
 
 @pytest.mark.parametrize("raw,expected", [
     ("close up acoustic guitar bookshelf", "close up acoustic guitar bookshelf"),
-    ("  Person resting on sofa,  wide shot ", None),            # punctuation rejected
-    ("guitar", None),                                            # too short (1 word)
-    ("a b c d e f g h i", None),                                 # too many words
-    ("photo of sarah@example.com desk", None),                   # email
-    ("www.example desk", None),                                  # url marker
-    ("shot 4 seconds desk", None),                               # digits rejected
-    ("x" * 90, None),                                            # too long
-    (None, None), (123, None), ("", None),
+    # Owner rule: never withhold a query for FORMAT — normalize instead.
+    ("  Person resting on sofa,  wide shot ", "person resting on sofa wide shot"),   # punctuation stripped
+    ("guitar", "guitar"),                                                            # one word is fine
+    # Real gpt-5.1 output (10 words) previously REJECTED -> no photo on device; now kept.
+    ("slow pan medium wide shot guitar bookcase desk window night",
+     "slow pan medium wide shot guitar bookcase desk window night"),
+    ("a b c d e f g h i j k l m n", "a b c d e f g h i j k l"),                       # truncated to 12
+    ("photo of sarah@example.com desk", "photo of desk"),                            # email token removed
+    ("see https://example.com/x desk lamp", "see desk lamp"),                        # url token removed
+    ("www.example.com desk", "desk"),
+    ("shot 4 seconds desk", "shot seconds desk"),                                    # digits stripped
+    ("x" * 90, "x" * 90),
+    (None, None), (123, None), ("", None), ("   ", None), ("!!! 42 ...", None),     # nothing usable left
     ("office aisle leading lines person", "office aisle leading lines person"),
     ("over-the-shoulder laptop typing", "over-the-shoulder laptop typing"),
 ])
 def test_sanitize_reference_query(raw, expected):
     assert sanitize_reference_query(raw) == expected
+
+
+def test_long_model_queries_are_kept_for_every_shot():
+    # Device regression (Nov 4): 2 of 3 ideas showed no photo because 9-10 word queries were rejected.
+    r = _good()
+    long_q = "slow pan medium wide shot guitar bookcase desk window night"
+    r["plan"]["shots"][0][REFERENCE_QUERY_KEY] = long_q
+    r["decision"]["shot"][REFERENCE_QUERY_KEY] = long_q
+    alt = _cand("altA", "Frame the guitar by the bookcase.")
+    alt["shot"][REFERENCE_QUERY_KEY] = "medium shot acoustic guitar leaning on bookcase indoor night"
+    r["candidates"] = [{"action": "capture_shot", "shot": dict(r["decision"]["shot"])}, alt]
+    out = RealStoryDirectorEngine(FakeModelGateway(response=r)).initialize(_CI, _SU)
+    for c in out.candidates:
+        assert str(c.shot.id) in out.shot_reference_queries, "every shot with a query must keep it"
