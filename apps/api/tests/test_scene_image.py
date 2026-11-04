@@ -85,6 +85,22 @@ def test_returns_metadata_only_with_attribution_and_hotlink():
     assert "bytes" not in img and "data" not in img
 
 
+def test_camera_flow_query_only_no_provenance_resolves():
+    """Phase 1A: the live-camera Shooting Idea card reuses /v1/scene-image with a bounded query and NO
+    Guide provenance (story_id/scene_id omitted). The endpoint already treats them as optional provenance
+    (never sent to the provider), so the camera flow needs NO backend contract change. Both the omitted
+    form and an explicit-null form must resolve identically to the Guide-scoped form."""
+    fake = _FakeClient()
+    c = _client(fake)
+    # Omitted entirely (the shape the iOS camera client sends).
+    r1 = c.post("/v1/scene-image", json={"query": "close up workspace hands keyboard"})
+    assert r1.status_code == 200 and r1.json()["image"]["photo_id"] == "abc123"
+    # Explicit nulls — also accepted (Optional fields).
+    r2 = c.post("/v1/scene-image",
+                json={"query": "close up workspace hands keyboard", "story_id": None, "scene_id": None})
+    assert r2.status_code == 200 and r2.json()["image"]["photo_id"] == "abc123"
+
+
 def test_display_does_not_fire_download_tracking():
     fake = _FakeClient()
     c = _client(fake)

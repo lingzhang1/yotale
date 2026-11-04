@@ -173,3 +173,101 @@ def test_unsafe_candidate_is_rejected():
     ]
     with pytest.raises(StructuredOutputError):
         RealStoryDirectorEngine(FakeModelGateway(response=r)).initialize(_CI, _SU)
+
+
+# ---- Phase 1A: per-shot visual_reference_query (story_director/v2) ---------
+
+from story_director import (  # noqa: E402
+    PROMPT_VERSION as _PV,
+    REFERENCE_QUERY_KEY,
+    SCHEMA_VERSION as _SV,
+    sanitize_reference_query,
+)
+
+
+def _with_queries():
+    r = _good()
+    r["plan"]["shots"][0][REFERENCE_QUERY_KEY] = "close up backpack by door"
+    r["decision"]["shot"][REFERENCE_QUERY_KEY] = "close up backpack by door"
+    alt = _cand("altA", "Film your hands zipping the bag.")
+    alt["shot"][REFERENCE_QUERY_KEY] = "Hands Zipping   Backpack Close Up"
+    bad = _cand("altB", "Film the window light on the bag.")
+    bad["shot"][REFERENCE_QUERY_KEY] = "see https://example.com"
+    r["candidates"] = [{"action": "capture_shot", "shot": dict(r["decision"]["shot"])}, alt, bad]
+    r["director_state"]["last_decision"] = {"action": "capture_shot", "shot": dict(r["decision"]["shot"])}
+    return r
+
+
+def test_v2_prompt_and_schema_versions():
+    assert _PV == "story_director/v2" and _SV == "story_director.envelope/2"
+    gw = FakeModelGateway(response=_good())
+    RealStoryDirectorEngine(gw).initialize(_CI, _SU)
+    req = gw.calls[0]
+    assert req.prompt_version == "story_director/v2"
+    assert "VISUAL REFERENCE QUERY" in req.system
+
+
+def test_model_facing_schema_offers_optional_shot_query_but_not_the_map():
+    schema = RealStoryDirectorEngine(FakeModelGateway(response=_good()))._schema
+    shot = schema["$defs"]["ShotContract"]
+    assert REFERENCE_QUERY_KEY in shot["properties"]
+    assert REFERENCE_QUERY_KEY not in shot.get("required", [])
+    assert "shot_reference_queries" not in schema["properties"]   # server-computed only
+
+
+def test_canonical_shot_contract_is_unchanged():
+    # The FROZEN canonical ShotContract must not grow the field; it lives only on the envelope.
+    from contracts.schemas.ai_contracts import ShotContract
+    assert REFERENCE_QUERY_KEY not in ShotContract.model_fields
+    assert "visual_reference_query" not in DirectorOutput.model_json_schema()["$defs"]["ShotContract"]["properties"]
+
+
+def test_reference_queries_keyed_by_minted_ids_and_sanitized():
+    out = RealStoryDirectorEngine(FakeModelGateway(response=_with_queries())).initialize(_CI, _SU)
+    q = out.shot_reference_queries
+    # primary decision shot (same UUID as the plan shot and candidates[0])
+    assert q[str(out.decision.shot.id)] == "close up backpack by door"
+    assert str(out.candidates[0].shot.id) == str(out.decision.shot.id)
+    # alt candidate: whitespace-collapsed + lowercased
+    assert q[str(out.candidates[1].shot.id)] == "hands zipping backpack close up"
+    # URL query rejected => no entry => text-only card for that idea
+    assert str(out.candidates[2].shot.id) not in q
+    # every key is a real minted shot id
+    ids = {str(s.id) for s in out.plan.shots} | {str(c.shot.id) for c in out.candidates if c.shot}
+    assert set(q) <= ids
+
+
+def test_missing_queries_yield_empty_map_and_old_shape_still_validates():
+    out = RealStoryDirectorEngine(FakeModelGateway(response=_good())).initialize(_CI, _SU)
+    assert out.shot_reference_queries == {}
+
+
+def test_model_authored_map_is_ignored():
+    r = _good()
+    r["shot_reference_queries"] = {"forged-id": "anything goes"}
+    out = RealStoryDirectorEngine(FakeModelGateway(response=r)).initialize(_CI, _SU)
+    assert out.shot_reference_queries == {}
+
+
+def test_reference_query_does_not_leak_into_validated_shots():
+    out = RealStoryDirectorEngine(FakeModelGateway(response=_with_queries())).initialize(_CI, _SU)
+    dumped = out.model_dump(mode="json")
+    blob = str(dumped["plan"]) + str(dumped["decision"]) + str(dumped["candidates"]) + str(dumped["director_state"])
+    assert REFERENCE_QUERY_KEY not in blob
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("close up acoustic guitar bookshelf", "close up acoustic guitar bookshelf"),
+    ("  Person resting on sofa,  wide shot ", None),            # punctuation rejected
+    ("guitar", None),                                            # too short (1 word)
+    ("a b c d e f g h i", None),                                 # too many words
+    ("photo of sarah@example.com desk", None),                   # email
+    ("www.example desk", None),                                  # url marker
+    ("shot 4 seconds desk", None),                               # digits rejected
+    ("x" * 90, None),                                            # too long
+    (None, None), (123, None), ("", None),
+    ("office aisle leading lines person", "office aisle leading lines person"),
+    ("over-the-shoulder laptop typing", "over-the-shoulder laptop typing"),
+])
+def test_sanitize_reference_query(raw, expected):
+    assert sanitize_reference_query(raw) == expected

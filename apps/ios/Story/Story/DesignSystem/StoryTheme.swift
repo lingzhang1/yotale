@@ -66,6 +66,15 @@ extension Color {
                   blue: Double(hex & 0xff) / 255,
                   opacity: 1)
     }
+
+    /// Parse a "#rrggbb" / "rrggbb" hex string (e.g. an Unsplash dominant-color value). Returns nil for
+    /// anything that isn't a 6-digit hex, so callers can fall back to a neutral placeholder.
+    init?(hex string: String) {
+        var s = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        self.init(hex: v)
+    }
 }
 
 // Full-screen Story background.

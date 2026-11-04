@@ -120,6 +120,23 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     @Published var recordingElapsed: TimeInterval = 0  // live REC timer (Phase 2)
     @Published var scanProgress: Double = 0            // 0→1 across the scan window (determinate bar)
 
+    // MARK: - Phase 1A: optional Unsplash reference image for the CURRENT shot idea.
+    //
+    // The image NEVER blocks the idea card (owner §8): the text card shows immediately; the photo is
+    // fetched asynchronously and only appears if a confident, grounded match is found. Guarantees:
+    //   * At most ONE image per idea. `imagesByIdeaKey` memoizes the resolved result (DTO or a cached
+    //     "no image") per (generation, ideaIndex) so SwiftUI re-renders and zoom changes never re-search.
+    //   * Stale responses are dropped: a loader tagged with an older `aiGeneration`/index can never set
+    //     `currentIdeaImage`, so a previous idea's photo can't appear on a new idea.
+    //   * A dismissed/collapsed card is never reopened by a late image (we only publish into state; the
+    //     card's visibility is driven solely by `aiState`/`ideasCollapsed`).
+    /// The resolved reference image for the idea currently shown (nil = text-only / still loading).
+    @Published var currentIdeaImage: SceneImageDTO?
+    /// Memoized per-idea results so we fetch at most once per idea and never re-search on re-render/zoom.
+    /// Key = "<generation>#<ideaIndex>"; value nil means "resolved: no image" (distinct from not-fetched).
+    private var imagesByIdeaKey: [String: SceneImageDTO?] = [:]
+    private let sceneImageService: SceneImageFetching = SceneImageService()
+
     // Camera controls (Package B Increment 1) — thin passthroughs to the shared controller. The
     // controller owns all device config (serialized + lock-guarded); the model only mirrors UI state.
     @Published var torchOn = false                     // reflects the torch button toggle
@@ -239,6 +256,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         guard !seedConsumed, seededIdea != nil else { return }
         seedConsumed = true
         aiState = .ideas
+        loadReferenceImageForCurrentIdea()   // optional photo for the seeded guide idea (non-blocking)
     }
 
     func toggleRecording() { controller?.toggleRecording() }
@@ -274,6 +292,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     func nextIdea() {
         guard !ideas.isEmpty else { return }
         ideaIndex = (ideaIndex + 1) % ideas.count
+        loadReferenceImageForCurrentIdea()   // load/reuse this idea's image; clears the previous one
     }
 
     /// Dismiss the overlay. If ideas are cached, this COLLAPSES (keeps them for the chip); if a
@@ -321,6 +340,63 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     }
     var ideaCount: Int { ideas.count }
 
+    // MARK: - Phase 1A reference-image loading (non-blocking, one per idea)
+
+    /// A stable key for the idea currently shown, scoped to the live generation so a Rescan (new
+    /// generation) never reuses a prior idea's memoized image.
+    private var currentIdeaKey: String { "\(aiGeneration)#\(ideaIndex)" }
+
+    /// The generic stock-photo query for the CURRENT idea (nil => text-only, no search).
+    /// Source: the Director's own per-shot `visual_reference_query` (story_director/v2), written in the
+    /// SAME call that produced the idea (no extra inference) and sanitized server-side; the
+    /// /v1/scene-image proxy re-sanitizes it again. There is deliberately NO client-side keyword
+    /// fallback: device testing showed keyword heuristics pick background nouns ("city lights" ->
+    /// street) and an irrelevant photo is worse than none (owner §6). A seeded guide idea carries no
+    /// Director shot, so it stays text-only.
+    private func currentReferenceQuery() -> String? {
+        if seededIdea != nil, ideas.isEmpty { return nil }
+        guard ideaIndex < ideas.count, let shotId = ideas[ideaIndex].shot?.id else { return nil }
+        return ideasOutput?.referenceQuery(for: shotId)
+    }
+
+    /// Load (or reuse) the reference image for the CURRENTLY shown idea. Idempotent per idea; safe to
+    /// call on every "idea shown" transition. Does NOT block the card. A stale generation/index result
+    /// is dropped and never published. Called after the idea text is already on screen.
+    func loadReferenceImageForCurrentIdea() {
+        let key = currentIdeaKey
+        // Already resolved for this idea (incl. a cached "no image")? Publish memoized, no network.
+        if let memo = imagesByIdeaKey[key] {
+            currentIdeaImage = memo
+            return
+        }
+        // Not fetched yet: clear any previous idea's image immediately so it can't linger on this idea.
+        currentIdeaImage = nil
+        guard StoryGuideFeatures.sceneImagesEnabled else { imagesByIdeaKey[key] = nil; return }
+        guard let query = currentReferenceQuery() else {
+            imagesByIdeaKey[key] = nil      // no grounded signal -> resolved "no image" (never a placeholder)
+            return
+        }
+        let gen = aiGeneration
+        let idx = ideaIndex
+        Task { [weak self] in
+            guard let self else { return }
+            let dto = await self.sceneImageService.fetch(query: query)
+            await MainActor.run {
+                // Drop a stale response: the shown idea moved on (Rescan / Next idea / dismiss).
+                guard gen == self.aiGeneration, idx == self.ideaIndex else { return }
+                self.imagesByIdeaKey["\(gen)#\(idx)"] = dto
+                self.currentIdeaImage = dto
+            }
+        }
+    }
+
+    /// Fire the Unsplash download-tracking endpoint when the user actually USES a reference (opens the
+    /// expanded "See framing" view), per Unsplash's rule — never on mere display. Best-effort.
+    func trackReferenceUsed() {
+        guard let loc = currentIdeaImage?.downloadLocation, !loc.isEmpty else { return }
+        Task { [weak self] in await self?.sceneImageService.track(downloadLocation: loc) }
+    }
+
     /// A compact one-line reminder of the active idea, for the minimized recording state.
     var currentIdeaReminder: String? {
         if let s = seededIdea, ideas.isEmpty { return s.title.isEmpty ? nil : s.title }
@@ -334,6 +410,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         let gen = aiGeneration
         ideas = []; ideasOutput = nil; ideaIndex = 0
         seededIdea = nil            // Rescan replaces the seeded guide idea with live, scene-specific ideas
+        currentIdeaImage = nil      // drop any shown photo; new generation key means no stale reuse
         scanProgress = 0
         aiState = .scanning
         guard let controller else { aiState = .failed("Camera unavailable."); return }
@@ -391,6 +468,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
                 ideaIndex = 0
                 ideasCollapsed = false
                 aiState = .ideas
+                loadReferenceImageForCurrentIdea()   // async photo for idea 0; never blocks the card
             }
         } catch {
             // AI failure / quota exhaustion must NOT disable recording — just report, if still current.
