@@ -38,6 +38,46 @@ final class DirectorDTOTests: XCTestCase {
         // capture_shot carries a shot with a user-facing instruction
         XCTAssertEqual(out.decision.shot?.instruction, "Film the backpack by the door.")
         XCTAssertEqual(out.plan.shots[0].targetDurationSeconds, 3)
+        // envelope/1 shape (no reference map) still decodes; no photo query => text-only card
+        XCTAssertTrue(out.shotReferenceQueries.isEmpty)
+        XCTAssertNil(out.referenceQuery(for: out.plan.shots[0].id))
+    }
+
+    // MARK: - Phase 1A: shot_reference_queries (story_director.envelope/2)
+
+    private func envelopeWithMap(_ mapJSON: String) -> Data {
+        var s = String(data: envelope, encoding: .utf8)!
+        let end = s.lastIndex(of: "}")!
+        s.replaceSubrange(end...end, with: ", \"shot_reference_queries\": \(mapJSON) }")
+        return s.data(using: .utf8)!
+    }
+
+    func testDecodesReferenceQueryAndLooksUpByShotUUID() throws {
+        let data = envelopeWithMap(#"{"33333333-3333-3333-3333-333333333333": "close up backpack by door"}"#)
+        let out = try StoryContractCoding.decoder().decode(DirectorOutputDTO.self, from: data)
+        // Swift UUID.uuidString is UPPERCASE; the server key is lowercase — lookup must still hit.
+        let shotId = try XCTUnwrap(out.decision.shot?.id)
+        XCTAssertEqual(out.referenceQuery(for: shotId), "close up backpack by door")
+    }
+
+    func testReferenceQueryForUnknownShotIsNil() throws {
+        let data = envelopeWithMap(#"{"44444444-4444-4444-4444-444444444444": "wide shot room"}"#)
+        let out = try StoryContractCoding.decoder().decode(DirectorOutputDTO.self, from: data)
+        XCTAssertNil(out.referenceQuery(for: out.plan.shots[0].id),
+                     "another idea's query must never be shown on this idea")
+    }
+
+    func testMalformedReferenceMapNeverFailsDirectorDecode() throws {
+        let data = envelopeWithMap(#"["not", "a", "map"]"#)
+        let out = try StoryContractCoding.decoder().decode(DirectorOutputDTO.self, from: data)
+        XCTAssertEqual(out.concept.title, "Preparation")
+        XCTAssertTrue(out.shotReferenceQueries.isEmpty)
+    }
+
+    func testBlankReferenceQueryIsTreatedAsNone() throws {
+        let data = envelopeWithMap(#"{"33333333-3333-3333-3333-333333333333": "   "}"#)
+        let out = try StoryContractCoding.decoder().decode(DirectorOutputDTO.self, from: data)
+        XCTAssertNil(out.referenceQuery(for: out.plan.shots[0].id))
     }
 
     func testCreativeIntentMapsFromStory() throws {

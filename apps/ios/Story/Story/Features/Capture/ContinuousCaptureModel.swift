@@ -346,18 +346,17 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     /// generation) never reuses a prior idea's memoized image.
     private var currentIdeaKey: String { "\(aiGeneration)#\(ideaIndex)" }
 
-    /// The deterministic, generic stock-photo query for the CURRENT idea (nil => text-only, no search).
-    /// Built ONLY from already-generic Director fields via ShotReferenceQuery — never the raw paragraph,
-    /// never user media/personal data. A seeded guide idea (text we already had) uses its title/body.
+    /// The generic stock-photo query for the CURRENT idea (nil => text-only, no search).
+    /// Source: the Director's own per-shot `visual_reference_query` (story_director/v2), written in the
+    /// SAME call that produced the idea (no extra inference) and sanitized server-side; the
+    /// /v1/scene-image proxy re-sanitizes it again. There is deliberately NO client-side keyword
+    /// fallback: device testing showed keyword heuristics pick background nouns ("city lights" ->
+    /// street) and an irrelevant photo is worse than none (owner §6). A seeded guide idea carries no
+    /// Director shot, so it stays text-only.
     private func currentReferenceQuery() -> String? {
-        if let s = seededIdea, ideas.isEmpty {
-            // Seeded guide idea: no Director shot fields; derive a generic query from its title/body.
-            return ShotReferenceQuery.build(shot: nil, conceptTitle: s.title, conceptSummary: s.body)
-        }
-        guard ideaIndex < ideas.count else { return nil }
-        return ShotReferenceQuery.build(shot: ideas[ideaIndex].shot,
-                                        conceptTitle: ideasOutput?.concept.title,
-                                        conceptSummary: ideasOutput?.concept.summary)
+        if seededIdea != nil, ideas.isEmpty { return nil }
+        guard ideaIndex < ideas.count, let shotId = ideas[ideaIndex].shot?.id else { return nil }
+        return ideasOutput?.referenceQuery(for: shotId)
     }
 
     /// Load (or reuse) the reference image for the CURRENTLY shown idea. Idempotent per idea; safe to

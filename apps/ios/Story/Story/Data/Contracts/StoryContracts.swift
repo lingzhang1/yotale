@@ -305,10 +305,16 @@ struct DirectorOutputDTO: Codable, Equatable {
     /// candidates[0] == decision. NOT persisted into StoryPlan, NOT extra required
     /// captures — the user captures at most one. Defaults to [] when the server omits it.
     var candidates: [DirectorDecisionDTO] = []
+    /// Phase 1A (story_director.envelope/2): server-minted shot id (lowercase UUID string) -> a
+    /// Director-written, server-sanitized GENERIC stock-photo query for that shot. Instructional UI only
+    /// (one optional reference photo per Shooting Idea). Empty when the server omits it (older backend /
+    /// model chose none) => text-only card.
+    var shotReferenceQueries: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
         case concept, plan, decision, candidates
         case directorState = "director_state"
+        case shotReferenceQueries = "shot_reference_queries"
     }
 
     init(from decoder: Decoder) throws {
@@ -318,14 +324,27 @@ struct DirectorOutputDTO: Codable, Equatable {
         directorState = try c.decode(DirectorStateDTO.self, forKey: .directorState)
         decision = try c.decode(DirectorDecisionDTO.self, forKey: .decision)
         candidates = try c.decodeIfPresent([DirectorDecisionDTO].self, forKey: .candidates) ?? []
+        // Fail-soft: a malformed map never fails the Director decode — it just means no photos.
+        shotReferenceQueries = (try? c.decodeIfPresent([String: String].self, forKey: .shotReferenceQueries))
+            .flatMap { $0 } ?? [:]
     }
 
     init(concept: StoryConceptContractDTO, plan: StoryPlanContractDTO,
          directorState: DirectorStateDTO, decision: DirectorDecisionDTO,
-         candidates: [DirectorDecisionDTO] = []) {
+         candidates: [DirectorDecisionDTO] = [], shotReferenceQueries: [String: String] = [:]) {
         self.concept = concept; self.plan = plan
         self.directorState = directorState; self.decision = decision
         self.candidates = candidates
+        self.shotReferenceQueries = shotReferenceQueries
+    }
+
+    /// The Director's reference query for one shot, or nil (=> text-only). Server ids are lowercase
+    /// UUID strings; Swift's `uuidString` is uppercase, so compare case-insensitively.
+    func referenceQuery(for shotId: UUID) -> String? {
+        let q = shotReferenceQueries[shotId.uuidString.lowercased()]
+            ?? shotReferenceQueries[shotId.uuidString]
+        guard let q, !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return q
     }
 }
 
