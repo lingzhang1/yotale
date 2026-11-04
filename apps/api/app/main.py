@@ -1432,9 +1432,10 @@ def create_app() -> FastAPI:
         """BOUNDED Unsplash reference-image lookup for ONE StoryGuide/2 scene (backend proxy).
 
         FEATURE-GATED by STORY_SCENE_IMAGES (404 when off). This is NOT a public image-search proxy:
-        the query is a GENERIC scene/composition phrase (originating from our own server-authored v2
-        `visual_reference_query`) which we RE-SANITIZE and hard-bound here (length cap, control-char
-        strip, URL/email reject) so no personal data / user media can be smuggled to the provider.
+        the query is a GENERIC scene/composition phrase (originating from our own server-authored
+        `visual_reference_query`) which we NORMALIZE here (control-char/punctuation/digit strip, URL and
+        email tokens removed, word cap by truncation) so no personal data / user media reaches the
+        provider — but never reject a query for its format. On a no-match we broaden (bounded).
 
         Returns METADATA ONLY (photo id, hotlinked urls.*, attribution text + utm links, and the
         download_location tracking URL). Image bytes are NEVER fetched or re-hosted — the app hotlinks
@@ -1449,12 +1450,12 @@ def create_app() -> FastAPI:
         correlation_id = str(uuid4())
         started = time.monotonic()
         base = {"operation": "scene_image", "correlation_id": correlation_id, "provider": "unsplash"}
-        # 1) sanitize/bound the query — a query error is an honest text-only fallback, not a 4xx that
-        #    would surface as an error in the UI.
-        try:
-            q = _scene_image.sanitize_query(body.query)
-        except _scene_image.SceneImageQueryError as e:
-            log.info("scene_image_query_rejected", extra={**base, "success": False, "reason": str(e)[:120]})
+        # 1) NORMALIZE the query (owner rule: never withhold a photo because of query format). URL/email
+        #    tokens are removed (privacy), punctuation/digits stripped, long phrases truncated. Only a query
+        #    with no usable words left is a text-only fallback.
+        q = _scene_image.normalize_query(body.query)
+        if q is None:
+            log.info("scene_image_query_empty", extra={**base, "success": False})
             return {"image": None, "status": "invalid_query"}
         # 2) metadata cache (bounds provider calls; costs near-zero on repeat renders/re-opens).
         cache = _scene_image_cache()
@@ -1470,7 +1471,8 @@ def create_app() -> FastAPI:
             log.warning("scene_image_auth_unavailable", extra={**base, "success": False, "error": str(e)[:160]})
             return {"image": None, "status": "unavailable"}
         try:
-            img = client.search_one(q)
+            # Broaden on no-match (bounded) so the user sees a relevant photo instead of nothing.
+            img, matched, attempts = _scene_image.search_broadening(client, q)
         except _scene_image.SceneImageAuthError as e:
             log.warning("scene_image_auth_rejected", extra={**base, "success": False, "error": str(e)[:160]})
             return {"image": None, "status": "unavailable"}
@@ -1479,12 +1481,13 @@ def create_app() -> FastAPI:
             return {"image": None, "status": "provider_error"}
         if img is None:
             cache.put(q, _scene_image.MetadataCache._MISS)
-            log.info("scene_image_no_match", extra={**base, "success": True})
+            log.info("scene_image_no_match", extra={**base, "success": True, "attempts": attempts})
             return {"image": None, "status": "no_match"}
         cache.put(q, img)
         log.info("scene_image_resolved",
                  extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
-                        "success": True, "photo_id": img.photo_id})
+                        "success": True, "photo_id": img.photo_id, "attempts": attempts,
+                        "broadened": matched != q})
         return {"image": img.to_wire(), "status": "ok"}
 
     @app.post("/v1/scene-image/track", status_code=204)

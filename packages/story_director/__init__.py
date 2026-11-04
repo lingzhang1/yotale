@@ -59,36 +59,36 @@ _PROMPT_DIR = Path(__file__).resolve().parent.parent.parent / "prompts" / "story
 # `shot_reference_queries[<server-minted shot id>]`. iOS uses it to fetch ONE stock reference photo via
 # the existing /v1/scene-image proxy (which re-sanitizes it). Absent/invalid => text-only card.
 REFERENCE_QUERY_KEY = "visual_reference_query"
-REFERENCE_QUERY_MAX_LEN = 80
-REFERENCE_QUERY_MAX_WORDS = 8
-_RQ_URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
-_RQ_EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
+# Owner rule: NEVER withhold a reference photo because of the query's FORMAT. The query is normalized
+# (never rejected for length / word count / punctuation); it is truncated to this many words.
+REFERENCE_QUERY_MAX_WORDS = 12
+_RQ_URL_RE = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
+_RQ_EMAIL_RE = re.compile(r"\S+@\S+")
 _RQ_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
-_RQ_ALLOWED_RE = re.compile(r"^[A-Za-z][A-Za-z\- ]*$")   # plain generic keywords only (no digits/punctuation)
+_RQ_NON_WORD_RE = re.compile(r"[^a-z\- ]+")
 _RQ_SCHEMA_DESCRIPTION = (
-    "OPTIONAL. 3-8 plain GENERIC stock-photo search keywords that show the COMPOSITION of this shot: "
-    "camera distance/angle + the main subject TYPE + setting type, e.g. 'close up acoustic guitar "
-    "bookshelf', 'person resting on sofa wide shot', 'office aisle leading lines person'. No names, "
-    "no personal details, no colors of the user's specific items, no punctuation. Omit if no generic "
-    "photo could honestly illustrate the framing."
+    "3-6 plain GENERIC stock-photo search keywords for an example photo of this shot: ONE framing term, "
+    "then the main subject TYPE, then at most one setting word, e.g. 'close up acoustic guitar bookshelf', "
+    "'wide sofa living room', 'pan city window night'. No names, no personal details, no punctuation."
 )
 
 
 def sanitize_reference_query(raw: Any) -> str | None:
-    """Bound + validate a model-written reference query. Returns None (=> text-only) for anything that is
-    not a short, generic, letters-only keyword phrase. Never raises: a bad query must not fail the Director."""
+    """Normalize a model-written reference query; never rejects it for format. URL/email TOKENS are removed
+    (privacy), control chars / digits / punctuation become spaces, case is lowered, the phrase is truncated
+    to REFERENCE_QUERY_MAX_WORDS. Returns None only when no usable words remain. Never raises: a bad query
+    must not fail the Director. (/v1/scene-image normalizes again and broadens on a no-match.)"""
     if not isinstance(raw, str):
         return None
     q = _RQ_CONTROL_RE.sub(" ", raw)
-    q = re.sub(r"\s+", " ", q).strip().lower()
-    if not q or len(q) > REFERENCE_QUERY_MAX_LEN:
+    q = _RQ_URL_RE.sub(" ", q)
+    q = _RQ_EMAIL_RE.sub(" ", q)
+    q = _RQ_NON_WORD_RE.sub(" ", q.lower())
+    words = [w.strip("-") for w in q.split()]
+    words = [w for w in words if w]
+    if not words:
         return None
-    if _RQ_URL_RE.search(q) or _RQ_EMAIL_RE.search(q) or not _RQ_ALLOWED_RE.match(q):
-        return None
-    words = q.split(" ")
-    if len(words) < 2 or len(words) > REFERENCE_QUERY_MAX_WORDS:
-        return None
-    return q
+    return " ".join(words[:REFERENCE_QUERY_MAX_WORDS])
 
 # Deterministic safety backstop — the model must not emit these in any shot
 # instruction/purpose (prompt is the primary guard; this is the hard gate).

@@ -82,6 +82,76 @@ def sanitize_query(raw: str) -> str:
     return q
 
 
+# ---- "Always show something" query handling -----------------------------------------------------
+# Owner rule: a reference photo must never be withheld because of query FORMAT (length, punctuation,
+# word count). We NORMALIZE instead of rejecting, and on a provider no-match we BROADEN the query a
+# bounded number of times. Only a query with no usable words left yields text-only.
+_TOKEN_URL_RE = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
+_TOKEN_EMAIL_RE = re.compile(r"\S+@\S+")
+_NON_WORD_RE = re.compile(r"[^a-z\- ]+")          # keep letters, hyphen, space; everything else -> space
+NORMALIZED_MAX_WORDS = 12                         # silent truncation, never a rejection
+MAX_SEARCH_ATTEMPTS = 4                           # full query + at most 3 broadened retries on no-match
+
+_FILLER_WORDS = frozenset({
+    "a", "an", "the", "of", "on", "in", "at", "by", "to", "with", "and", "or", "for", "from", "into",
+    "onto", "near", "some", "its", "their", "your", "his", "her", "is", "are", "be",
+})
+# Camera/composition vocabulary: useful for ranking in the FIRST attempt, but the usual cause of a
+# no-match when stacked ("slow pan medium wide shot ..."), so broadened attempts drop it first.
+_CAMERA_WORDS = frozenset({
+    "shot", "shots", "close", "closeup", "close-up", "up", "medium", "wide", "tight", "slow", "pan",
+    "panning", "tilt", "static", "still", "steady", "handheld", "frame", "framing", "framed", "angle",
+    "low", "high", "overhead", "eye", "level", "view", "foreground", "background", "detail", "macro",
+    "establishing", "tracking", "over-the-shoulder", "pov",
+})
+
+
+def normalize_query(raw) -> str | None:
+    """Turn ANY query string into a clean generic keyword phrase, or None if no usable words remain.
+    Never raises. URL/email tokens are REMOVED (privacy) rather than failing the whole query; control
+    chars, digits and punctuation become spaces; filler words are dropped; long phrases are truncated."""
+    if raw is None:
+        return None
+    q = _CONTROL_RE.sub(" ", str(raw))
+    q = _TOKEN_URL_RE.sub(" ", q)
+    q = _TOKEN_EMAIL_RE.sub(" ", q)
+    q = _NON_WORD_RE.sub(" ", q.lower())
+    words = [w.strip("-") for w in q.split()]
+    words = [w for w in words if w and w not in _FILLER_WORDS]
+    if not words:
+        return None
+    return " ".join(words[:NORMALIZED_MAX_WORDS])
+
+
+def broadening_candidates(query: str) -> list[str]:
+    """Ordered, de-duplicated search attempts for a normalized query (at most MAX_SEARCH_ATTEMPTS):
+    1) the full query; 2) subject/setting words only (camera words dropped); 3) the first 3 subject
+    words; 4) the first 2. Keeps the SUBJECT the longest, so a broadened photo stays about the shot."""
+    words = query.split()
+    subject = [w for w in words if w not in _CAMERA_WORDS] or words
+    attempts = [words, subject, subject[:3], subject[:2]]
+    out: list[str] = []
+    for a in attempts:
+        phrase = " ".join(a).strip()
+        if phrase and phrase not in out:
+            out.append(phrase)
+    return out[:MAX_SEARCH_ATTEMPTS]
+
+
+def search_broadening(client, query: str):
+    """Search via any client exposing `search_one(query)`, broadening on no-match.
+    Returns (image | None, matched_attempt | None, attempts_made). Bounded to MAX_SEARCH_ATTEMPTS calls.
+    Provider/auth errors propagate unchanged so the caller's fail-soft handling still applies — we never
+    retry INTO a rate limit or an auth failure."""
+    attempts = 0
+    for attempt in broadening_candidates(query):
+        attempts += 1
+        img = client.search_one(attempt)
+        if img is not None:
+            return img, attempt, attempts
+    return None, None, attempts
+
+
 def load_key(secret_id: str | None = None) -> str:
     """Read the Unsplash Access Key from Secrets Manager in-process. Never logged/returned to callers
     other than the client. Mirrors the Epidemic key loader (missing/denied/empty -> SceneImageAuthError)."""
@@ -255,7 +325,9 @@ __all__ = [
     "BASE", "SECRET_ENV", "DEFAULT_SECRET_ID", "FLAG_ENV", "APP_UTM",
     "QUERY_MAX_LEN", "PROVIDER_TIMEOUT_SECONDS",
     "SceneImageDisabledError", "SceneImageAuthError", "SceneImageProviderError", "SceneImageQueryError",
-    "enabled", "sanitize_query", "load_key", "SceneImage", "UnsplashClient",
+    "enabled", "sanitize_query", "normalize_query", "broadening_candidates", "search_broadening",
+    "NORMALIZED_MAX_WORDS", "MAX_SEARCH_ATTEMPTS",
+    "load_key", "SceneImage", "UnsplashClient",
     "MetadataCache",
 ]
 
