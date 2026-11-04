@@ -437,10 +437,17 @@ struct MusicPickerView: View {
         // Imported track with local bytes: play the managed file directly.
         if !asset.isProviderFavorite {
             guard MyMusicStore.shared.exists(asset) else { importError = "That track's file is missing."; return }
-            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try? AVAudioSession.sharedInstance().setActive(true)
-            let p = AVPlayer(url: MyMusicStore.shared.absoluteURL(for: asset.relativePath))
-            player = p; myMusicPlayingId = asset.id; p.play()
+            let fileURL = MyMusicStore.shared.absoluteURL(for: asset.relativePath)
+            myMusicPlayingId = asset.id   // optimistic; cleared if switched away during activation
+            Task {
+                let r = await AudioSessionCoordinator.shared.apply(.playbackDefault)   // off main, non-blocking
+                await MainActor.run {
+                    guard myMusicPlayingId == asset.id else { return }
+                    if !r.succeeded { importError = "That track can't be previewed right now." }
+                    let p = AVPlayer(url: fileURL)
+                    player = p; p.play()
+                }
+            }
             return
         }
         // Saved CATALOG favorite: no local bytes (licensing). Re-resolve the authorized audio on demand through
@@ -450,11 +457,13 @@ struct MusicPickerView: View {
         resolvingPreviewId = asset.id
         Task {
             let url = try? await MusicCandidatesService().downloadSoundtrack(trackId: trackId)
+            // Activate the playback session OFF the main actor (potentially-blocking system call) before UI.
+            let r = url == nil ? nil : await AudioSessionCoordinator.shared.apply(.playbackDefault)
             await MainActor.run {
                 resolvingPreviewId = nil
                 guard let url else { importError = "That track can't be previewed right now."; return }
-                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-                try? AVAudioSession.sharedInstance().setActive(true)
+                guard myMusicPlayingId == nil || myMusicPlayingId == asset.id else { return }
+                if r?.succeeded == false { importError = "That track can't be previewed right now." }
                 let p = AVPlayer(url: url)
                 player = p; myMusicPlayingId = asset.id; p.play()
             }
@@ -463,7 +472,7 @@ struct MusicPickerView: View {
 
     private func stopMyMusicPreview() {
         if myMusicPlayingId != nil { player?.pause(); player = nil; myMusicPlayingId = nil
-            try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation]) }
+            Task { await AudioSessionCoordinator.shared.apply(.deactivate) } }   // off main, non-blocking
     }
 
     private static func time(_ s: Double) -> String {
@@ -588,21 +597,29 @@ struct MusicPickerView: View {
         stopPreview()
         // Route preview audio through the .playback category so it is audible even with the hardware mute
         // switch ON (the default ambient category is silenced by the mute switch — the usual cause of a
-        // preview that "won't play"). Best-effort: a session failure must not crash the picker.
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-        try? AVAudioSession.sharedInstance().setActive(true)
-        let p = AVPlayer(url: url)   // Epidemic previews are signed HLS (.m3u8); AVPlayer handles streaming.
-        player = p
-        playingTrackId = track.trackId
-        p.play()
+        // preview that "won't play"). The session activation is a SYNCHRONOUS, potentially-blocking system
+        // call: run it OFF the main actor via AudioSessionCoordinator so it never freezes the UI (or starves
+        // other main-actor async work). Create + play the AVPlayer back on the main actor after activation.
+        playingTrackId = track.trackId   // optimistic UI; cleared by stopPreview if the user switches away
+        Task {
+            let r = await AudioSessionCoordinator.shared.apply(.playbackDefault)
+            await MainActor.run {
+                // If the user already switched away / stopped while we activated, do not start stale playback.
+                guard playingTrackId == track.trackId else { return }
+                if !r.succeeded { importError = "That track can't be previewed right now." }
+                let p = AVPlayer(url: url)   // Epidemic previews are signed HLS (.m3u8); AVPlayer streams.
+                player = p
+                p.play()
+            }
+        }
     }
 
     private func stopPreview() {
         player?.pause()
         player = nil
         playingTrackId = nil
-        // Release the audio session so it does not keep other audio ducked after previewing.
-        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        // Release the audio session (off the main actor) so it does not keep other audio ducked after preview.
+        Task { await AudioSessionCoordinator.shared.apply(.deactivate) }
     }
 
     // MARK: - consumer copy (NO BPM / beats / analysis)
