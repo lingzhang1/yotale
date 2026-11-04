@@ -31,6 +31,7 @@ struct ContinuousCaptureView: View {
     @StateObject private var model = ContinuousCaptureModel()
 
     @State private var showLibrary = false
+    @State private var showFraming = false     // Phase 1A: expanded "See framing" reference sheet
     @State private var focusReticle: CGPoint?
     @State private var reticleToken = 0
     @State private var zoomDialActive = false
@@ -137,6 +138,16 @@ struct ContinuousCaptureView: View {
         // button) so an in-flight clip is never interrupted.
         .fullScreenCover(isPresented: $showLibrary) {
             NavigationStack { MomentsLibraryView(libraryContext: .recentBrowse) }
+        }
+        .sheet(isPresented: $showFraming) {
+            if let img = model.currentIdeaImage {
+                ShotFramingReferenceView(
+                    image: img,
+                    title: model.currentIdeaTitle,
+                    instruction: model.currentIdeaBody,
+                    onClose: { showFraming = false }
+                )
+            }
         }
         .alert("Couldn't save that clip", isPresented: $model.showError, actions: {
             Button("OK", role: .cancel) {}
@@ -439,28 +450,70 @@ struct ContinuousCaptureView: View {
         }
     }
 
-    // Generated shot idea card (Phase 2 simplified controls: Record stays authoritative below;
-    // the card offers Next idea · Rescan · Dismiss — NO "Let's shoot", NO redundant Cancel).
+    // Generated shot idea card — Phase 1A COMPACT redesign. Eyebrow + "N OF M", a left reference
+    // thumbnail (optional; tap opens the expanded "See framing" reference), serif title + a concise
+    // instruction, a "See framing" affordance, then pagination dots + "Next idea". Record/zoom/Rescan
+    // stay below and are never covered. Text-only when no image (no placeholder). No fixed card height.
     private var ideaCard: some View {
         VStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
+                // Eyebrow row: "SHOT IDEA · 4 SEC"            "1 OF 3"
+                HStack(alignment: .firstTextBaseline) {
                     Text(ideaEyebrow)
-                        .font(.system(size: 13, weight: .semibold)).tracking(1).foregroundStyle(gold)
+                        .font(.system(size: 12, weight: .semibold)).tracking(1).foregroundStyle(gold)
                     Spacer()
+                    if model.ideaCount > 1 {
+                        Text("\(model.ideaIndex + 1) OF \(model.ideaCount)")
+                            .font(.system(size: 12, weight: .medium)).tracking(1)
+                            .foregroundStyle(ink.opacity(0.55))
+                            .accessibilityLabel("Idea \(model.ideaIndex + 1) of \(model.ideaCount)")
+                    }
                     Button { model.dismissIdeas() } label: {
                         Text("Dismiss").font(.system(size: 13, weight: .medium))
                             .foregroundStyle(ink.opacity(0.7))
                     }
+                    .padding(.leading, 10)
+                    .accessibilityIdentifier("idea-dismiss")
                 }
-                Text(model.currentIdeaTitle)
-                    .font(.system(size: 22, weight: .regular, design: .serif)).foregroundStyle(ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !model.currentIdeaBody.isEmpty {
-                    Text(model.currentIdeaBody)
-                        .font(.system(size: 15)).foregroundStyle(ink.opacity(0.8))
-                        .fixedSize(horizontal: false, vertical: true)
+
+                // Main row: optional thumbnail (left) + title/instruction/See-framing (right).
+                HStack(alignment: .top, spacing: 14) {
+                    if let img = model.currentIdeaImage, let url = URL(string: img.thumbURL) {
+                        Button { openFraming() } label: {
+                            ReferenceThumbnail(url: url, colorHex: img.color)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("See framing reference. Photo by \(img.photographerName) on Unsplash")
+                        .accessibilityIdentifier("idea-reference-thumb")
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(model.currentIdeaTitle)
+                            .font(.system(size: 21, weight: .regular, design: .serif)).foregroundStyle(ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !model.currentIdeaBody.isEmpty {
+                            Text(model.currentIdeaBody)
+                                .font(.system(size: 15)).foregroundStyle(ink.opacity(0.8))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        // "See framing" only when an image actually resolved (never a dead affordance).
+                        if model.currentIdeaImage != nil {
+                            Button { openFraming() } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                        .font(.system(size: 11, weight: .semibold))
+                                    Text("See framing").font(.system(size: 14, weight: .medium))
+                                }
+                                .foregroundStyle(gold)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 2)
+                            .accessibilityIdentifier("idea-see-framing")
+                        }
+                    }
+                    Spacer(minLength: 0)
                 }
+
                 if model.ideaCount > 1 {
                     Divider().overlay(gold.opacity(0.2)).padding(.vertical, 2)
                     HStack {
@@ -471,11 +524,16 @@ struct ContinuousCaptureView: View {
                                     .frame(width: i == model.ideaIndex ? 16 : 6, height: 6)
                             }
                         }
+                        .accessibilityHidden(true)
                         Spacer()
                         Button { model.nextIdea() } label: {
-                            Text("Next idea · \(model.ideaIndex + 1) of \(model.ideaCount) ›")
-                                .font(.system(size: 14, weight: .medium)).foregroundStyle(ink.opacity(0.9))
+                            HStack(spacing: 4) {
+                                Text("Next idea").font(.system(size: 14, weight: .medium))
+                                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
+                            }
+                            .foregroundStyle(ink.opacity(0.9))
                         }
+                        .accessibilityIdentifier("idea-next")
                     }
                 }
             }
@@ -493,7 +551,16 @@ struct ContinuousCaptureView: View {
                 .padding(.horizontal, 20).padding(.vertical, 12)
                 .background(panelBG, in: Capsule())
             }
+            .accessibilityIdentifier("idea-rescan")
         }
+    }
+
+    /// Open the expanded "See framing" reference. Fires Unsplash download-tracking ONCE here (actual
+    /// use), per Unsplash's rule — never on mere display. No Director call, no camera-session restart.
+    private func openFraming() {
+        guard model.currentIdeaImage != nil else { return }
+        model.trackReferenceUsed()
+        showFraming = true
     }
 
     private var ideaEyebrow: String {
@@ -805,3 +872,135 @@ private struct ExposureSlider: View {
     }
 }
 
+
+
+// MARK: - Phase 1A: reference-image components (compact thumbnail + expanded "See framing")
+
+/// Small rounded reference thumbnail for the compact idea card. Hotlinks the Unsplash CDN thumb URL
+/// (never re-hosted). Shows the provider's dominant-color placeholder while loading; on failure it
+/// simply collapses (the card is fully usable text-only). Fixed small size only — this is a thumbnail.
+private struct ReferenceThumbnail: View {
+    let url: URL
+    let colorHex: String?
+
+    var body: some View {
+        AsyncImage(url: url, transaction: Transaction(animation: .easeIn(duration: 0.2))) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+            case .empty:
+                placeholder
+            case .failure:
+                placeholder
+            @unknown default:
+                placeholder
+            }
+        }
+        .frame(width: 96, height: 96)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private var placeholder: some View {
+        (colorHex.flatMap(Color.init(hex:)) ?? Color.white.opacity(0.08))
+            .overlay(Image(systemName: "photo").font(.system(size: 18)).foregroundStyle(.white.opacity(0.35)))
+    }
+}
+
+/// Expanded "How to frame it" reference (owner §5). A larger hotlinked Unsplash photo, an explicit
+/// "visual inspiration — not a preview of your actual shot" disclaimer, the full title + practical
+/// instruction, and MANDATORY Unsplash attribution (photographer + Unsplash, linked with UTM). Presented
+/// as a sheet so it dismisses fast, returns to the SAME camera session, and triggers NO Director call or
+/// camera restart. Theme colors only.
+struct ShotFramingReferenceView: View {
+    let image: SceneImageDTO
+    let title: String
+    let instruction: String
+    let onClose: () -> Void
+
+    private let gold = Color(red: 0.83, green: 0.66, blue: 0.33)
+    private let ink = Color(red: 0.96, green: 0.94, blue: 0.91)
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Text("How to frame it")
+                            .font(.system(size: 20, weight: .semibold)).foregroundStyle(ink)
+                        Spacer()
+                        Button(action: onClose) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 16, weight: .semibold)).foregroundStyle(ink.opacity(0.7))
+                        }
+                        .accessibilityLabel("Close framing reference")
+                        .accessibilityIdentifier("framing-close")
+                    }
+                    .padding(.top, 8)
+
+                    // Large hotlinked reference photo (urls.regular). Never re-hosted; aspect kept.
+                    if let url = URL(string: image.imageURL) {
+                        AsyncImage(url: url, transaction: Transaction(animation: .easeIn(duration: 0.25))) { phase in
+                            switch phase {
+                            case .success(let img): img.resizable().scaledToFit()
+                            case .empty:
+                                (image.color.flatMap(Color.init(hex:)) ?? Color.white.opacity(0.06))
+                                    .frame(height: 240)
+                                    .overlay(ProgressView().tint(ink.opacity(0.6)))
+                            default:
+                                (image.color.flatMap(Color.init(hex:)) ?? Color.white.opacity(0.06))
+                                    .frame(height: 240)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+
+                    // Explicit grounding disclaimer (owner §5/§6): this is an EXAMPLE, not the user's scene.
+                    Text("Visual inspiration · Not a preview of your actual shot")
+                        .font(.system(size: 12)).foregroundStyle(ink.opacity(0.5))
+
+                    Text(title)
+                        .font(.system(size: 20, weight: .regular, design: .serif)).foregroundStyle(ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !instruction.isEmpty {
+                        Text(instruction)
+                            .font(.system(size: 16)).foregroundStyle(ink.opacity(0.85))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    // MANDATORY attribution — real photographer + Unsplash, linked with UTM (from the API).
+                    attribution
+
+                    Button(action: onClose) {
+                        Text("Back to camera")
+                            .font(.system(size: 16, weight: .semibold)).foregroundStyle(ink)
+                            .frame(maxWidth: .infinity).padding(.vertical, 15)
+                            .background(Color.white.opacity(0.08), in: Capsule())
+                    }
+                    .accessibilityIdentifier("framing-back")
+                    .padding(.top, 4)
+                }
+                .padding(20)
+            }
+        }
+    }
+
+    /// "Photo by <name> on Unsplash" — the photographer name links to their UTM-tagged profile, and the
+    /// whole line to the UTM-tagged source. Falls back to plain text if a link is missing/invalid.
+    @ViewBuilder private var attribution: some View {
+        let text = image.attributionText.isEmpty
+            ? "Photo by \(image.photographerName) on Unsplash" : image.attributionText
+        if let src = URL(string: image.sourceURL) {
+            Link(destination: src) {
+                Text(text).font(.system(size: 13)).foregroundStyle(ink.opacity(0.55))
+                    .underline().fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityIdentifier("framing-attribution")
+        } else {
+            Text(text).font(.system(size: 13)).foregroundStyle(ink.opacity(0.55))
+                .accessibilityIdentifier("framing-attribution")
+        }
+    }
+}
