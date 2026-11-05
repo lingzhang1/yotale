@@ -201,6 +201,9 @@ struct StoryGuideV2Section: View {
     /// Fetch ONE reference image for a scene (backend proxy). Returns nil => text-only card. Injected so the
     /// view stays testable and the network stays out of the view.
     var fetchImage: (_ scene: StoryGuideSceneDTO) async -> SceneImageDTO? = { _ in nil }
+    // Phase 1B (video mode): optional per-scene video + poster loaders; default no-ops keep image mode intact.
+    var fetchVideo: (_ scene: StoryGuideSceneDTO) async -> SceneVideoDTO? = { _ in nil }
+    var loadVideoPoster: (_ video: SceneVideoDTO) async -> Data? = { _ in nil }
     /// Fire Unsplash download-tracking when a scene image is actually shown-to-use (owner-documented rule).
     var trackImageUse: (_ image: SceneImageDTO) async -> Void = { _ in }
     // Guide v2.1 — "Update Guide" refinement + pin affordances (all optional; parent wires to the coordinator).
@@ -273,7 +276,9 @@ struct StoryGuideV2Section: View {
                         onTogglePin: { onTogglePin(hero.id) },
                         onShoot: { onShoot(hero, hero.capturePossibilities.first) },
                         fetchImage: { await fetchImage(hero) },
-                        trackImageUse: trackImageUse)
+                        trackImageUse: trackImageUse,
+                        fetchVideo: { await fetchVideo(hero) },
+                        loadVideoPoster: loadVideoPoster)
 
                     let others = g.scenes.filter { $0.id != hero.id }
                     if !others.isEmpty { otherScenes(others) }
@@ -484,8 +489,13 @@ private struct FeaturedSceneCard: View {
     let onShoot: () -> Void
     let fetchImage: () async -> SceneImageDTO?
     let trackImageUse: (SceneImageDTO) async -> Void
+    // Phase 1B: optional video hero (video mode only). nil closure/result => the image hero is used
+    // unchanged. loadVideoPoster fetches the compliant poster bytes via the backend (no hotlinking).
+    var fetchVideo: () async -> SceneVideoDTO? = { nil }
+    var loadVideoPoster: (SceneVideoDTO) async -> Data? = { _ in nil }
 
     @State private var image: SceneImageDTO?
+    @State private var video: SceneVideoDTO?
     @State private var whyExpanded = false
     // Per-scene image memo. The featured (hero) scene can change while the user browses — coverage updates
     // (e.g. an in-flight AU import flipping isCovered) reselect the hero, which re-fires `.task(id: scene.id)`.
@@ -495,8 +505,14 @@ private struct FeaturedSceneCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Prominent reference image (lazy, hotlinked) — only occupies space once an image exists.
-            if let img = image, let url = URL(string: img.imageURL) {
+            // Phase 1B video hero: in video mode, a poster+Play that plays inline on demand (one active
+            // player, aspect-correct, muted). Takes precedence over the photo hero; falls back to it.
+            if let v = video {
+                ReferenceVideoPlayer(video: v, loadPoster: { await loadVideoPoster(v) })
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 2)
+            } else if let img = image, let url = URL(string: img.imageURL) {
+                // Prominent reference image (lazy, hotlinked) — only occupies space once an image exists.
                 ZStack(alignment: .bottomLeading) {
                     CachedSceneImage(url: url) { placeholderBand }
                     .frame(height: 210).frame(maxWidth: .infinity).clipped()
@@ -594,7 +610,13 @@ private struct FeaturedSceneCard: View {
                 image = cached
                 return
             }
-            image = nil  // genuinely new scene with no cached image yet: show the text-only card until resolved
+            image = nil; video = nil  // new scene: text-only until resolved
+            // Phase 1B: in video mode try a video FIRST; on no-match fall back to the image hero. In image
+            // mode fetchVideo returns nil (closure no-op), so this is the unchanged image path.
+            if StoryGuideFeatures.referenceVideoEnabled, let v = await fetchVideo() {
+                video = v
+                return
+            }
             if let img = await fetchImage() {
                 // `.task(id:)` cancels + replaces this task if the hero changes mid-fetch, so reaching here
                 // means `scene` is still the shown hero. Cache and display; fire download-tracking once.

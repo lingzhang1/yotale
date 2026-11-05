@@ -45,4 +45,30 @@ enum StoryGuideFeatures {
     static let sceneImagesKey = "STORY_SCENE_IMAGES"
     static func setSceneImagesOverride(_ on: Bool) { UserDefaults.standard.set(on, forKey: sceneImagesKey) }
     private static let _sceneImagesDefault = true   // ships with v2; backend provisioned. Env "0" disables.
+
+    // MARK: - Reference-media mode (Phase 1B): image (Unsplash) | video (Pixabay)
+
+    /// ONE shared switch for BOTH surfaces (Shooting Idea + Story Guide), per owner §2/§4. `image` keeps the
+    /// existing Unsplash behavior and makes ZERO video requests; `video` shows a Pixabay reference video with
+    /// image/text fallback. Resolution order mirrors the other flags: env var -> UserDefaults -> compiled
+    /// default. Defaults SAFELY to `image` when missing or invalid, so a half-provisioned backend never
+    /// breaks the card. Independent of sceneImagesEnabled (which still gates whether images load at all).
+    enum ReferenceMediaMode: String { case image, video }
+
+    static var referenceMediaMode: ReferenceMediaMode {
+        if let env = ProcessInfo.processInfo.environment[referenceMediaKey],
+           let m = ReferenceMediaMode(rawValue: env.lowercased()) { return m }
+        if let raw = UserDefaults.standard.string(forKey: referenceMediaKey),
+           let m = ReferenceMediaMode(rawValue: raw.lowercased()) { return m }
+        return _referenceMediaDefault
+    }
+    /// True when the app should request/show reference VIDEOS. Also requires sceneImagesEnabled, which is the
+    /// master kill-switch for any reference-media network call.
+    static var referenceVideoEnabled: Bool { sceneImagesEnabled && referenceMediaMode == .video }
+
+    static let referenceMediaKey = "STORY_REFERENCE_MEDIA_MODE"
+    static func setReferenceMediaOverride(_ mode: ReferenceMediaMode) {
+        UserDefaults.standard.set(mode.rawValue, forKey: referenceMediaKey)
+    }
+    private static let _referenceMediaDefault = ReferenceMediaMode.image   // owner §4: safe default is image
 }
