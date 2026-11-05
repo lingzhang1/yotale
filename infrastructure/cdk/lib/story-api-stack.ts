@@ -159,6 +159,8 @@ export class StoryApiStack extends cdk.Stack {
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:YoTale-OpenAI-API-Key-??????`,
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:YoTale-Gemini-API-Key-??????`,
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:Unsplash-API-Key-??????`,
+      // Pixabay video API key for the /v1/scene-video proxy (Phase 1B reference videos).
+      `arn:aws:secretsmanager:${this.region}:${this.account}:secret:Pixabay_Video_API_KEY-??????`,
     ];
     instanceRole.addToPolicy(
       new iam.PolicyStatement({
