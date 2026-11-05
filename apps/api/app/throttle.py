@@ -81,6 +81,9 @@ ROUTE_CLASS: dict[tuple[str, str], str] = {
     # --- scene_image: paid Unsplash reference-image proxy (bounded; fail-soft) ---
     ("POST", "/v1/scene-image"): "music_provider",
     ("POST", "/v1/scene-image/track"): "read",  # cheap fire-and-forget download beacon
+    # --- scene_video: paid Pixabay reference-video provider (Phase 1B; bounded; fail-soft) ---
+    ("POST", "/v1/scene-video"): "music_provider",
+    ("POST", "/v1/scene-video/poster"): "read",  # cheap bounded poster byte fetch (compliance, not hotlinked)
     # --- ai_job_submit: async AI submissions ---
     ("POST", "/v1/edit-plan-jobs"): "ai_job_submit",
     ("POST", "/v1/story-coverage/v2/jobs"): "ai_job_submit",

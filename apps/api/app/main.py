@@ -95,6 +95,7 @@ from duration_planner import (
 from music_plan import MusicPlanEngine, MusicPlanInputs
 import music_provider as _mp
 import scene_image as _scene_image
+import scene_video as _scene_video
 from story_coverage_v2 import (
     CoverageV2Input,
     CoverageUnavailableError as CoverageV2UnavailableError,
@@ -337,6 +338,27 @@ class SceneImageTrackRequest(BaseModel):
     download_location: str = Field(..., description="the Unsplash download_location URL from a prior result")
 
 
+class SceneVideoRequest(BaseModel):
+    """POST /v1/scene-video body (Phase 1B). ONE Pixabay reference video for a Shooting Idea / Guide scene.
+    `query` is the generic reference query (same source as scene-image). `technique_text` is the shot's
+    framing/camera-motion/instruction text used ONLY to classify the requested camera technique server-side
+    (no new model call). story_id/scene_id are provenance only — never sent to the provider."""
+
+    model_config = ConfigDict(extra="forbid")
+    query: str = Field(..., description="generic scene/composition phrase (normalized + bounded server-side)")
+    technique_text: str | None = Field(default=None, description="generic shot framing/motion text (no PII)")
+    story_id: UUID | None = Field(default=None)
+    scene_id: str | None = Field(default=None)
+
+
+class SceneVideoPosterRequest(BaseModel):
+    """POST /v1/scene-video/poster body. Pixabay forbids image hotlinking, so the app asks the backend to
+    fetch ONE poster .jpg (SSRF-bounded to cdn.pixabay.com) from a prior scene-video result."""
+
+    model_config = ConfigDict(extra="forbid")
+    poster_url: str = Field(..., description="a cdn.pixabay.com poster URL returned by /v1/scene-video")
+
+
 class MusicDirectionRequest(BaseModel):
     """POST /v1/music-direction body (Milestone M-c). CreativeIntent + optional
     StoryGuide.framing_summary -> inferred MusicDirection (intended soundtrack feel).
@@ -536,6 +558,31 @@ def _scene_image_client():
         key = _scene_image.load_key()  # SceneImageAuthError if missing/denied/empty
         _SCENE_IMAGE_CLIENT = _scene_image.UnsplashClient(key)
     return _SCENE_IMAGE_CLIENT
+
+
+# Scene-VIDEO seams (Phase 1B, mirror the scene-image pattern). 24h cache per Pixabay's caching rule.
+_SCENE_VIDEO_CACHE = None
+_SCENE_VIDEO_CLIENT = None
+_SCENE_VIDEO_CLIENT_FACTORY = None  # type: ignore[var-annotated]
+
+
+def _scene_video_cache():
+    global _SCENE_VIDEO_CACHE
+    if _SCENE_VIDEO_CACHE is None:
+        _SCENE_VIDEO_CACHE = _scene_image.MetadataCache(ttl_seconds=86_400.0)  # Pixabay: cache 24h
+    return _SCENE_VIDEO_CACHE
+
+
+def _scene_video_client():
+    """Return a cached Pixabay client. Builds it from the Secrets Manager key on first use (raising
+    SceneVideoAuthError if the key cannot be read). A test factory, when set, wins and bypasses the key."""
+    global _SCENE_VIDEO_CLIENT
+    if _SCENE_VIDEO_CLIENT_FACTORY is not None:
+        return _SCENE_VIDEO_CLIENT_FACTORY()
+    if _SCENE_VIDEO_CLIENT is None:
+        key = _scene_video.load_key()  # SceneVideoAuthError if missing/denied/empty
+        _SCENE_VIDEO_CLIENT = _scene_video.PixabayClient(key)
+    return _SCENE_VIDEO_CLIENT
 
 
 def create_app() -> FastAPI:
@@ -1508,6 +1555,73 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
         return Response(status_code=204)
+
+    @app.post("/v1/scene-video", status_code=200)
+    def scene_video(
+        body: SceneVideoRequest,
+        principal: Principal = Depends(optional_user),
+    ):
+        """BOUNDED Pixabay reference-VIDEO lookup for ONE Shooting Idea / Guide scene (Phase 1B).
+
+        GATED by STORY_REFERENCE_MEDIA_MODE=video (404 otherwise, so image mode makes ZERO video calls).
+        `query` is normalized server-side (same rules as scene-image: punctuation/digit strip, URL/email
+        tokens removed — no personal data reaches Pixabay). `technique_text` classifies the requested camera
+        technique so the selection REJECTS movement conflicts (owner §5: a drone clip for a 'hold still' shot
+        is worse than no clip). Returns metadata only; the app streams preview_url (MP4 embedding is allowed)
+        and fetches poster_url via /v1/scene-video/poster (image hotlinking is not allowed). Responses cached
+        24h (Pixabay rule). FAIL-SOFT: disabled -> 404; any auth/provider/rate-limit/no-match -> 200 with
+        {video: null, status: ...} so the client falls back to the Unsplash image, then text."""
+        if not _scene_video.enabled():
+            raise HTTPException(status_code=404, detail="scene_video not enabled (STORY_REFERENCE_MEDIA_MODE != video)")
+        correlation_id = str(uuid4())
+        started = time.monotonic()
+        base = {"operation": "scene_video", "correlation_id": correlation_id, "provider": "pixabay"}
+        if _scene_image.normalize_query(body.query) is None:
+            log.info("scene_video_query_empty", extra={**base, "success": False})
+            return {"video": None, "status": "invalid_query"}
+        try:
+            client = _scene_video_client()
+        except _scene_video.SceneVideoAuthError as e:
+            log.warning("scene_video_auth_unavailable", extra={**base, "success": False, "error": str(e)[:160]})
+            return {"video": None, "status": "unavailable"}
+        try:
+            video = _scene_video.find_reference_video(
+                client, query=body.query, technique_text=body.technique_text, cache=_scene_video_cache())
+        except _scene_video.SceneVideoAuthError as e:
+            log.warning("scene_video_auth_rejected", extra={**base, "success": False, "error": str(e)[:160]})
+            return {"video": None, "status": "unavailable"}
+        except _scene_video.SceneVideoProviderError as e:
+            log.warning("scene_video_provider_error", extra={**base, "success": False, "error": str(e)[:160]})
+            return {"video": None, "status": "provider_error"}
+        if video is None:
+            log.info("scene_video_no_match", extra={**base, "success": True})
+            return {"video": None, "status": "no_match"}
+        log.info("scene_video_resolved",
+                 extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
+                        "success": True, "video_id": video.video_id,
+                        "technique": video.matched_technique, "is_ai": video.is_ai_generated})
+        return {"video": video.to_wire(), "status": "ok"}
+
+    @app.post("/v1/scene-video/poster", status_code=200)
+    def scene_video_poster(
+        body: SceneVideoPosterRequest,
+        principal: Principal = Depends(optional_user),
+    ):
+        """Fetch ONE Pixabay poster image and return its bytes (Pixabay forbids client hotlinking of images,
+        but permits video embedding). SSRF-bounded: only https://cdn.pixabay.com is ever fetched; any other
+        URL is refused. Gated by STORY_REFERENCE_MEDIA_MODE=video. Fail-soft: a fetch failure -> 404 so the
+        card shows the video with a neutral placeholder (never blocks the UI)."""
+        if not _scene_video.enabled():
+            raise HTTPException(status_code=404, detail="scene_video not enabled")
+        url = (body.poster_url or "").strip()
+        if not _scene_video.poster_is_allowed_host(url):
+            raise HTTPException(status_code=400, detail="poster_url host not allowed")
+        try:
+            data, ctype = _scene_video.fetch_poster(url)
+        except _scene_video.SceneVideoProviderError:
+            raise HTTPException(status_code=404, detail="poster unavailable")
+        # Posters are immutable CDN assets — let the app/edge cache for a day.
+        return Response(content=data, media_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
 
     @app.post("/v1/music-direction", response_model=MusicDirectionContract, status_code=200)
     def music_direction(
