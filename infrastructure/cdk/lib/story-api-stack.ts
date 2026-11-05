@@ -562,6 +562,14 @@ export class StoryApiStack extends cdk.Stack {
                 value: (this.node.tryGetContext("guideV2") as string) ?? "1" },
               { name: "STORY_SCENE_IMAGES",
                 value: (this.node.tryGetContext("sceneImages") as string) ?? "1" },
+              // Phase 1B reference-media mode (image=Unsplash photo | video=Pixabay clip). DURABLE here so a
+              // plain `cdk deploy` keeps it (a CLI-only env set is wiped by the next deploy). Default is
+              // "video" for ALL envs (owner 2026-11-05); override per-deploy with `-c referenceMedia=image`.
+              // Rollout is controlled by WHEN each env is deployed, not by the default. Requires
+              // Pixabay_Video_API_KEY in that account (present in dev; confirm before a beta/prod deploy —
+              // video + missing key fails soft to the image path, so it degrades rather than breaks).
+              { name: "STORY_REFERENCE_MEDIA_MODE",
+                value: (this.node.tryGetContext("referenceMedia") as string) ?? "video" },
               // P0 Beta Auth Increment 3: wire the (separately-provisioned) dev Cognito pool + identity
               // tables. These are non-secret resource identifiers (NOT credentials), read from context so prod
               // supplies its own; dev defaults match the provisioned story-development-auth stack.
