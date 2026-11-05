@@ -201,11 +201,12 @@ struct StoryGuideV2Section: View {
     /// Fetch ONE reference image for a scene (backend proxy). Returns nil => text-only card. Injected so the
     /// view stays testable and the network stays out of the view.
     var fetchImage: (_ scene: StoryGuideSceneDTO) async -> SceneImageDTO? = { _ in nil }
-    // Phase 1B (video mode): optional per-scene video + poster loaders; default no-ops keep image mode intact.
-    var fetchVideo: (_ scene: StoryGuideSceneDTO) async -> SceneVideoDTO? = { _ in nil }
-    var loadVideoPoster: (_ video: SceneVideoDTO) async -> Data? = { _ in nil }
     /// Fire Unsplash download-tracking when a scene image is actually shown-to-use (owner-documented rule).
     var trackImageUse: (_ image: SceneImageDTO) async -> Void = { _ in }
+    // Phase 1B (video mode): optional per-scene video + poster loaders; default no-ops keep image mode intact.
+    // Declared AFTER trackImageUse so the synthesized memberwise init's argument order matches the call site.
+    var fetchVideo: (_ scene: StoryGuideSceneDTO) async -> SceneVideoDTO? = { _ in nil }
+    var loadVideoPoster: (_ video: SceneVideoDTO) async -> Data? = { _ in nil }
     // Guide v2.1 — "Update Guide" refinement + pin affordances (all optional; parent wires to the coordinator).
     /// Submit a natural-language Guide update. Returns a short result summary (e.g. "2 added · 1 archived") on
     /// success, or throws for a recoverable error. ASYNC + non-blocking — the current script stays until it returns.
