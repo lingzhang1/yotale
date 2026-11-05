@@ -7,6 +7,7 @@
 | Product behavior and principles | [`production/story-production.md`](./production/story-production.md) |
 | MVP scope and build sequence | [`implementation-plan/mvp-build-plan.md`](./implementation-plan/mvp-build-plan.md) |
 | Shared data contracts (authoritative) | [`implementation-plan/02-core-story-schema.md`](./implementation-plan/02-core-story-schema.md) |
+| All milestones & experiments (index) | [`implementation-plan/00-milestones-and-experiments-index.md`](./implementation-plan/00-milestones-and-experiments-index.md) |
 
 ## Current Milestone
 
