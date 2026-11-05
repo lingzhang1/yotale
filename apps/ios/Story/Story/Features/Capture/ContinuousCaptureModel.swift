@@ -137,6 +137,13 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     private var imagesByIdeaKey: [String: SceneImageDTO?] = [:]
     private let sceneImageService: SceneImageFetching = SceneImageService()
 
+    // Phase 1B — reference VIDEO for the current idea (Pixabay), shown only in video mode. Same guarantees
+    // as the image path (one per idea, memoized, stale-dropped). In image mode this stays nil and no video
+    // request is made. The card prefers a video when present, else the image, else text.
+    @Published var currentIdeaVideo: SceneVideoDTO?
+    private var videosByIdeaKey: [String: SceneVideoDTO?] = [:]
+    private let sceneVideoService: SceneVideoFetching = SceneVideoService()
+
     // Camera controls (Package B Increment 1) — thin passthroughs to the shared controller. The
     // controller owns all device config (serialized + lock-guarded); the model only mirrors UI state.
     @Published var torchOn = false                     // reflects the torch button toggle
@@ -256,7 +263,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         guard !seedConsumed, seededIdea != nil else { return }
         seedConsumed = true
         aiState = .ideas
-        loadReferenceImageForCurrentIdea()   // optional photo for the seeded guide idea (non-blocking)
+        loadReferenceMediaForCurrentIdea()   // optional photo/video for the seeded guide idea (non-blocking)
     }
 
     func toggleRecording() { controller?.toggleRecording() }
@@ -292,7 +299,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     func nextIdea() {
         guard !ideas.isEmpty else { return }
         ideaIndex = (ideaIndex + 1) % ideas.count
-        loadReferenceImageForCurrentIdea()   // load/reuse this idea's image; clears the previous one
+        loadReferenceMediaForCurrentIdea()   // load/reuse this idea's media; clears the previous one
     }
 
     /// Dismiss the overlay. If ideas are cached, this COLLAPSES (keeps them for the chip); if a
@@ -397,6 +404,63 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         Task { [weak self] in await self?.sceneImageService.track(downloadLocation: loc) }
     }
 
+    // MARK: - Phase 1B reference-video loading (video mode only; mirrors the image path)
+
+    /// The shot's generic framing/camera-motion/instruction text, used by the backend ONLY to classify the
+    /// requested camera technique (no PII, no new model call). nil for a seeded guide idea (no Director shot).
+    private func currentTechniqueText() -> String? {
+        guard ideaIndex < ideas.count, let shot = ideas[ideaIndex].shot else { return nil }
+        return [shot.framing, shot.cameraMotion, shot.instruction].compactMap { $0 }
+            .joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Load (or reuse) the reference VIDEO for the current idea. No-op in image mode. Same memoize +
+    /// stale-drop guarantees as the image loader; the card shows video text immediately and the poster/clip
+    /// appear only if a confident match is found, else it falls back to the image path.
+    func loadReferenceVideoForCurrentIdea() {
+        guard StoryGuideFeatures.referenceVideoEnabled else { currentIdeaVideo = nil; return }
+        let key = currentIdeaKey
+        if let memo = videosByIdeaKey[key] { currentIdeaVideo = memo; return }
+        currentIdeaVideo = nil
+        guard let query = currentReferenceQuery() else { videosByIdeaKey[key] = nil; return }
+        let technique = currentTechniqueText()
+        let gen = aiGeneration
+        let idx = ideaIndex
+        Task { [weak self] in
+            guard let self else { return }
+            let dto = await self.sceneVideoService.fetch(query: query, technique: technique)
+            await MainActor.run {
+                guard gen == self.aiGeneration, idx == self.ideaIndex else { return }   // drop stale
+                self.videosByIdeaKey["\(gen)#\(idx)"] = dto
+                self.currentIdeaVideo = dto
+            }
+        }
+    }
+
+    /// Load the reference MEDIA for the current idea per the active mode: in video mode, fetch the video
+    /// (and still fetch the image as the fallback); in image mode, image only. One call per "idea shown".
+    func loadReferenceMediaForCurrentIdea() {
+        loadReferenceImageForCurrentIdea()      // always: the image is the video's fallback
+        if StoryGuideFeatures.referenceVideoEnabled { loadReferenceVideoForCurrentIdea() }
+    }
+
+    /// Load the current idea video's poster BYTES via the backend (Pixabay forbids image hotlinking).
+    /// Returns nil -> the player shows a neutral placeholder. Best-effort, never throws.
+    func loadIdeaVideoPoster() async -> Data? {
+        guard let video = currentIdeaVideo, !video.posterURL.isEmpty else { return nil }
+        let url = sceneVideoService.posterRequestURL()
+        guard let body = sceneVideoService.posterBody(for: video.posterURL) else { return nil }
+        var req = URLRequest(url: url)
+        StoryBackend.authorize(&req)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 6
+        req.httpBody = body
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty else { return nil }
+        return data
+    }
+
     /// A compact one-line reminder of the active idea, for the minimized recording state.
     var currentIdeaReminder: String? {
         if let s = seededIdea, ideas.isEmpty { return s.title.isEmpty ? nil : s.title }
@@ -411,6 +475,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         ideas = []; ideasOutput = nil; ideaIndex = 0
         seededIdea = nil            // Rescan replaces the seeded guide idea with live, scene-specific ideas
         currentIdeaImage = nil      // drop any shown photo; new generation key means no stale reuse
+        currentIdeaVideo = nil      // Phase 1B: drop any shown video too
         scanProgress = 0
         aiState = .scanning
         guard let controller else { aiState = .failed("Camera unavailable."); return }
@@ -468,7 +533,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
                 ideaIndex = 0
                 ideasCollapsed = false
                 aiState = .ideas
-                loadReferenceImageForCurrentIdea()   // async photo for idea 0; never blocks the card
+                loadReferenceMediaForCurrentIdea()   // async photo/video for idea 0; never blocks the card
             }
         } catch {
             // AI failure / quota exhaustion must NOT disable recording — just report, if still current.

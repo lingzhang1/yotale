@@ -53,6 +53,8 @@ struct StoryHomeView: View {
     @State private var coverageLoading = false
     // One scene-image service for the whole screen (its metadata cache is shared across scene cards).
     private let sceneImages = SceneImageService()
+    // Phase 1B: one scene-video service for the screen (video mode only; no-ops in image mode).
+    private let sceneVideos = SceneVideoService()
 
     private var coverageEngine: StoryCoverageEngine {
         StoryCoverageEngine(context: context)
@@ -212,6 +214,27 @@ struct StoryHomeView: View {
                             return await sceneImages.fetch(query: q, storyId: story.id, sceneId: scene.id)
                         },
                         trackImageUse: { img in await sceneImages.track(downloadLocation: img.downloadLocation) },
+                        fetchVideo: { scene in
+                            // Phase 1B: reuse the scene's server-authored visual_reference_query as the video
+                            // search, and the how-to-shoot text as the technique hint (no new model call).
+                            // nil in image mode (referenceVideoEnabled is false) or on no-match => image hero.
+                            guard let q = scene.visualReferenceQuery else { return nil }
+                            return await sceneVideos.fetch(query: q, technique: scene.howToShoot)
+                        },
+                        loadVideoPoster: { video in
+                            guard !video.posterURL.isEmpty,
+                                  let body = sceneVideos.posterBody(for: video.posterURL) else { return nil }
+                            var req = URLRequest(url: sceneVideos.posterRequestURL())
+                            StoryBackend.authorize(&req)
+                            req.httpMethod = "POST"
+                            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                            req.timeoutInterval = 6
+                            req.httpBody = body
+                            guard let (data, resp) = try? await URLSession.shared.data(for: req),
+                                  let http = resp as? HTTPURLResponse, http.statusCode == 200,
+                                  !data.isEmpty else { return nil }
+                            return data
+                        },
                         onUpdateGuide: { instruction in
                             // Guide v2.1 refinement: async, non-blocking; current script stays until a valid
                             // refined one replaces it. Returns a short summary, or nil on a recoverable failure.

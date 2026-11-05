@@ -140,7 +140,15 @@ struct ContinuousCaptureView: View {
             NavigationStack { MomentsLibraryView(libraryContext: .recentBrowse) }
         }
         .sheet(isPresented: $showFraming) {
-            if let img = model.currentIdeaImage {
+            if let video = model.currentIdeaVideo {
+                ShotFramingVideoReferenceView(
+                    video: video,
+                    title: model.currentIdeaTitle,
+                    instruction: model.currentIdeaBody,
+                    loadPoster: { await model.loadIdeaVideoPoster() },
+                    onClose: { showFraming = false }
+                )
+            } else if let img = model.currentIdeaImage {
                 ShotFramingReferenceView(
                     image: img,
                     title: model.currentIdeaTitle,
@@ -477,8 +485,18 @@ struct ContinuousCaptureView: View {
                 }
 
                 // Main row: optional thumbnail (left) + title/instruction/See-framing (right).
+                // Phase 1B: in video mode a Pixabay poster+Play badge takes the thumbnail slot; otherwise
+                // (or on video fallback) the Unsplash photo thumbnail, exactly as before.
                 HStack(alignment: .top, spacing: 14) {
-                    if let img = model.currentIdeaImage, let url = URL(string: img.thumbURL) {
+                    if let video = model.currentIdeaVideo {
+                        Button { openFraming() } label: {
+                            ReferenceVideoThumbnail(posterURL: URL(string: video.posterURL),
+                                                    loadPoster: { await model.loadIdeaVideoPoster() })
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("See framing. Video by \(video.contributor) on Pixabay")
+                        .accessibilityIdentifier("idea-reference-video-thumb")
+                    } else if let img = model.currentIdeaImage, let url = URL(string: img.thumbURL) {
                         Button { openFraming() } label: {
                             ReferenceThumbnail(url: url, colorHex: img.color)
                         }
@@ -993,6 +1011,112 @@ struct ShotFramingReferenceView: View {
         let text = image.attributionText.isEmpty
             ? "Photo by \(image.photographerName) on Unsplash" : image.attributionText
         if let src = URL(string: image.sourceURL) {
+            Link(destination: src) {
+                Text(text).font(.system(size: 13)).foregroundStyle(ink.opacity(0.55))
+                    .underline().fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityIdentifier("framing-attribution")
+        } else {
+            Text(text).font(.system(size: 13)).foregroundStyle(ink.opacity(0.55))
+                .accessibilityIdentifier("framing-attribution")
+        }
+    }
+}
+
+
+// MARK: - Phase 1B: reference-VIDEO components (poster thumbnail + expanded video "See framing")
+
+/// Compact reference thumbnail for the video card: the Pixabay poster (loaded via the backend — NOT
+/// hotlinked) with a Play badge, same 96pt rounded frame as the photo thumbnail. On poster failure it
+/// shows a neutral film tile (the card stays fully usable). Tapping opens the expanded video sheet.
+private struct ReferenceVideoThumbnail: View {
+    let posterURL: URL?
+    let loadPoster: () async -> Data?
+    @State private var poster: UIImage?
+
+    var body: some View {
+        ZStack {
+            if let poster {
+                Image(uiImage: poster).resizable().scaledToFill()
+            } else {
+                Color.white.opacity(0.08)
+                    .overlay(Image(systemName: "film").font(.system(size: 18)).foregroundStyle(.white.opacity(0.35)))
+            }
+            Image(systemName: "play.circle.fill")
+                .font(.system(size: 26)).foregroundStyle(.white.opacity(0.92)).shadow(radius: 4)
+        }
+        .frame(width: 96, height: 96)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.12), lineWidth: 1))
+        .task { if poster == nil { poster = (await loadPoster()).flatMap(UIImage.init(data:)) } }
+    }
+}
+
+/// Expanded "How to frame it" VIDEO reference (owner §6). The large static photo is replaced by the shared
+/// ReferenceVideoPlayer (muted, user-initiated, aspect-correct). Same disclaimer, title, instruction,
+/// MANDATORY Pixabay attribution, and "Back to camera". A sheet so it dismisses fast and returns to the
+/// SAME camera session — no Director call, no camera restart, no audio-session change.
+struct ShotFramingVideoReferenceView: View {
+    let video: SceneVideoDTO
+    let title: String
+    let instruction: String
+    let loadPoster: () async -> Data?
+    let onClose: () -> Void
+
+    private let ink = Color(red: 0.96, green: 0.94, blue: 0.91)
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Text("How to frame it")
+                            .font(.system(size: 20, weight: .semibold)).foregroundStyle(ink)
+                        Spacer()
+                        Button(action: onClose) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 16, weight: .semibold)).foregroundStyle(ink.opacity(0.7))
+                        }
+                        .accessibilityLabel("Close framing reference")
+                        .accessibilityIdentifier("framing-close")
+                    }
+                    .padding(.top, 8)
+
+                    ReferenceVideoPlayer(video: video, loadPoster: loadPoster)
+
+                    Text("Video example · Not your actual scene")
+                        .font(.system(size: 12)).foregroundStyle(ink.opacity(0.5))
+
+                    Text(title)
+                        .font(.system(size: 20, weight: .regular, design: .serif)).foregroundStyle(ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !instruction.isEmpty {
+                        Text(instruction)
+                            .font(.system(size: 16)).foregroundStyle(ink.opacity(0.85))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    attribution
+
+                    Button(action: onClose) {
+                        Text("Back to camera")
+                            .font(.system(size: 16, weight: .semibold)).foregroundStyle(ink)
+                            .frame(maxWidth: .infinity).padding(.vertical, 15)
+                            .background(Color.white.opacity(0.08), in: Capsule())
+                    }
+                    .accessibilityIdentifier("framing-back")
+                    .padding(.top, 4)
+                }
+                .padding(20)
+            }
+        }
+    }
+
+    /// "Video by <user> on Pixabay" — links to the UTM-tagged source page. Plain text if the link is missing.
+    @ViewBuilder private var attribution: some View {
+        let text = video.attributionText.isEmpty ? "Video by \(video.contributor) on Pixabay" : video.attributionText
+        if let src = URL(string: video.sourceURL) {
             Link(destination: src) {
                 Text(text).font(.system(size: 13)).foregroundStyle(ink.opacity(0.55))
                     .underline().fixedSize(horizontal: false, vertical: true)

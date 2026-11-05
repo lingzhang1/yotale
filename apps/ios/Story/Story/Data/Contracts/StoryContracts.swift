@@ -639,6 +639,53 @@ struct SceneImageResponseDTO: Codable, Equatable {
     let status: String
 }
 
+/// Metadata-only reference VIDEO (Phase 1B, from the backend /v1/scene-video proxy — Pixabay).
+/// `previewURL` is a cdn.pixabay.com MP4 the app streams DIRECTLY in AVPlayer (Pixabay permits video
+/// embedding). `posterURL` is a cdn.pixabay.com image that must NOT be hotlinked — the app loads it via
+/// the backend poster endpoint (SceneVideoService.posterRequestURL). Attribution is mandatory to show.
+struct SceneVideoDTO: Codable, Equatable {
+    let provider: String
+    let videoId: String
+    let previewURL: String
+    let posterURL: String
+    let sourceURL: String
+    let attributionText: String
+    let contributor: String
+    let tags: [String]
+    let duration: Int?
+    let width: Int?
+    let height: Int?
+    let aspectRatio: String?
+    let isAiGenerated: Bool?
+    let matchedQuery: String?
+    let matchedTechnique: String?
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case videoId = "video_id"
+        case previewURL = "preview_url"
+        case posterURL = "poster_url"
+        case sourceURL = "source_url"
+        case attributionText = "attribution_text"
+        case contributor, tags, duration, width, height
+        case aspectRatio = "aspect_ratio"
+        case isAiGenerated = "is_ai_generated"
+        case matchedQuery = "matched_query"
+        case matchedTechnique = "matched_technique"
+    }
+
+    /// Aspect ratio for AVPlayer layout; falls back to 16:9 when unknown so the player never collapses.
+    var aspect: CGFloat {
+        if let w = width, let h = height, w > 0, h > 0 { return CGFloat(w) / CGFloat(h) }
+        return 16.0 / 9.0
+    }
+}
+
+/// Envelope for /v1/scene-video: {video: SceneVideoDTO?, status: "ok"|"no_match"|...}.
+struct SceneVideoResponseDTO: Codable, Equatable {
+    let video: SceneVideoDTO?
+    let status: String
+}
+
 // MARK: - StoryCoverage/2 (E2-b, FROZEN) — Guide-relative state + independent sufficiency/idea
 
 struct DimensionCoverageDTO: Codable, Identifiable, Equatable {
