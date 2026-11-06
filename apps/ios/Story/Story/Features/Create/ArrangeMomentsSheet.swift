@@ -31,6 +31,8 @@ struct ArrangeMomentsSheet: View {
     /// Tap-reorder (accessibility): the id currently "picked up". Tapping another slot moves the picked id
     /// before it; tapping the same slot cancels. A keyboard/VoiceOver-friendly alternative to drag (owner §4).
     @State private var tapMoveId: UUID?
+    /// The card currently highlighted as the drop target while a Moment is being dragged over it.
+    @State private var dropTargetId: UUID?
 
     init(numbering: StoryMomentNumbering,
          momentForId: @escaping (UUID) -> MomentModel?,
@@ -103,7 +105,7 @@ struct ArrangeMomentsSheet: View {
             Text("Your sequence").font(StoryTheme.body(16, .semibold)).foregroundStyle(StoryTheme.cream)
             Spacer()
             if orderedIds.isEmpty {
-                Text("Drag to reorder").font(StoryTheme.body(12)).foregroundStyle(StoryTheme.textMuted)
+                Text("Press and hold to drag").font(StoryTheme.body(12)).foregroundStyle(StoryTheme.textMuted)
             } else {
                 Button("Reset to AI order") { orderedIds = []; tapMoveId = nil }
                     .font(StoryTheme.body(13)).foregroundStyle(StoryTheme.gold)
@@ -128,14 +130,37 @@ struct ArrangeMomentsSheet: View {
     // ---- storyboard: the ordered cards, drag + tap reorder -------------------------------------------
 
     private var storyboard: some View {
+        // NOTE: `.onMove` only works inside a List, not a VStack — it never fired here. Reordering is done with
+        // native drag-and-drop on each card instead (`draggable` + `dropDestination`, see `card`), which works
+        // in a ScrollView, lifts the card under the finger, and keeps scrolling usable (press-and-hold to drag).
         VStack(spacing: 10) {
-            ForEach(Array(orderedIds.enumerated()), id: \.element) { idx, id in
-                card(index: idx, id: id)
-            }
-            .onMove { from, to in
-                orderedIds.move(fromOffsets: from, toOffset: to)   // native drag reorder (identity preserved)
+            ForEach(orderedIds, id: \.self) { id in
+                card(index: orderedIds.firstIndex(of: id) ?? 0, id: id)
             }
         }
+    }
+
+    /// Drop `dragged` onto the card `target`: the dragged Moment takes the target's position (identity-based,
+    /// via MomentSequence.move so the order logic is the single tested implementation).
+    private func moveDragged(_ dragged: UUID, onto target: UUID) {
+        guard dragged != target,
+              let from = orderedIds.firstIndex(of: dragged),
+              let to = orderedIds.firstIndex(of: target) else { return }
+        var seq = MomentSequence(orderedIds: orderedIds, policy: policy)
+        seq.move(from: from, to: to)
+        withAnimation(.easeInOut(duration: 0.18)) { orderedIds = seq.orderedIds }
+        tapMoveId = nil
+    }
+
+    /// The lifted-card preview shown under the finger while dragging.
+    private func dragPreview(_ id: UUID) -> some View {
+        HStack(spacing: 10) {
+            thumb(id).frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: StoryTheme.field))
+            Text(number(id).map { "Moment \($0)" } ?? "Moment")
+                .font(StoryTheme.body(15, .semibold)).foregroundStyle(StoryTheme.cream)
+        }
+        .padding(8)
+        .background(StoryTheme.surface, in: RoundedRectangle(cornerRadius: StoryTheme.field))
     }
 
     /// One storyboard card. Shows the thumbnail, Moment number, duration, a role label (Opening/Next/Ending),
@@ -189,8 +214,21 @@ struct ArrangeMomentsSheet: View {
         }
         .padding(10)
         .background(StoryTheme.surface, in: RoundedRectangle(cornerRadius: StoryTheme.field))
+        // Gold ring on the card currently under a dragged Moment, so the drop position is obvious.
+        .overlay(RoundedRectangle(cornerRadius: StoryTheme.field)
+            .stroke(dropTargetId == id ? StoryTheme.gold : Color.clear, lineWidth: 2))
         .contentShape(Rectangle())
         .onTapGesture { if tapMoveId != nil { handleTapMove(on: id) } }
+        // Native drag-and-drop: press-and-hold the card, drag, release on another card.
+        .draggable(id.uuidString) { dragPreview(id) }
+        .dropDestination(for: String.self) { items, _ in
+            guard let raw = items.first, let dragged = UUID(uuidString: raw) else { return false }
+            moveDragged(dragged, onto: id)
+            dropTargetId = nil
+            return true
+        } isTargeted: { targeted in
+            if targeted { dropTargetId = id } else if dropTargetId == id { dropTargetId = nil }
+        }
     }
 
     /// Tap-reorder state machine: first tap picks up `id`; a second tap on a DIFFERENT card moves the picked

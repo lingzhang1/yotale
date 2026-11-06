@@ -126,6 +126,39 @@ final class MomentSequenceTests: XCTestCase {
         XCTAssertEqual(back?.policy, .onlySelected)
     }
 
+    // ---- regression: previous version's Moments must not leak into the next version -----------------------
+
+    func test_saved_directives_drop_storyboard_owned_slots_keep_the_rest() {
+        var saved = ResolvedDirectives()
+        saved.mustInclude = [a, b, c]            // the previous version's whole Moment list
+        saved.orderAfter = [[b, a], [c, b]]      // and its order chain
+        saved.opening = d
+        saved.exclude = [c]
+        let kept = saved.withoutStoryboardOwned()
+        XCTAssertEqual(kept?.mustInclude, [], "must_include belongs to the storyboard, not a stale copy")
+        XCTAssertEqual(kept?.orderAfter, [])
+        XCTAssertEqual(kept?.opening, d, "typed-text structure (opening) is preserved")
+        XCTAssertEqual(kept?.exclude, [c], "exclude is preserved")
+    }
+
+    func test_saved_directives_with_only_storyboard_slots_become_nil() {
+        var saved = ResolvedDirectives()
+        saved.mustInclude = [a, b]
+        saved.orderAfter = [[b, a]]
+        XCTAssertNil(saved.withoutStoryboardOwned(), "nothing left => nil, so no phantom 'saved directive' remains")
+    }
+
+    func test_pruned_sequence_is_the_only_source_of_must_include() {
+        // New version: previous list was [a,b,c,d]; the user pruned the sequence to [b,d].
+        var saved = ResolvedDirectives()
+        saved.mustInclude = [a, b, c, d]
+        saved.orderAfter = [[b, a], [c, b], [d, c]]
+        var request = saved.withoutStoryboardOwned() ?? ResolvedDirectives()
+        MomentSequence(orderedIds: [b, d], policy: .onlySelected).apply(to: &request)
+        XCTAssertEqual(Set(request.mustInclude), [b, d], "no stale a/c leak back in")
+        XCTAssertEqual(request.orderAfter, [[d, b]])
+    }
+
     func test_inactive_sequence_serializes_nil() {
         XCTAssertNil(MomentSequence().toJSON(), "an inactive sequence has no draft to persist")
         XCTAssertNil(MomentSequence.fromJSON(nil))

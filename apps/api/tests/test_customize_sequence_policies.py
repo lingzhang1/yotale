@@ -164,6 +164,25 @@ def test_policyB_wrong_order_within_selected_still_ships_and_discloses():
     assert "ordering" in {m["code"] for m in a["material_unmet"]}
 
 
+# ---- regression (device test 2026-11-06): stale must_include outside the allowed set -------------------
+
+def test_policyB_stale_must_include_outside_allowed_set_is_a_hard_reference_error():
+    # The device bug: a new version's request carried the PREVIOUS version's must_include (an id that is no
+    # longer in the restricted moments[]). The validator reports it as a HARD reference error
+    # ("not in the eligible source set" -> directive_ref_ineligible -> invalid_after_repair). This pins WHY the
+    # client must not carry the old list forward; the iOS fix strips storyboard-owned slots from saved sets.
+    stale = {"must_include": [M3, M7, M12, M_OTHER], "order_after": [[M7, M3], [M12, M7]]}
+    inp = _inputs_only_selected(revision_context=_rev(stale))      # moments[] = {3,7,12}; M_OTHER absent
+    hard = _hard_errors(_plan([M3, M7, M12]), inp)
+    assert any("not in the eligible source set" in e for e in hard), hard
+
+
+def test_policyB_directives_limited_to_allowed_set_have_no_hard_errors():
+    # After the fix the request's directives reference ONLY arranged Moments -> no hard reference error.
+    inp = _inputs_only_selected(revision_context=_rev(_seq_directives()))
+    assert not _hard_errors(_plan([M3, M7, M12]), inp)
+
+
 # ---- default (no sequence): no ordering/inclusion objective at all -------------------------------------
 
 def test_default_no_sequence_imposes_no_objective():

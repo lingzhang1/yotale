@@ -136,3 +136,20 @@ struct MomentSequence: Codable, Equatable {
         return s
     }
 }
+
+// MARK: - Storyboard ownership of inclusion + order
+
+extension ResolvedDirectives {
+    /// The storyboard OWNS must_include and order_after: it rewrites both from the arranged sequence on every
+    /// Create. A saved set from a PREVIOUS version must therefore not carry those two slots forward — they
+    /// re-listed every old Moment on a new version and, once the user pruned the sequence, were merged back
+    /// into the request referencing Moments outside the arranged set (directive_ref_ineligible ->
+    /// invalid_after_repair). Keeps opening, ending, exclude and adjacency (typed-text structure). Returns nil
+    /// when nothing is left.
+    func withoutStoryboardOwned() -> ResolvedDirectives? {
+        var out = self
+        out.mustInclude = []
+        out.orderAfter = []
+        return out.isEmpty ? nil : out
+    }
+}

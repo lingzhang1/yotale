@@ -129,7 +129,6 @@ struct CustomizeYourStoryView: View {
     // Stage 2 Creative Direction (optional). Draft text + reference chips, resolved to directives on Create.
     @State private var creativeDirection: String
     @State private var chips: [MomentReferenceChipModel]
-    @State private var showReferencePicker = false
     // Customize UX v2 — the visual-storyboard sequence (ordered Moments + policy). Inactive by default ("AI
     // chooses order"); opening Arrange edits it. Persisted in the draft so close/reopen is non-destructive.
     @State private var momentSequence: MomentSequence
@@ -155,6 +154,7 @@ struct CustomizeYourStoryView: View {
          initialCreativeDirection: String = "", initialReferenceChipIds: [UUID] = [],
          initialExplicitTargetSeconds: Double? = nil, initialEditorialMode: String? = nil,
          initialSavedDirectives: ResolvedDirectives? = nil,
+         initialMomentSequence: MomentSequence? = nil,
          onCreate: @escaping (Double, SoundPreference, String, EditingApproach, ResolvedDirectives?, String, [UUID], ParsedMusicIntent, MomentSequence) -> Void,
          onCancel: @escaping () -> Void) {
         self.rec = rec; self.inferredSound = inferredSound; self.initialExplicitSound = initialExplicitSound
@@ -163,9 +163,16 @@ struct CustomizeYourStoryView: View {
         self.initialCreativeDirection = initialCreativeDirection; self.initialReferenceChipIds = initialReferenceChipIds
         self.initialExplicitTargetSeconds = initialExplicitTargetSeconds
         self.initialEditorialMode = initialEditorialMode
-        self.initialSavedDirectives = initialSavedDirectives
+        // The storyboard OWNS inclusion (must_include) and relative order (order_after). The previous version's
+        // copies of those must never be carried forward as a second, hidden source — they re-listed every old
+        // Moment on a new version and, after the user pruned the sequence, were merged back into the request and
+        // referenced Moments outside the arranged set (-> directive_ref_ineligible / invalid_after_repair).
+        // Typed-text directives re-derive from the persisted instruction text on Create, so dropping the stale
+        // copies loses nothing the user can still see.
+        let keptSaved = initialSavedDirectives?.withoutStoryboardOwned()
+        self.initialSavedDirectives = keptSaved
         self.onCreate = onCreate; self.onCancel = onCancel
-        _savedDirectives = State(initialValue: initialSavedDirectives)
+        _savedDirectives = State(initialValue: keptSaved)
         // Default length: prefer the Story's EXISTING editorial mode when re-opening (issue 1); else Full Story
         // when a recommended point exists, else Custom. A prior exact "custom" target seeds the Custom row so
         // the user's explicit length is shown (not silently reset to the recommendation).
@@ -188,45 +195,16 @@ struct CustomizeYourStoryView: View {
         // Seed Creative Direction draft (survives navigation / failed generation). Chips re-derive their display
         // number from the current numbering snapshot; an id no longer present is dropped (surfaced on Create).
         _creativeDirection = State(initialValue: initialCreativeDirection)
-        _chips = State(initialValue: numbering.items
-            .filter { initialReferenceChipIds.contains($0.id) }
-            .map { MomentReferenceChipModel(id: $0.id, displayNumber: $0.number) })
-        // Customize UX v2: seed the storyboard from the saved directives so re-opening shows the arranged
-        // sequence (owner §4 draft persistence). An explicit sequence persists as must_include + an order_after
-        // chain; reconstruct the order from that chain when present. Inactive (AI order) when no sequence saved.
-        _momentSequence = State(initialValue:
-            Self.seedSequence(from: initialSavedDirectives, numbering: numbering))
-    }
-
-    /// Reconstruct a MomentSequence from persisted directives (owner §4). The storyboard saves an ordered
-    /// sequence as must_include + an order_after chain [[b,a],[c,b],...]; we rebuild the order by following the
-    /// chain. Returns an inactive sequence (AI order) when no ordered sequence is present. Policy is not
-    /// recoverable from directives alone (exclude isn't used for Policy B), so it defaults to .allowOthers —
-    /// the conservative choice (never silently restricts the source set on reopen).
-    private static func seedSequence(from directives: ResolvedDirectives?,
-                                     numbering: StoryMomentNumbering) -> MomentSequence {
-        guard let d = directives, !d.orderAfter.isEmpty || !d.mustInclude.isEmpty else { return MomentSequence() }
-        // Build the order from the order_after chain: pairs are [after, before]. Find the head (a `before`
-        // that is never an `after`) and walk forward. Fall back to must_include order if the chain is broken.
-        let afters = d.orderAfter.filter { $0.count == 2 }
-        if !afters.isEmpty {
-            let afterSet = Set(afters.map { $0[0] })          // ids that come after something
-            let befores = afters.map { $0[1] }
-            let heads = befores.filter { !afterSet.contains($0) }
-            if let head = heads.first {
-                var ordered = [head]
-                let nextOf = Dictionary(afters.map { ($0[1], $0[0]) }, uniquingKeysWith: { a, _ in a })
-                var cur = head
-                var guardN = 0
-                while let nxt = nextOf[cur], guardN < 256 { ordered.append(nxt); cur = nxt; guardN += 1 }
-                // Only Moments still present in the snapshot survive (a deleted Moment drops out — owner §10).
-                let present = ordered.filter { numbering.contains(id: $0) }
-                if present.count >= 2 { return MomentSequence(orderedIds: present, policy: .allowOthers) }
-            }
-        }
-        // No usable chain: treat must_include as an unordered selection (still shows as a sequence to edit).
-        let inc = d.mustInclude.filter { numbering.contains(id: $0) }
-        return inc.isEmpty ? MomentSequence() : MomentSequence(orderedIds: inc, policy: .allowOthers)
+        // The old Moment-chip list is gone from this screen (the Arrange sheet is the one place Moments are
+        // chosen), so no chips are re-seeded from a previous version. `initialReferenceChipIds` is ignored.
+        _chips = State(initialValue: [])
+        // Seed the storyboard from the PERSISTED sequence (ordered ids + policy), so re-opening shows exactly
+        // what was arranged, including "only the selected". Ids no longer present in the snapshot drop out
+        // (deleted Moments); a sequence left with nothing is inactive ("AI chooses order").
+        let present = (initialMomentSequence?.orderedIds ?? []).filter { numbering.contains(id: $0) }
+        _momentSequence = State(initialValue: present.isEmpty
+            ? MomentSequence()
+            : MomentSequence(orderedIds: present, policy: initialMomentSequence?.policy ?? .allowOthers))
     }
 
     private var ceiling: Double { max(rec.recommendation?.feasibleCeilingSeconds ?? 60, rec.evidence.feasibleBandSeconds.last ?? 60) }
@@ -335,7 +313,6 @@ struct CustomizeYourStoryView: View {
                         // (append-only, never replacing typed text). Moment-reference picker stays accessible
                         // but unobtrusive, beside the chips.
                         suggestionChipRow
-                        MomentReferenceChipRow(chips: chips) { id in chips.removeAll { $0.id == id } }
                         if let clarification {
                             Text(clarification).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.danger)
                         }
@@ -400,16 +377,6 @@ struct CustomizeYourStoryView: View {
             .overlay(Rectangle().frame(height: 1).foregroundStyle(StoryTheme.cream.opacity(0.08)), alignment: .top)
         }
         .onDisappear { interpretToken = UUID() }   // drop any in-flight interpretation on dismissal (#1)
-        .sheet(isPresented: $showReferencePicker) {
-            MomentReferencePicker(
-                numbering: numbering,
-                momentForId: momentForId,
-                alreadyReferenced: Set(chips.map(\.id)),
-                onConfirm: { ids in
-                    chips = numbering.items.filter { ids.contains($0.id) }
-                        .map { MomentReferenceChipModel(id: $0.id, displayNumber: $0.number) }
-                })
-        }
         // Customize UX v2: the visual storyboard. Edits momentSequence in place; the draft persists in @State
         // so closing/reopening Customize is non-destructive (owner §4).
         .sheet(isPresented: $showArrange) {

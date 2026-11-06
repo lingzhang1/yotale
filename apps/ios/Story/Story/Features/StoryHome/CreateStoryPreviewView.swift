@@ -474,13 +474,10 @@ struct CreateStoryPreviewView: View {
                 numbering: StoryMomentNumbering(story: story.moments),
                 momentForId: { id in story.moments.first { $0.id == id } },
                 initialCreativeDirection: story.creativeDirectionText ?? "",
-                // Seed ONLY must_include as visual chips. Chips are an INCLUDE-only control
-                // (CustomizeYourStoryView maps every chip to slot .include), so folding opening/ending/exclude
-                // ids in here silently DOWNGRADES them to must_include on every round-trip through this sheet —
-                // the opening directive was being destroyed, which is why "Start with Moment N" never moved the
-                // clip to the front. opening/ending survive via the typed creativeDirectionText above, not chips.
-                initialReferenceChipIds: ResolvedDirectives.fromWireJSON(story.creativeDirectivesJSON)
-                    .map { $0.mustInclude } ?? [],
+                // Customize UX v2: the Moment-chip list is gone — Moments are chosen ONLY in the Arrange sheet,
+                // so nothing is seeded as chips (re-listing the previous version's Moments here was the bug).
+                // opening/ending still survive via the typed creativeDirectionText above.
+                initialReferenceChipIds: [],
                 // Issue 1: prefill the Story's existing length so re-opening Customize shows the prior choice
                 // (explicit custom seconds or the editorial mode) instead of silently resetting.
                 initialExplicitTargetSeconds: story.intentTargetDurationSeconds,
@@ -488,6 +485,8 @@ struct CreateStoryPreviewView: View {
                 // Part B: surface ALL persisted structural directives (opening/adjacency/order/include/exclude)
                 // so the user can see + clear them, not just the must_include chips + soft text.
                 initialSavedDirectives: ResolvedDirectives.fromWireJSON(story.creativeDirectivesJSON),
+                // The arranged storyboard (ordered ids + policy) round-trips from its own persisted field.
+                initialMomentSequence: MomentSequence.fromJSON(story.momentSequenceJSON),
                 onCreate: { seconds, sound, mode, approach, directives, soft, chipIds, music, sequence in
                     acceptCustomize(seconds: seconds, sound: sound, mode: mode, approach: approach,
                                     directives: directives, soft: soft, chipIds: chipIds, music: music,
