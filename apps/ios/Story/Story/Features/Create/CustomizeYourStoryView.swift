@@ -134,6 +134,9 @@ struct CustomizeYourStoryView: View {
     @State private var momentSequence: MomentSequence
     @State private var showArrange = false
     @State private var showMoodSheet = false   // Customize UX v2 §9: compact single-select Mood sheet
+    /// Selected SOFT quick shortcuts (shorter shots, cut to the beat, ...). Toggles that ride soft_direction at
+    /// submit; deliberately never written into the instruction text the interpreter reads.
+    @State private var softShortcuts: Set<QuickShortcut> = []
     @State private var clarification: String?
     // Interpretation lifecycle (owner safeguards #1/#2): guard duplicate taps, drop stale async responses, and
     // carry a retryable failure. `interpretToken` is bumped on every input edit / dismissal so a response that
@@ -194,7 +197,13 @@ struct CustomizeYourStoryView: View {
             bandLo: rec.evidence.feasibleBandSeconds.first, bandHi: rec.evidence.feasibleBandSeconds.last))
         // Seed Creative Direction draft (survives navigation / failed generation). Chips re-derive their display
         // number from the current numbering snapshot; an id no longer present is dropped (surfaced on Create).
-        _creativeDirection = State(initialValue: initialCreativeDirection)
+        // The saved draft text is the planner's FULL soft direction, which includes sentences WE generated
+        // (soft shortcuts + the Mood preset phrase). Separate them back out so only the user's own words land in
+        // the text box (and reach the interpreter); the generated parts restore as toggles / the Mood row.
+        let split = Self.splitGeneratedSoft(initialCreativeDirection)
+        _creativeDirection = State(initialValue: split.userText)
+        _softShortcuts = State(initialValue: split.shortcuts)
+        _selectedPresets = State(initialValue: split.preset.map { [$0] } ?? [])
         // The old Moment-chip list is gone from this screen (the Arrange sheet is the one place Moments are
         // chosen), so no chips are re-seeded from a previous version. `initialReferenceChipIds` is ignored.
         _chips = State(initialValue: [])
@@ -205,6 +214,17 @@ struct CustomizeYourStoryView: View {
         _momentSequence = State(initialValue: present.isEmpty
             ? MomentSequence()
             : MomentSequence(orderedIds: present, policy: initialMomentSequence?.policy ?? .allowOthers))
+    }
+
+    /// Split a saved soft-direction draft into the user's own words + the soft shortcuts / Mood preset the app
+    /// generated (see GeneratedSoftSplitter). Only the user's words are returned as text.
+    private static func splitGeneratedSoft(_ text: String)
+        -> (userText: String, shortcuts: Set<QuickShortcut>, preset: StylePreset?) {
+        let shortcutPhrases = QuickShortcut.allCases.map(\.phrase).filter { !$0.isEmpty }
+        let r = GeneratedSoftSplitter.split(text, generated: shortcutPhrases + StylePreset.allCases.map(\.directionPhrase))
+        let shortcuts = Set(QuickShortcut.allCases.filter { !$0.phrase.isEmpty && r.matched.contains($0.phrase) })
+        let preset = StylePreset.allCases.first { r.matched.contains($0.directionPhrase) }
+        return (r.userText, shortcuts, preset)
     }
 
     private var ceiling: Double { max(rec.recommendation?.feasibleCeilingSeconds ?? 60, rec.evidence.feasibleBandSeconds.last ?? 60) }
@@ -410,6 +430,7 @@ struct CustomizeYourStoryView: View {
         let snapshotText = creativeDirection.trimmingCharacters(in: .whitespacesAndNewlines)
         let snapshotChips = chips
         let snapshotSequence = momentSequence      // Customize UX v2: the arranged storyboard at submit time
+        let snapshotShortcuts = softShortcuts      // soft quick-shortcut toggles at submit time
         let snapshotNumbering = numbering
         let token = UUID()
         interpretToken = token
@@ -479,6 +500,13 @@ struct CustomizeYourStoryView: View {
                 let contribution = StylePresetContribution.from(
                     selectedPresets, userHasMusicPreference: music.preference != nil)
                 var effectiveSoft = snapshotText
+                // Soft quick shortcuts ride soft_direction AFTER interpretation (never interpreted, so they can
+                // never raise a clarify). Stable order; user's own words always come first.
+                let shortcutSuffix = QuickShortcut.allCases
+                    .filter { snapshotShortcuts.contains($0) }.map(\.phrase).joined(separator: ". ")
+                if !shortcutSuffix.isEmpty {
+                    effectiveSoft = effectiveSoft.isEmpty ? shortcutSuffix : effectiveSoft + ". " + shortcutSuffix
+                }
                 if !contribution.directionSuffix.isEmpty {
                     effectiveSoft = effectiveSoft.isEmpty
                         ? contribution.directionSuffix
@@ -503,10 +531,12 @@ struct CustomizeYourStoryView: View {
     private func clarificationText(_ o: InterpretationOutcome) -> String {
         if !o.unresolvedMomentNumbers.isEmpty {
             let list = o.unresolvedMomentNumbers.map { "Moment \($0)" }.joined(separator: ", ")
-            return "\(list) couldn't be matched (this Story has \(numbering.count)). Pick it with “Add Moment reference”, or rephrase."
+            return "\(list) couldn't be matched (this Story has \(numbering.count)). Choose Moments with “Arrange Moments”, or rephrase."
         }
         if !o.unresolved.isEmpty {
-            return o.unresolved.joined(separator: " ") + " Try rephrasing, or use “Add Moment reference” to pick it."
+            // "Add Moment reference" no longer exists on this screen; point at what does.
+            return "I couldn’t apply: “" + o.unresolved.joined(separator: "”, “")
+                + "”. Try rephrasing it, or use “Arrange Moments” to set the order."
         }
         if let b = o.blocking.first { return b }
         return "Please rephrase your instruction so I can apply it."
@@ -574,19 +604,24 @@ struct CustomizeYourStoryView: View {
             // with / Use every Moment) reuse the STORYBOARD so there is ONE ordering system (never a second
             // competing one, never "type a Moment number"). The rest append plain NL text to the draft.
             ForEach(QuickShortcut.allCases, id: \.self) { sc in
+                let on = softShortcuts.contains(sc)
                 Button { handleShortcut(sc) } label: {
                     HStack(spacing: 5) {
-                        Image(systemName: sc.icon).font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(sc.isStructural ? StoryTheme.gold : StoryTheme.textSecondary)
-                        Text(sc.label).font(StoryTheme.body(13, .medium)).foregroundStyle(StoryTheme.cream)
+                        Image(systemName: on ? "checkmark" : sc.icon).font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(on ? StoryTheme.ink : (sc.isStructural ? StoryTheme.gold : StoryTheme.textSecondary))
+                        Text(sc.label).font(StoryTheme.body(13, .medium))
+                            .foregroundStyle(on ? StoryTheme.ink : StoryTheme.cream)
                     }
                     .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(on ? StoryTheme.cream : Color.clear, in: Capsule())
                     .overlay(Capsule().stroke(
-                        (sc.isStructural ? StoryTheme.gold : StoryTheme.cream).opacity(sc.isStructural ? 0.5 : 0.14),
+                        on ? StoryTheme.gold
+                           : (sc.isStructural ? StoryTheme.gold : StoryTheme.cream).opacity(sc.isStructural ? 0.5 : 0.14),
                         lineWidth: 1))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(sc.accessibilityLabel)
+                .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
             }
         }
     }
@@ -661,7 +696,10 @@ struct CustomizeYourStoryView: View {
             momentSequence = seq
             showArrange = true   // open so the user can see/confirm/reorder; nothing is silently forced
         default:
-            appendSuggestion(sc.phrase)
+            // Soft preference: a TOGGLE, not text. It is added to the planner's soft_direction at submit (like
+            // the Mood preset) and never goes through the AI interpreter — the interpreter files a pacing/music
+            // sentence under "unsupported" at times, which blocked Create with a misleading clarify message.
+            if softShortcuts.contains(sc) { softShortcuts.remove(sc) } else { softShortcuts.insert(sc) }
         }
     }
 
