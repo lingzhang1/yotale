@@ -131,6 +131,10 @@ struct CustomizeYourStoryView: View {
     @State private var creativeDirection: String
     @State private var chips: [MomentReferenceChipModel]
     @State private var showReferencePicker = false
+    // Customize UX v2 — the visual-storyboard sequence (ordered Moments + policy). Inactive by default ("AI
+    // chooses order"); opening Arrange edits it. Persisted in the draft so close/reopen is non-destructive.
+    @State private var momentSequence: MomentSequence
+    @State private var showArrange = false
     @State private var clarification: String?
     // Interpretation lifecycle (owner safeguards #1/#2): guard duplicate taps, drop stale async responses, and
     // carry a retryable failure. `interpretToken` is bumped on every input edit / dismissal so a response that
@@ -187,6 +191,42 @@ struct CustomizeYourStoryView: View {
         _chips = State(initialValue: numbering.items
             .filter { initialReferenceChipIds.contains($0.id) }
             .map { MomentReferenceChipModel(id: $0.id, displayNumber: $0.number) })
+        // Customize UX v2: seed the storyboard from the saved directives so re-opening shows the arranged
+        // sequence (owner §4 draft persistence). An explicit sequence persists as must_include + an order_after
+        // chain; reconstruct the order from that chain when present. Inactive (AI order) when no sequence saved.
+        _momentSequence = State(initialValue:
+            Self.seedSequence(from: initialSavedDirectives, numbering: numbering))
+    }
+
+    /// Reconstruct a MomentSequence from persisted directives (owner §4). The storyboard saves an ordered
+    /// sequence as must_include + an order_after chain [[b,a],[c,b],...]; we rebuild the order by following the
+    /// chain. Returns an inactive sequence (AI order) when no ordered sequence is present. Policy is not
+    /// recoverable from directives alone (exclude isn't used for Policy B), so it defaults to .allowOthers —
+    /// the conservative choice (never silently restricts the source set on reopen).
+    private static func seedSequence(from directives: ResolvedDirectives?,
+                                     numbering: StoryMomentNumbering) -> MomentSequence {
+        guard let d = directives, !d.orderAfter.isEmpty || !d.mustInclude.isEmpty else { return MomentSequence() }
+        // Build the order from the order_after chain: pairs are [after, before]. Find the head (a `before`
+        // that is never an `after`) and walk forward. Fall back to must_include order if the chain is broken.
+        let afters = d.orderAfter.filter { $0.count == 2 }
+        if !afters.isEmpty {
+            let afterSet = Set(afters.map { $0[0] })          // ids that come after something
+            let befores = afters.map { $0[1] }
+            let heads = befores.filter { !afterSet.contains($0) }
+            if let head = heads.first {
+                var ordered = [head]
+                let nextOf = Dictionary(afters.map { ($0[1], $0[0]) }, uniquingKeysWith: { a, _ in a })
+                var cur = head
+                var guardN = 0
+                while let nxt = nextOf[cur], guardN < 256 { ordered.append(nxt); cur = nxt; guardN += 1 }
+                // Only Moments still present in the snapshot survive (a deleted Moment drops out — owner §10).
+                let present = ordered.filter { numbering.contains(id: $0) }
+                if present.count >= 2 { return MomentSequence(orderedIds: present, policy: .allowOthers) }
+            }
+        }
+        // No usable chain: treat must_include as an unordered selection (still shows as a sequence to edit).
+        let inc = d.mustInclude.filter { numbering.contains(id: $0) }
+        return inc.isEmpty ? MomentSequence() : MomentSequence(orderedIds: inc, policy: .allowOthers)
     }
 
     private var ceiling: Double { max(rec.recommendation?.feasibleCeilingSeconds ?? 60, rec.evidence.feasibleBandSeconds.last ?? 60) }
@@ -314,6 +354,10 @@ struct CustomizeYourStoryView: View {
                     }
                 }
 
+                // 3b. MOMENT SEQUENCE (Customize UX v2 §3/§4) — optional visual storyboard. Default "AI chooses
+                // order"; Arrange opens the drag-to-order sheet. No all-Moment chips on the main screen.
+                if numbering.count > 0 { momentSequenceSection }
+
                 // 4. FEELING / STYLE PRESETS (§7) — optional, initial small set, independent of type.
                 feelSection
 
@@ -366,6 +410,15 @@ struct CustomizeYourStoryView: View {
                         .map { MomentReferenceChipModel(id: $0.id, displayNumber: $0.number) }
                 })
         }
+        // Customize UX v2: the visual storyboard. Edits momentSequence in place; the draft persists in @State
+        // so closing/reopening Customize is non-destructive (owner §4).
+        .sheet(isPresented: $showArrange) {
+            ArrangeMomentsSheet(
+                numbering: numbering,
+                momentForId: momentForId,
+                initial: momentSequence,
+                onSave: { momentSequence = $0 })
+        }
         .cloudAuthGate(cloudGate)
     }
 
@@ -388,6 +441,7 @@ struct CustomizeYourStoryView: View {
         // Immutable submission snapshot (#1): the exact values the user sees right now.
         let snapshotText = creativeDirection.trimmingCharacters(in: .whitespacesAndNewlines)
         let snapshotChips = chips
+        let snapshotSequence = momentSequence      // Customize UX v2: the arranged storyboard at submit time
         let snapshotNumbering = numbering
         let token = UUID()
         interpretToken = token
@@ -439,6 +493,12 @@ struct CustomizeYourStoryView: View {
                     for p in saved.orderAfter where !directives.orderAfter.contains(p) { directives.orderAfter.append(p) }
                     for p in saved.orderAdjacent where !directives.orderAdjacent.contains(p) { directives.orderAdjacent.append(p) }
                 }
+                // Customize UX v2: fold the visual storyboard into the directives. An ACTIVE sequence adds its
+                // Moments as must_include and its relative order as an order_after chain (ordering stays an
+                // OBJECTIVE on the backend — never promoted to HARD). The allowed-source-set for Policy B rides
+                // separately (sequencePolicyForBuild below), applied by filtering moments[] — NOT via exclude.
+                let seq = snapshotSequence
+                seq.apply(to: &directives)
                 let finalDirectives: ResolvedDirectives? = directives.isEmpty ? nil : directives
                 var music = MomentReferenceResolver.parseMusicIntent(snapshotText)
                 if !musicSuffix.isEmpty { clarification = outcome.unsupportedMusicNote }  // non-blocking note
@@ -588,6 +648,44 @@ struct CustomizeYourStoryView: View {
         case .highlights: return ["Beautiful views first", "Follow the music", "Keep original audio"]
         case .full:       return ["Show the whole journey", "Follow the music", "Keep original audio"]
         }
+    }
+
+    /// MOMENT SEQUENCE (Customize UX v2 §3/§4) — a compact row: "AI chooses order" by default, or a short
+    /// summary of the arranged sequence, with an "Arrange" button opening the storyboard sheet. Tapping the
+    /// row (or Arrange) opens ArrangeMomentsSheet. No all-Moment chips on the main screen (owner §3).
+    @ViewBuilder private var momentSequenceSection: some View {
+        Button { showArrange = true } label: {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Moment sequence").font(StoryTheme.body(17, .semibold)).foregroundStyle(StoryTheme.cream)
+                    Text(sequenceSummary).font(StoryTheme.body(13)).foregroundStyle(StoryTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                HStack(spacing: 5) {
+                    Text(momentSequence.isActive ? "Edit" : "Arrange")
+                        .font(StoryTheme.body(14, .medium)).foregroundStyle(StoryTheme.cream)
+                    Image(systemName: "arrow.right").font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(StoryTheme.cream)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .overlay(Capsule().stroke(StoryTheme.cream.opacity(0.25), lineWidth: 1))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Moment sequence. \(sequenceSummary)")
+        .accessibilityHint("Opens the storyboard to choose and arrange Moments")
+    }
+
+    /// The compact one-line summary under "Moment sequence". Default = "AI chooses order"; active = the order
+    /// + policy in plain words. Never presents the order as a guarantee (owner §6 — "intended").
+    private var sequenceSummary: String {
+        guard momentSequence.isActive else { return "AI chooses order" }
+        let nums = momentSequence.orderedIds.compactMap { numbering.number(forId: $0) }.map(String.init)
+        let order = nums.joined(separator: " → ")
+        let policy = momentSequence.policy == .onlySelected ? "only these Moments" : "others allowed between"
+        return "\(nums.count) arranged · \(order) · \(policy)"
     }
 
     /// FEELING / STYLE (§7) — optional, initial small set (Cinematic/Energetic/Emotional/Playful) with an
