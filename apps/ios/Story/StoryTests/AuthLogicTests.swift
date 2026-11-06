@@ -58,13 +58,18 @@ final class AuthLogicTests: XCTestCase {
         XCTAssertNil(AuthHelpers.unverifiedSub(fromJWT: "not-a-jwt"))
     }
 
-    // MARK: Token expiry uses a proactive skew
-    func test_tokens_expired_uses_60s_skew() {
-        let almost = AuthTokens(accessToken: "a", idToken: "i", refreshToken: "r",
-                                expiresAt: Date().addingTimeInterval(30), storyUserId: nil)
-        XCTAssertTrue(almost.isExpired, "within 60s of expiry should be treated as expired for proactive refresh")
+    // MARK: Token expiry uses a proactive refresh margin wide enough to cover a full AI-ideas chain
+    func test_tokens_expired_uses_proactive_refresh_margin() {
+        // A token expiring within the margin is treated as expired so it refreshes BEFORE a long AI call
+        // (scene-understanding + director can exceed a minute), never crossing an expiry boundary mid-chain.
+        let withinMargin = AuthTokens(accessToken: "a", idToken: "i", refreshToken: "r",
+                                      expiresAt: Date().addingTimeInterval(AuthTokens.refreshMargin - 30),
+                                      storyUserId: nil)
+        XCTAssertTrue(withinMargin.isExpired, "within refreshMargin of expiry must trigger a proactive refresh")
+        // A token comfortably beyond the margin is still valid.
         let fresh = AuthTokens(accessToken: "a", idToken: "i", refreshToken: "r",
-                               expiresAt: Date().addingTimeInterval(600), storyUserId: nil)
+                               expiresAt: Date().addingTimeInterval(AuthTokens.refreshMargin + 300),
+                               storyUserId: nil)
         XCTAssertFalse(fresh.isExpired)
     }
 

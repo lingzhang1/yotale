@@ -66,7 +66,15 @@ struct AuthTokens: Codable, Equatable {
     /// re-resolve the canonical id rather than trust a possibly-`sub` value. Defaulted for migration safety.
     var canonicalResolved: Bool = false
 
-    var isExpired: Bool { Date() >= expiresAt.addingTimeInterval(-60) }  // 60s skew for proactive refresh
+    /// Proactive-refresh safety margin. A model-backed AI flow chains several long calls (scene-understanding
+    /// ~14-20s, then director ~20s), so a token valid at the START of the chain can expire MID-flight and 401
+    /// a later call. We refresh when the token is within this margin of expiry, comfortably covering one full
+    /// AI-ideas chain plus clock skew, so the chain never crosses an expiry boundary.
+    static let refreshMargin: TimeInterval = 120
+
+    /// True when the access token is expired OR within `refreshMargin` of expiry — i.e. should be refreshed
+    /// BEFORE the next cloud call rather than reactively after a 401.
+    var isExpired: Bool { Date() >= expiresAt.addingTimeInterval(-AuthTokens.refreshMargin) }
 }
 
 /// OTP resend cooldown policy (pure). Enforces a 60s window between code requests.
