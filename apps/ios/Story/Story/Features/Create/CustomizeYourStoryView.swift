@@ -38,7 +38,7 @@ struct CustomizeYourStoryView: View {
     /// when none), the SOFT creative-direction text, the chip ids, and the parsed MUSIC intent — so the caller
     /// persists the draft, forwards directives + soft_direction to the edit planner, and routes an explicit
     /// music preference to MusicPlan (owner Music-Routing §1).
-    let onCreate: (Double, SoundPreference, String, EditingApproach, ResolvedDirectives?, String, [UUID], ParsedMusicIntent) -> Void
+    let onCreate: (Double, SoundPreference, String, EditingApproach, ResolvedDirectives?, String, [UUID], ParsedMusicIntent, MomentSequence) -> Void
     let onCancel: () -> Void
 
     enum LengthChoice: Hashable { case highlights, full, custom
@@ -118,7 +118,6 @@ struct CustomizeYourStoryView: View {
     @State private var videoType: VideoType          // P1-D PRIMARY selection
     @State private var durationChoice: DurationChoice // P1-D independent duration (Recommended/Custom)
     @State private var moreOptionsExpanded = false    // P1-D §8 — collapsed by default
-    @State private var showMoreFeels = false          // P1-D §7 — reveal the rest of the style presets
     @State private var sound: SoundPreference
     @State private var approach: EditingApproach
     @State private var customSeconds: Double
@@ -135,6 +134,7 @@ struct CustomizeYourStoryView: View {
     // chooses order"); opening Arrange edits it. Persisted in the draft so close/reopen is non-destructive.
     @State private var momentSequence: MomentSequence
     @State private var showArrange = false
+    @State private var showMoodSheet = false   // Customize UX v2 §9: compact single-select Mood sheet
     @State private var clarification: String?
     // Interpretation lifecycle (owner safeguards #1/#2): guard duplicate taps, drop stale async responses, and
     // carry a retryable failure. `interpretToken` is bumped on every input edit / dismissal so a response that
@@ -155,7 +155,7 @@ struct CustomizeYourStoryView: View {
          initialCreativeDirection: String = "", initialReferenceChipIds: [UUID] = [],
          initialExplicitTargetSeconds: Double? = nil, initialEditorialMode: String? = nil,
          initialSavedDirectives: ResolvedDirectives? = nil,
-         onCreate: @escaping (Double, SoundPreference, String, EditingApproach, ResolvedDirectives?, String, [UUID], ParsedMusicIntent) -> Void,
+         onCreate: @escaping (Double, SoundPreference, String, EditingApproach, ResolvedDirectives?, String, [UUID], ParsedMusicIntent, MomentSequence) -> Void,
          onCancel: @escaping () -> Void) {
         self.rec = rec; self.inferredSound = inferredSound; self.initialExplicitSound = initialExplicitSound
         self.initialEditingApproach = initialEditingApproach; self.visualFirstAvailable = visualFirstAvailable
@@ -419,6 +419,7 @@ struct CustomizeYourStoryView: View {
                 initial: momentSequence,
                 onSave: { momentSequence = $0 })
         }
+        .sheet(isPresented: $showMoodSheet) { moodSheet }   // Customize UX v2 §9
         .cloudAuthGate(cloudGate)
     }
 
@@ -524,7 +525,7 @@ struct CustomizeYourStoryView: View {
                 }
 
                 onCreate(p1dChosenSeconds, sound, p1dMode, approach, finalDirectives,
-                         effectiveSoft, snapshotChips.map(\.id), music)
+                         effectiveSoft, snapshotChips.map(\.id), music, snapshotSequence)
             }
         }
     }
@@ -602,29 +603,98 @@ struct CustomizeYourStoryView: View {
     /// directive semantics are unchanged. The Moment-reference picker stays accessible but unobtrusive.
     @ViewBuilder private var suggestionChipRow: some View {
         FlowLayout(spacing: 8) {
-            ForEach(p1dSuggestions, id: \.self) { phrase in
-                Button { appendSuggestion(phrase) } label: {
+            // Customize UX v2 §8 — actionable quick shortcuts. Structural ones (Arrange / Start with / End
+            // with / Use every Moment) reuse the STORYBOARD so there is ONE ordering system (never a second
+            // competing one, never "type a Moment number"). The rest append plain NL text to the draft.
+            ForEach(QuickShortcut.allCases, id: \.self) { sc in
+                Button { handleShortcut(sc) } label: {
                     HStack(spacing: 5) {
-                        Text(phrase).font(StoryTheme.body(13, .medium)).foregroundStyle(StoryTheme.cream)
-                        Image(systemName: "plus").font(.system(size: 10, weight: .bold)).foregroundStyle(StoryTheme.textSecondary)
+                        Image(systemName: sc.icon).font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(sc.isStructural ? StoryTheme.gold : StoryTheme.textSecondary)
+                        Text(sc.label).font(StoryTheme.body(13, .medium)).foregroundStyle(StoryTheme.cream)
                     }
                     .padding(.horizontal, 12).padding(.vertical, 8)
-                    .overlay(Capsule().stroke(StoryTheme.cream.opacity(0.14), lineWidth: 1))
+                    .overlay(Capsule().stroke(
+                        (sc.isStructural ? StoryTheme.gold : StoryTheme.cream).opacity(sc.isStructural ? 0.5 : 0.14),
+                        lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Add instruction: \(phrase)")
+                .accessibilityLabel(sc.accessibilityLabel)
             }
-            Button { showReferencePicker = true } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "photo.on.rectangle.angled").font(.system(size: 12, weight: .semibold))
-                    Text("Moment").font(StoryTheme.body(13, .medium))
-                }
-                .foregroundStyle(StoryTheme.gold)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .overlay(Capsule().stroke(StoryTheme.gold.opacity(0.5), lineWidth: 1))
+        }
+    }
+
+    /// The §8 quick-editing shortcuts. `isStructural` ones drive the storyboard (one ordering system);
+    /// the others append a supported NL phrase to the creative-direction draft.
+    private enum QuickShortcut: CaseIterable {
+        case arrange, startWith, endWith, useEvery, shorterShots, longerShots, cutToBeat, keepAudio
+
+        var label: String {
+            switch self {
+            case .arrange:      return "Arrange Moments"
+            case .startWith:    return "Start with…"
+            case .endWith:      return "End with…"
+            case .useEvery:     return "Use every Moment"
+            case .shorterShots: return "Shorter shots"
+            case .longerShots:  return "Longer scenic shots"
+            case .cutToBeat:    return "Cut to the beat"
+            case .keepAudio:    return "Keep original audio"
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Add Moment reference")
+        }
+        /// Structural shortcuts reuse the storyboard (ordering/inclusion), so they open Arrange rather than
+        /// typing text. Non-structural ones are soft creative phrases appended to the NL draft.
+        var isStructural: Bool {
+            switch self {
+            case .arrange, .startWith, .endWith, .useEvery: return true
+            default: return false
+            }
+        }
+        var icon: String {
+            switch self {
+            case .arrange:      return "rectangle.stack"
+            case .startWith:    return "arrow.up.to.line"
+            case .endWith:      return "arrow.down.to.line"
+            case .useEvery:     return "square.grid.2x2"
+            case .shorterShots: return "scissors"
+            case .longerShots:  return "mountain.2"
+            case .cutToBeat:    return "metronome"
+            case .keepAudio:    return "waveform"
+            }
+        }
+        /// The NL phrase appended for a non-structural shortcut (a SUPPORTED soft-direction phrasing — owner
+        /// §8: shot-duration hints refer to output EXCERPTS, never promise exact per-shot timing).
+        var phrase: String {
+            switch self {
+            case .shorterShots: return "Prefer shorter, punchier shots"
+            case .longerShots:  return "Let the scenic shots breathe a little longer"
+            case .cutToBeat:    return "Make the cuts follow the music"
+            case .keepAudio:    return "Keep the original audio from the clips"
+            default:            return ""
+            }
+        }
+        var accessibilityLabel: String {
+            isStructural ? "\(label): opens the storyboard" : "Add instruction: \(label)"
+        }
+    }
+
+    /// Route a quick shortcut. Structural -> the storyboard (ONE ordering system, owner §8); the user picks
+    /// the opening/ending/order visually there, never by typing a Moment number. Soft -> append NL text.
+    private func handleShortcut(_ sc: QuickShortcut) {
+        switch sc {
+        case .arrange, .startWith, .endWith:
+            // All three open the same storyboard. Start/End are framed by the storyboard's first/last slot
+            // (role labels Opening/Ending), so there is no separate opening/ending directive UI to drift.
+            showArrange = true
+        case .useEvery:
+            // "Use every Moment" = at least an excerpt from each eligible Moment (owner §8), expressed as an
+            // active sequence over ALL Moments. Policy stays .allowOthers (require each; order is the snapshot
+            // order the user can then rearrange) — NOT .onlySelected, since "use every" is about inclusion.
+            var seq = MomentSequence(orderedIds: momentSequence.orderedIds, policy: momentSequence.policy)
+            seq.addAll(numbering.items.map(\.id))
+            momentSequence = seq
+            showArrange = true   // open so the user can see/confirm/reorder; nothing is silently forced
+        default:
+            appendSuggestion(sc.phrase)
         }
     }
 
@@ -691,39 +761,76 @@ struct CustomizeYourStoryView: View {
     /// FEELING / STYLE (§7) — optional, initial small set (Cinematic/Energetic/Emotional/Playful) with an
     /// unobtrusive reveal for the rest. Multi-select, independent of Video Type, folded per-output only.
     @ViewBuilder private var feelSection: some View {
-        let initial: [StylePreset] = StylePreset.allCases.filter { ["Cinematic","Energetic","Emotional","Playful"].contains($0.label) }
-        let rest = StylePreset.allCases.filter { !initial.contains($0) }
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Text("Give it a feel").font(StoryTheme.body(17, .semibold)).foregroundStyle(StoryTheme.cream)
+        // Customize UX v2 §9 — ONE compact optional row, not a chip grid. Shows the chosen mood or "No
+        // preference"; tapping opens a single-select sheet (5 options + Clear). Mood is a SOFT preference: it
+        // rides soft_direction + the music seed EXACTLY as before (selectedPresets is still the plumbing), so
+        // nothing downstream changes — it just never overrides ordering/inclusion/sound/music decisions (§9).
+        Button { showMoodSheet = true } label: {
+            HStack {
+                Text("Mood").font(StoryTheme.body(17, .semibold)).foregroundStyle(StoryTheme.cream)
                 Text("Optional").font(StoryTheme.body(13)).foregroundStyle(StoryTheme.textMuted)
+                Spacer()
+                HStack(spacing: 5) {
+                    Text(moodLabel).font(StoryTheme.body(14)).foregroundStyle(StoryTheme.cream.opacity(0.85))
+                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(StoryTheme.textMuted)
+                }
             }
-            let cols = [GridItem(.adaptive(minimum: 104), spacing: 8)]
-            LazyVGrid(columns: cols, alignment: .leading, spacing: 8) {
-                ForEach(showMoreFeels ? StylePreset.allCases : initial) { preset in feelChip(preset) }
-            }
-            if !rest.isEmpty {
-                Button { withAnimation(.easeInOut(duration: 0.12)) { showMoreFeels.toggle() } } label: {
-                    Text(showMoreFeels ? "Fewer" : "More feels")
-                        .font(StoryTheme.body(13, .medium)).foregroundStyle(StoryTheme.gold)
-                }.buttonStyle(.plain)
-            }
-        }
-    }
-
-    @ViewBuilder private func feelChip(_ preset: StylePreset) -> some View {
-        let on = selectedPresets.contains(preset)
-        Button {
-            if on { selectedPresets.remove(preset) } else { selectedPresets.insert(preset) }
-        } label: {
-            Text(preset.label)
-                .font(StoryTheme.body(14, .medium)).foregroundStyle(on ? StoryTheme.ink : StoryTheme.cream)
-                .padding(.horizontal, 16).padding(.vertical, 9).frame(maxWidth: .infinity)
-                .background(on ? StoryTheme.cream : StoryTheme.surfaceAlt.opacity(0.6), in: Capsule())
-                .overlay(Capsule().stroke(on ? StoryTheme.gold : StoryTheme.cream.opacity(0.12), lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Mood, optional. \(moodLabel)")
+        .accessibilityHint("Opens a list of moods to choose one")
+    }
+
+    /// The 5 compact §9 moods, each a friendly label over an existing StylePreset (so the soft-direction +
+    /// music-seed plumbing is unchanged). Single-select: choosing one replaces any prior; Clear empties it.
+    private var moodOptions: [(label: String, preset: StylePreset)] {
+        [("Calm & scenic", .calm), ("Fast & energetic", .energetic), ("Warm & personal", .emotional),
+         ("Playful", .playful), ("Cinematic", .cinematic)]
+    }
+
+    /// The row's trailing text: the chosen mood's friendly label, or "No preference" when none is set.
+    private var moodLabel: String {
+        guard let p = selectedPresets.first,
+              let m = moodOptions.first(where: { $0.preset == p }) else { return "No preference" }
+        return m.label
+    }
+
+    /// The single-select Mood sheet (§9): 5 options + Clear. Choosing one sets exactly one preset (mood is
+    /// single-select here even though selectedPresets is a Set — we keep at most one so downstream phrasing is
+    /// a single clear mood, never a pile of conflicting feels).
+    @ViewBuilder private var moodSheet: some View {
+        NavigationStack {
+            List {
+                ForEach(moodOptions, id: \.preset) { opt in
+                    Button {
+                        selectedPresets = [opt.preset]; showMoodSheet = false
+                    } label: {
+                        HStack {
+                            Text(opt.label).foregroundStyle(StoryTheme.cream)
+                            Spacer()
+                            if selectedPresets.first == opt.preset {
+                                Image(systemName: "checkmark").foregroundStyle(StoryTheme.gold)
+                            }
+                        }
+                    }
+                    .listRowBackground(StoryTheme.surface)
+                }
+                Button(role: .destructive) {
+                    selectedPresets = []; showMoodSheet = false
+                } label: { Text("Clear — no preference") }
+                    .listRowBackground(StoryTheme.surface)
+            }
+            .scrollContentBackground(.hidden).background(StoryTheme.ink)
+            .navigationTitle("Overall mood").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showMoodSheet = false }.foregroundStyle(StoryTheme.gold)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 
     /// MORE OPTIONS (§8) — one collapsed-by-default section holding Duration · Sound · Music.

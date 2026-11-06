@@ -412,6 +412,7 @@ extension StorySyncCoordinator {
         story.editorialMode = sd["editorial_mode"] as? String
         story.editingApproachExplicit = sd["editing_approach_explicit"] as? String
         story.creativeDirectivesJSON = sd["creative_directives_json"] as? String
+        story.momentSequenceJSON = sd["moment_sequence_json"] as? String   // Customize UX v2: storyboard seq
         story.creativeDirectionText = sd["creative_direction_text"] as? String
         story.eventContext = sd["event_context"] as? String   // Guide v2.1: persistent event context
         story.planOperationId = sd["plan_operation_id"] as? String
@@ -483,6 +484,7 @@ extension StorySyncCoordinator {
         copy.soundPreferenceExplicit = src.soundPreferenceExplicit
         copy.editorialMode = src.editorialMode; copy.editingApproachExplicit = src.editingApproachExplicit
         copy.creativeDirectivesJSON = src.creativeDirectivesJSON
+        copy.momentSequenceJSON = src.momentSequenceJSON
         copy.creativeDirectionText = src.creativeDirectionText
         copy.eventContext = src.eventContext
         context.insert(copy)
