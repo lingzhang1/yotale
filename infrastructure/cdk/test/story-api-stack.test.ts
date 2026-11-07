@@ -440,19 +440,21 @@ describe("P0 Beta Observability construct", () => {
     const roles = t.findResources("AWS::IAM::Role");
     const trustSubs = JSON.stringify(Object.values(roles).map((r: any) => r.Properties.AssumeRolePolicyDocument));
     // beta role trusts environment:beta ...
-    expect(trustSubs).toContain("repo:lingzhang1*/story*:environment:beta");
+    expect(trustSubs).toContain("repo:lingzhang1@*/yotale@*:environment:beta");
     // ... and NOT environment:development (no cross-environment trust)
-    expect(trustSubs).not.toContain("repo:lingzhang1*/story*:environment:development");
+    expect(trustSubs).not.toContain("repo:lingzhang1@*/yotale@*:environment:development");
   });
 
-  test("issue 1: owner/repo pattern is preserved unchanged (numeric-id tolerant, trust not broadened)", () => {
+  test("issue 1: owner/repo pattern anchors the yotale immutable subject (numeric-id tolerant, trust not broadened)", () => {
     const t = synthWith({ environment: "beta", observability: "false" });
     const roles = t.findResources("AWS::IAM::Role");
     const trust = JSON.stringify(Object.values(roles).map((r: any) => r.Properties.AssumeRolePolicyDocument));
-    // The exact verified owner/repo glob is intact — only the environment segment changed.
-    expect(trust).toContain("repo:lingzhang1*/story*:environment:");
+    // Anchored on owner login + repo NAME, tolerating GitHub's numeric owner/repo id qualifier with `@*`.
+    // Only the environment segment is parameterized; the obsolete `story` identity must NOT appear.
+    expect(trust).toContain("repo:lingzhang1@*/yotale@*:environment:");
+    expect(trust).not.toContain("repo:lingzhang1*/story*:environment:");
     // No wildcard environment (would broaden trust to every GitHub Environment).
-    expect(trust).not.toContain("repo:lingzhang1*/story*:environment:*");
+    expect(trust).not.toContain("repo:lingzhang1@*/yotale@*:environment:*");
   });
 
   test("issue 2: beta synthesis FAILS without an explicit image digest (no :latest fallback)", () => {
