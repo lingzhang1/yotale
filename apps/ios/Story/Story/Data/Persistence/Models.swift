@@ -122,6 +122,15 @@ final class StoryModel {
     // Set only when the user adds references in Creative Direction; never overwritten by inference/retry.
     var creativeDirectivesJSON: String?
 
+    // Customize UX v2 (owner 2026-11-06) — the user's arranged visual-storyboard SEQUENCE: the encoded
+    // MomentSequence {orderedIds, policy}. Distinct from creativeDirectivesJSON: the sequence's INCLUSION +
+    // RELATIVE ORDER are ALSO folded into creativeDirectivesJSON (must_include + order_after, so the planner
+    // and all existing directive paths see them unchanged). This field additionally preserves the chosen
+    // POLICY so a Policy-B ("use only selected") run can restrict the planner's moments[] via the eligibility
+    // mechanism — a concern the directive wire shape alone cannot express. Additive migration (optional +
+    // defaulted nil); nil = no arranged sequence => full AI editorial freedom, behavior unchanged.
+    var momentSequenceJSON: String?
+
     // Stage 2 Creative Direction SOFT preferences — the user's free-text creative direction captured on the
     // Customize screen ("make the cuts faster", "use the most visually striking footage first"). DRAFT TEXT:
     // survives navigation + a failed generation so the Customize sheet can repopulate it. Additive migration

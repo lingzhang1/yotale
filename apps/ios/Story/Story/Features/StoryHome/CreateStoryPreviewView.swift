@@ -151,7 +151,7 @@ struct CreateStoryPreviewView: View {
     /// or navigation keeps what the user typed.
     private func acceptCustomize(seconds: Double, sound: SoundPreference, mode: String, approach: EditingApproach,
                                  directives: ResolvedDirectives?, soft: String, chipIds: [UUID],
-                                 music: ParsedMusicIntent) {
+                                 music: ParsedMusicIntent, sequence: MomentSequence) {
         durationRec = nil
         story.intentTargetDurationSeconds = (seconds * 10).rounded() / 10
         story.soundPreferenceExplicit = sound.rawValue   // explicit choice; never overwritten by inference
@@ -162,6 +162,11 @@ struct CreateStoryPreviewView: View {
         // the factual Story description (intentText). Beat-sync lives INSIDE `soft` (edit-planner only) — it is
         // intentionally not routed to music, so matching cuts to the music never changes the soundtrack (§1).
         story.creativeDirectivesJSON = directives?.toWireJSON()
+        // Customize UX v2: persist the arranged storyboard sequence (ordered ids + policy). Its inclusion +
+        // relative order already rode into creativeDirectivesJSON above (must_include + order_after); this
+        // additionally preserves the POLICY so a Policy-B run can restrict the planner's moments[]. An inactive
+        // sequence serializes nil -> cleared (full AI freedom), never silently retained.
+        story.momentSequenceJSON = sequence.toJSON()
         let trimmedSoft = soft.trimmingCharacters(in: .whitespacesAndNewlines)
         story.creativeDirectionText = trimmedSoft.isEmpty ? nil : trimmedSoft
         try? context.save()
@@ -469,13 +474,10 @@ struct CreateStoryPreviewView: View {
                 numbering: StoryMomentNumbering(story: story.moments),
                 momentForId: { id in story.moments.first { $0.id == id } },
                 initialCreativeDirection: story.creativeDirectionText ?? "",
-                // Seed ONLY must_include as visual chips. Chips are an INCLUDE-only control
-                // (CustomizeYourStoryView maps every chip to slot .include), so folding opening/ending/exclude
-                // ids in here silently DOWNGRADES them to must_include on every round-trip through this sheet —
-                // the opening directive was being destroyed, which is why "Start with Moment N" never moved the
-                // clip to the front. opening/ending survive via the typed creativeDirectionText above, not chips.
-                initialReferenceChipIds: ResolvedDirectives.fromWireJSON(story.creativeDirectivesJSON)
-                    .map { $0.mustInclude } ?? [],
+                // Customize UX v2: the Moment-chip list is gone — Moments are chosen ONLY in the Arrange sheet,
+                // so nothing is seeded as chips (re-listing the previous version's Moments here was the bug).
+                // opening/ending still survive via the typed creativeDirectionText above.
+                initialReferenceChipIds: [],
                 // Issue 1: prefill the Story's existing length so re-opening Customize shows the prior choice
                 // (explicit custom seconds or the editorial mode) instead of silently resetting.
                 initialExplicitTargetSeconds: story.intentTargetDurationSeconds,
@@ -483,9 +485,12 @@ struct CreateStoryPreviewView: View {
                 // Part B: surface ALL persisted structural directives (opening/adjacency/order/include/exclude)
                 // so the user can see + clear them, not just the must_include chips + soft text.
                 initialSavedDirectives: ResolvedDirectives.fromWireJSON(story.creativeDirectivesJSON),
-                onCreate: { seconds, sound, mode, approach, directives, soft, chipIds, music in
+                // The arranged storyboard (ordered ids + policy) round-trips from its own persisted field.
+                initialMomentSequence: MomentSequence.fromJSON(story.momentSequenceJSON),
+                onCreate: { seconds, sound, mode, approach, directives, soft, chipIds, music, sequence in
                     acceptCustomize(seconds: seconds, sound: sound, mode: mode, approach: approach,
-                                    directives: directives, soft: soft, chipIds: chipIds, music: music) },
+                                    directives: directives, soft: soft, chipIds: chipIds, music: music,
+                                    sequence: sequence) },
                 onCancel: { durationRec = nil; userBackedOut = true })
                 .presentationDetents([.large])
                 // Force a FRESH view identity each time the sheet opens. CustomizeYourStoryView seeds its

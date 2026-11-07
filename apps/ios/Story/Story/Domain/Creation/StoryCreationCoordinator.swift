@@ -302,6 +302,20 @@ final class StoryCreationCoordinator {
         return .object(obj)
     }
 
+    /// Customize UX v2 (owner §6): the Policy-B allowed-source-set for THIS build, or nil (Policy A / inactive
+    /// sequence / wrong operation => full eligible set). Reads the persisted MomentSequence and returns its
+    /// selected ids ONLY when the sequence is active AND policy is .onlySelected AND this operation uses the
+    /// persisted creative direction (same `usesPersisted` gate as composeRevisionContext — an undirected
+    /// Explore or a Revise never inherits a stale allowed-set). The planner then cannot cite an unselected
+    /// Moment because it is absent from moments[] (eligibility mechanism, not creative exclude).
+    static func allowedSourceSetForBuild(story: StoryModel, operationType: String,
+                                         directedByCustomize: Bool) -> Set<UUID>? {
+        let usesPersisted = (operationType == "original")
+            || (operationType == "another_version" && directedByCustomize)
+        guard usesPersisted, let seq = MomentSequence.fromJSON(story.momentSequenceJSON) else { return nil }
+        return seq.allowedSourceSet   // nil for Policy A; the selected ids for Policy B
+    }
+
     /// Compact diagnostic tag for the submit beacon: what revision_context the device is actually sending.
     /// e.g. "revise+dir+base", "explore", or "none". Proves end-to-end whether Revise directives arrive.
     static func revisionModeTag(_ ctx: JSONValue?) -> String {
@@ -557,6 +571,14 @@ final class StoryCreationCoordinator {
                 return p
             }()
             let assetIdForBuilder = pendingMusic?.trackId.hasPrefix("mymusic:") == true ? nil : pendingMusic?.trackId
+            // Customize UX v2 (owner §6): Policy B ("use only selected Moments") restricts the planner payload
+            // to the arranged set via the existing eligibility mechanism — NOT creative exclude. Apply it ONLY
+            // for operations that use the persisted creative direction (original, or another_version directed
+            // from Customize), mirroring composeRevisionContext's usesPersisted gate, so a one-tap Explore or a
+            // Revise never inherits a stale allowed-set. Policy A / inactive sequence => nil => full set.
+            let allowedSourceSet = Self.allowedSourceSetForBuild(
+                story: story, operationType: pendingOperationType,
+                directedByCustomize: pendingDirectedByCustomize)
             build = try EditPlanRequestBuilder.build(
                 story: story, context: context, targetSeconds: targetSeconds, outputFormat: outputFormat,
                 musicPlan: planForBuilder,
@@ -565,7 +587,8 @@ final class StoryCreationCoordinator {
                 revisionContext: Self.composeRevisionContext(base: pendingRevisionContext, story: story,
                                                              operationType: pendingOperationType,
                                                              directedByCustomize: pendingDirectedByCustomize),
-                editorialType: pendingEditorialType)
+                editorialType: pendingEditorialType,
+                allowedSourceSet: allowedSourceSet)
         } catch let e as EditPlanRequestBuilder.BuildError {
             return finishFailed(.missingPrerequisite(e.errorDescription ?? "Missing prerequisites for creation."))
         } catch {

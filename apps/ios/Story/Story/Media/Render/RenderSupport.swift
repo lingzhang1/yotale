@@ -410,7 +410,13 @@ enum EditPlanRequestBuilder {
                       musicAssetId: String? = nil,
                       musicAnalysis: JSONValue? = nil,
                       revisionContext: JSONValue? = nil,
-                      editorialType: String? = nil) throws -> Build {
+                      editorialType: String? = nil,
+                      // Customize UX v2 — Policy B ("Use only selected Moments"). When non-nil, the planner
+                      // payload moments[] is RESTRICTED to this set, so a segment can physically only cite a
+                      // selected asset_id (eligibleIds == moments[].id invariant IS the enforcement — owner §6).
+                      // This is the existing eligibility mechanism, NOT a creative `exclude` directive. nil =>
+                      // Policy A / default: the full eligible set is sent (unchanged behavior).
+                      allowedSourceSet: Set<UUID>? = nil) throws -> Build {
         // Resolvable local media, keyed by Moment id (the ORIGINAL bytes on THIS device right now). Used for
         // the render-time URL resolver + diagnostics — NOT as the planner-eligibility gate (see below).
         let media = MomentResolver.resolve(moments: story.moments)
@@ -441,6 +447,13 @@ enum EditPlanRequestBuilder {
         //   • has file, no AU     -> excluded (genuine analysis delay; readiness surfaces it honestly).
         //   • no file, no AU      -> excluded (nothing to plan from).
         for m in story.moments.sorted(by: { $0.createdAt < $1.createdAt }) {
+            // Policy B (owner §6): when the user chose "Use only selected Moments", restrict the planner
+            // payload to that set. A Moment outside it is simply not sent — the planner then CANNOT produce a
+            // segment citing it (moments[].id is the only id space it may reference). This is the allowed-set
+            // enforcement by construction; it is deliberately NOT counted as an eligibility failure (the
+            // Moment is perfectly usable — the user chose to leave it out), so it does not enter the census's
+            // ineligible buckets. nil set (Policy A / default) keeps every eligible Moment.
+            if let allowed = allowedSourceSet, !allowed.contains(m.id) { continue }
             guard let mu = muByMoment[m.id] else {
                 excluded.append(m.id); census.ineligibleNoAU.append(m.id); continue   // no completed AU
             }

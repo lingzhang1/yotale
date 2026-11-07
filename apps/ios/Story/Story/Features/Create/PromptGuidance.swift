@@ -168,18 +168,15 @@ enum PromptSuggestions {
     /// Revise (post-generation): preserve footage / shorten shots / reorder / replace opening / pacing /
     /// change music. `firstMomentNumber` feeds the "replace opening" example with a real number.
     static func revise(firstMomentNumber: Int?) -> [PromptSuggestion] {
-        var out: [PromptSuggestion] = [
+        // Moment ORDER is no longer a typed suggestion ("Open with Moment 1", "Reorder the Moments so the best one
+        // comes first"): ordering is chosen visually in the Arrange storyboard (Customize UX v2), never by typing
+        // Moment numbers. `firstMomentNumber` is kept for call-site compatibility and is intentionally unused.
+        _ = firstMomentNumber
+        return [
             .init(label: "Shorten each shot to ~5 seconds", text: "Shorten each shot to around 5 seconds"),
             .init(label: "Make the pacing faster", text: "Make the pacing faster"),
-        ]
-        if let n = firstMomentNumber {
-            out.append(.init(label: "Open with Moment \(n)", text: "Start with Moment \(n)"))
-        }
-        out.append(contentsOf: [
-            .init(label: "Reorder the Moments", text: "Reorder the Moments so the best one comes first"),
             .init(label: "Change the soundtrack", text: "Change the soundtrack to something calmer"),
-        ])
-        return out
+        ]
     }
 }
 
