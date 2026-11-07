@@ -474,6 +474,16 @@ def repair_directive_placement(plan: dict, inputs: EditPlanInputs) -> dict | Non
     else:
         return None  # could not stabilize -> conflicting/cyclic ordering
 
+    # ending: the named Moment plays LAST. Moving only that one asset to the end keeps every other relationship
+    # intact — it is never the "before" of an order_after pair (that would be a contradiction the validator
+    # already rejects), so moving it last can only satisfy, never break, an order_after. An asset that is part of
+    # an adjacency chain is left where the chain put it: relocating it would split the chain, so the check below
+    # reports it unrepairable by reorder and the existing failure path handles it (unchanged behavior).
+    if (ending is not None and seq and seq[-1] != ending and ending in seq
+            and ending not in glued and ending not in follow):
+        seq.remove(ending)
+        seq.append(ending)
+
     # Placement must hold after after-fixups.
     if opening is not None and (not seq or seq[0] != opening):
         return None

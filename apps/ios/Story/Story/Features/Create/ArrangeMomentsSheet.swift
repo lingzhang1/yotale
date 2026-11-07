@@ -258,9 +258,12 @@ struct ArrangeMomentsSheet: View {
         tapMoveId = nil
     }
 
+    /// Card role labels say only what is actually applied. The top card IS the video's opening and, with two or
+    /// more Moments, the bottom card IS its ending (they become the `opening` / `ending` directives). A single
+    /// Moment only opens the video — it cannot also be the last shot.
     private func roleLabel(_ idx: Int) -> String {
-        if idx == 0 { return "Opening" }
-        if idx == orderedIds.count - 1 { return "Ending" }
+        if idx == 0 { return "Opens the video" }
+        if idx == orderedIds.count - 1 { return "Ends the video" }
         return "Next"
     }
 
@@ -331,18 +334,21 @@ struct ArrangeMomentsSheet: View {
                 : "The editor will choose the order. Add Moments above to arrange them yourself."
         }
         let nums = orderedIds.compactMap { number($0) }.map(String.init).joined(separator: ", ")
+        let first = orderedIds.first.flatMap { number($0) }.map { "Moment \($0)" } ?? "The top Moment"
+        let last = orderedIds.last.flatMap { number($0) }.map { "Moment \($0)" } ?? "the bottom Moment"
+        let ends = orderedIds.count >= 2 ? "\(first) will open the video and \(last) will end it" : "\(first) will open the video"
         if mode == .revise {
-            return "Moments \(nums) will be placed in this intended order. The rest of your video stays as it is. "
+            return "\(ends). Moments \(nums) will follow this intended order. The rest of your video stays as it is. "
                  + "If the footage can't fully allow it, the result says so rather than forcing it."
         }
         switch policy {
         case .allowOthers:
-            return "Moments \(nums) are required in this intended order. The editor may include other Moments "
-                 + "between them, and will keep your order when the footage allows."
+            return "\(ends). Moments \(nums) are required in this intended order; the editor may include other "
+                 + "Moments between them, and keeps your order when the footage allows."
         case .onlySelected:
-            return "Only Moments \(nums) will be used, in this intended order. The editor keeps your order "
-                 + "when the footage allows; if it can't fully honor it, the result is shown honestly rather "
-                 + "than forced."
+            return "\(ends). Only Moments \(nums) will be used, in this intended order. The editor keeps your order "
+                 + "when the footage allows; if it can't fully honor it, the result is shown honestly rather than "
+                 + "forced."
         }
     }
 
