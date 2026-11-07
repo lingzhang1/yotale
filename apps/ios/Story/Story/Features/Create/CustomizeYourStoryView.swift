@@ -29,11 +29,6 @@ struct CustomizeYourStoryView: View {
     /// (provenance preserved); "highlights"/"full" re-selects that editorial row. nil => seed from `rec`.
     let initialExplicitTargetSeconds: Double?
     let initialEditorialMode: String?
-    /// Part B — the FULL set of persisted hard directives currently saved on the Story (opening, ending,
-    /// adjacency, order, must-include, exclude), so the sheet can SHOW them and let the user clear them. The
-    /// free-text `initialCreativeDirection` only round-trips the soft text + was the only visible surface for
-    /// opening/adjacency before; this makes every active structural directive visible. nil => none saved.
-    let initialSavedDirectives: ResolvedDirectives?
     /// Returns chosen duration (seconds), sound, length wire, editing approach, resolved HARD directives (nil
     /// when none), the SOFT creative-direction text, the chip ids, and the parsed MUSIC intent — so the caller
     /// persists the draft, forwards directives + soft_direction to the edit planner, and routes an explicit
@@ -146,7 +141,6 @@ struct CustomizeYourStoryView: View {
     @State private var retryableInstruction: String?   // non-nil => a Retry affordance is shown
     /// Part B — the active persisted structural directives (opening/adjacency/order/must-include/exclude),
     /// shown in a "Saved instructions" summary the user can clear. Cleared => removed from the submitted set.
-    @State private var savedDirectives: ResolvedDirectives?
     @Environment(AuthStore.self) private var auth
     @State private var cloudGate = CloudAuthGateModel()
 
@@ -156,7 +150,6 @@ struct CustomizeYourStoryView: View {
          momentForId: @escaping (UUID) -> MomentModel? = { _ in nil },
          initialCreativeDirection: String = "", initialReferenceChipIds: [UUID] = [],
          initialExplicitTargetSeconds: Double? = nil, initialEditorialMode: String? = nil,
-         initialSavedDirectives: ResolvedDirectives? = nil,
          initialMomentSequence: MomentSequence? = nil,
          onCreate: @escaping (Double, SoundPreference, String, EditingApproach, ResolvedDirectives?, String, [UUID], ParsedMusicIntent, MomentSequence) -> Void,
          onCancel: @escaping () -> Void) {
@@ -166,16 +159,7 @@ struct CustomizeYourStoryView: View {
         self.initialCreativeDirection = initialCreativeDirection; self.initialReferenceChipIds = initialReferenceChipIds
         self.initialExplicitTargetSeconds = initialExplicitTargetSeconds
         self.initialEditorialMode = initialEditorialMode
-        // The storyboard OWNS inclusion (must_include) and relative order (order_after). The previous version's
-        // copies of those must never be carried forward as a second, hidden source — they re-listed every old
-        // Moment on a new version and, after the user pruned the sequence, were merged back into the request and
-        // referenced Moments outside the arranged set (-> directive_ref_ineligible / invalid_after_repair).
-        // Typed-text directives re-derive from the persisted instruction text on Create, so dropping the stale
-        // copies loses nothing the user can still see.
-        let keptSaved = initialSavedDirectives?.withoutStoryboardOwned()
-        self.initialSavedDirectives = keptSaved
         self.onCreate = onCreate; self.onCancel = onCancel
-        _savedDirectives = State(initialValue: keptSaved)
         // Default length: prefer the Story's EXISTING editorial mode when re-opening (issue 1); else Full Story
         // when a recommended point exists, else Custom. A prior exact "custom" target seeds the Custom row so
         // the user's explicit length is shown (not silently reset to the recommendation).
@@ -498,18 +482,12 @@ struct CustomizeYourStoryView: View {
                 for c in snapshotChips where !directives.mustInclude.contains(c.id) {
                     directives.mustInclude.append(c.id)
                 }
-                // Part B — fold in the SAVED structural directives the user KEPT (savedDirectives reflects any
-                // Clear). New typed text wins per-slot (opening/ending it set); otherwise the saved value is
-                // preserved. If the user Cleared (savedDirectives == nil) nothing is folded -> request drops
-                // them. Never silently retains a cleared directive; never silently drops a kept one.
-                if let saved = savedDirectives {
-                    if directives.opening == nil { directives.opening = saved.opening }
-                    if directives.ending == nil { directives.ending = saved.ending }
-                    for id in saved.mustInclude where !directives.mustInclude.contains(id) { directives.mustInclude.append(id) }
-                    for id in saved.exclude where !directives.exclude.contains(id) { directives.exclude.append(id) }
-                    for p in saved.orderAfter where !directives.orderAfter.contains(p) { directives.orderAfter.append(p) }
-                    for p in saved.orderAdjacent where !directives.orderAdjacent.contains(p) { directives.orderAdjacent.append(p) }
-                }
+                // NOTE: previous runs' persisted structural directives (opening / ending / exclude / adjacency) are
+                // deliberately NOT folded back in. The on-screen list that let the user see and clear them was
+                // removed in 9ac5140, so re-applying them was invisible and un-clearable — a stale "Start with
+                // Moment X" silently overrode the order the user arranged (device test 2026-11-07: Moment 7
+                // dragged to the top, plan still opened on the old pinned Moment). The user's visible inputs are
+                // the single source of truth: the instruction text (re-interpreted every time) + the storyboard.
                 // Customize UX v2: fold the visual storyboard into the directives. An ACTIVE sequence adds its
                 // Moments as must_include and its relative order as an order_after chain (ordering stays an
                 // OBJECTIVE on the backend — never promoted to HARD). The allowed-source-set for Policy B rides
