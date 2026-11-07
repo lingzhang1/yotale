@@ -749,11 +749,16 @@ def _continuity_assessment(base_plan: dict | None, revised: dict, rc: dict) -> d
         p in soft for p in ("shorten", "shorter", "make it short", "condense", "tighten"))
     authorized_change = bool(has_exclude or _selective or _shorter or authorized)
 
-    # NO-OP: the directed revise produced NO effective change at all (same clip set AND same order). An honest
-    # "couldn't apply that", never saved as a successful edit. (Order change alone is a real edit, not a no-op.)
+    # NO-OP: the directed revise produced NO effective change at all — same clip set, same order AND same shot
+    # timing. An honest "couldn't apply that", never saved as a successful edit. An order change alone is a real
+    # edit, and so is a RETIME (same clips, same order, different in/out points, shot lengths or speed): a
+    # "shorten each shot" revise that only moves timing is a genuine edit and must NOT be reported as "effectively
+    # the same" (device test 2026-11-06: every shot's timing changed, total 32.6s -> 38.2s, yet it was labelled a
+    # no-op because only clip ids/order were compared).
     reordered = base_list != rev_list and base_ids == rev_ids
-    if base_ids == rev_ids and not reordered:
-        return {"verdict": "noop", "removed": 0, "added": 0, "reordered": False,
+    retimed = _timing_changed(base_plan, revised)
+    if base_ids == rev_ids and not reordered and not retimed:
+        return {"verdict": "noop", "removed": 0, "added": 0, "reordered": False, "retimed": False,
                 "continuity_ratio": 1.0, "authorized_change": authorized_change,
                 "reason": "the requested change produced no effective edit"}
 
@@ -767,8 +772,44 @@ def _continuity_assessment(base_plan: dict | None, revised: dict, rc: dict) -> d
                            "rather than revise it")}
 
     return {"verdict": "ok", "removed": len(removed), "added": len(added), "reordered": reordered,
+            "retimed": retimed,
             "continuity_ratio": round(continuity_ratio, 3), "authorized_change": authorized_change,
             "reason": ""}
+
+
+# A timing difference smaller than this (seconds) is normalization jitter (e.g. clamping to a Moment's end), not
+# an edit the user would notice; speed differences below _SPEED_TOL are likewise ignored.
+_TIMING_TOL_SECONDS = 0.2
+_SPEED_TOL = 0.02
+
+
+def _timing_changed(base_plan: dict, revised: dict) -> bool:
+    """True when the revised plan's SHOT TIMING differs from the base plan's: per ordered segment, the source
+    in/out, the output duration or the playback speed (beyond small normalization jitter), or a different segment
+    count. Deterministic, model-free. Clip identity/order are compared separately by the caller."""
+    def _segs(p):
+        rows = []
+        for s in sorted((p.get("segments") or []), key=lambda s: s.get("order", 0)):
+            if not s.get("asset_id"):
+                continue
+            try:
+                rows.append((str(s["asset_id"]).lower(),
+                             float(s.get("source_start_seconds") or 0.0), float(s.get("source_end_seconds") or 0.0),
+                             float(s.get("output_duration_seconds") or 0.0), float(s.get("speed") or 1.0)))
+            except (TypeError, ValueError):
+                rows.append((str(s.get("asset_id")).lower(), 0.0, 0.0, 0.0, 1.0))
+        return rows
+
+    b, r = _segs(base_plan), _segs(revised)
+    if len(b) != len(r):
+        return True
+    for x, y in zip(b, r):
+        if x[0] != y[0]:
+            return True
+        if (abs(x[1] - y[1]) > _TIMING_TOL_SECONDS or abs(x[2] - y[2]) > _TIMING_TOL_SECONDS
+                or abs(x[3] - y[3]) > _TIMING_TOL_SECONDS or abs(x[4] - y[4]) > _SPEED_TOL):
+            return True
+    return False
 
 
 def _classify_unsupported_ops(instruction: str) -> dict:
