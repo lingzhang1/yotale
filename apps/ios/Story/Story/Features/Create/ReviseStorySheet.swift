@@ -277,6 +277,9 @@ struct ReviseStorySheet: View {
             case .openingDiffersFromTopCard(let typed, let top):
                 return "Your text says to start with \(names([typed])), but your order starts with \(names([top])). "
                      + "Drag the one you want to the top in Arrange, or edit the text."
+            case .endingDiffersFromLastCard(let typed, let last):
+                return "Your text says to end with \(names([typed])), but your order ends with \(names([last])). "
+                     + "Drag the one you want to the bottom in Arrange, or edit the text."
             }
         }
         return nil

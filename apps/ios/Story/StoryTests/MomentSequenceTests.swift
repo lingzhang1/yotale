@@ -89,7 +89,7 @@ final class MomentSequenceTests: XCTestCase {
         XCTAssertEqual(dir.orderAfter, [[b, a], [c, b]])
         XCTAssertTrue(dir.exclude.isEmpty, "Policy A never excludes")
         XCTAssertEqual(dir.opening, a, "the TOP card is the video's opening")
-        XCTAssertNil(dir.ending, "the last card is NOT forced to be the ending")
+        XCTAssertEqual(dir.ending, c, "the BOTTOM card is the video's ending")
         XCTAssertTrue(dir.orderAdjacent.isEmpty, "relative order only — never adjacency")
     }
 
@@ -119,10 +119,66 @@ final class MomentSequenceTests: XCTestCase {
         XCTAssertEqual(dir.orderAfter.first, [a, d], "and the rest of the chain follows from it")
     }
 
-    func test_single_moment_sequence_opens_on_it() {
+    func test_single_moment_sequence_opens_on_it_but_has_no_ending() {
         var dir = ResolvedDirectives(); MomentSequence(orderedIds: [b]).apply(to: &dir)
         XCTAssertEqual(dir.opening, b)
+        XCTAssertNil(dir.ending, "one Moment cannot be both the first and the last shot")
         XCTAssertEqual(dir.mustInclude, [b])
+    }
+
+    // ---- bottom card = the video's ending (owner 2026-11-07) -----------------------------------------------
+
+    func test_bottom_card_follows_a_drag_to_the_bottom() {
+        var s = MomentSequence(orderedIds: [a, b, c, d])
+        s.move(from: 0, to: 3)                           // a dragged to the bottom
+        var dir = ResolvedDirectives(); s.apply(to: &dir)
+        XCTAssertEqual(dir.opening, b, "the new top card opens")
+        XCTAssertEqual(dir.ending, a, "the card dragged to the bottom ends the video")
+    }
+
+    func test_two_moment_sequence_opens_and_ends() {
+        var dir = ResolvedDirectives(); MomentSequence(orderedIds: [a, b]).apply(to: &dir)
+        XCTAssertEqual(dir.opening, a); XCTAssertEqual(dir.ending, b)
+    }
+
+    func test_opening_and_ending_are_never_the_same_Moment() {
+        for n in 1...5 {
+            let ids = (0..<n).map { _ in UUID() }
+            var dir = ResolvedDirectives(); MomentSequence(orderedIds: ids).apply(to: &dir)
+            if let o = dir.opening, let e = dir.ending { XCTAssertNotEqual(o, e, "n=\(n)") }
+        }
+    }
+
+    func test_the_top_card_is_never_in_the_after_slot_and_the_bottom_never_in_the_before_slot() {
+        // The backend rejects "opening ordered after something" and "ending ordered before something" as hard
+        // contradictions. The generated chain must never trip them.
+        let ids = (0..<6).map { _ in UUID() }
+        var dir = ResolvedDirectives(); MomentSequence(orderedIds: ids).apply(to: &dir)
+        XCTAssertFalse(dir.orderAfter.contains { $0[0] == dir.opening }, "opening must never be an 'after'")
+        XCTAssertFalse(dir.orderAfter.contains { $0[1] == dir.ending }, "ending must never be a 'before'")
+    }
+
+    func test_apply_never_overrides_an_existing_ending() {
+        var dir = ResolvedDirectives(); dir.ending = d
+        MomentSequence(orderedIds: [a, b]).apply(to: &dir)
+        XCTAssertEqual(dir.ending, d)
+    }
+
+    func test_conflict_typed_ending_differs_from_bottom_card() {
+        var typed = ResolvedDirectives(); typed.ending = a              // "End with Moment a"
+        let s = MomentSequence(orderedIds: [a, b, c], policy: .allowOthers)
+        XCTAssertEqual(s.conflicts(with: typed), [.endingDiffersFromLastCard(typed: a, last: c)])
+    }
+
+    func test_typed_ending_equal_to_bottom_card_is_not_a_conflict() {
+        var typed = ResolvedDirectives(); typed.ending = c
+        XCTAssertEqual(MomentSequence(orderedIds: [a, b, c]).conflicts(with: typed), [])
+    }
+
+    func test_single_moment_sequence_has_no_ending_conflict() {
+        var typed = ResolvedDirectives(); typed.ending = d
+        XCTAssertEqual(MomentSequence(orderedIds: [a]).conflicts(with: typed), [],
+                       "a one-Moment sequence imposes no ending, so a typed ending cannot contradict it")
     }
 
     func test_inactive_sequence_sets_no_opening() {

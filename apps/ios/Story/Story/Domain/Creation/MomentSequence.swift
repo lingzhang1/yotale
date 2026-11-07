@@ -121,6 +121,11 @@ struct MomentSequence: Codable, Equatable {
         // already present: a typed opening that differs from the top card is a CONFLICT the caller must surface
         // first (see `conflicts(with:)`), never silently overridden here.
         if directives.opening == nil { directives.opening = orderedIds.first }
+        // The BOTTOM card is the video's ending (symmetric with the opening; owner 2026-11-07: "End with…" opens
+        // this same storyboard, so its last card has to mean it). Only for 2+ Moments — one Moment cannot be both
+        // the first and the last shot. Same OBJECTIVE semantics; same rule: never override an existing ending,
+        // a differing typed ending is a conflict surfaced first.
+        if orderedIds.count >= 2, directives.ending == nil { directives.ending = orderedIds.last }
         for id in orderedIds where !directives.mustInclude.contains(id) {
             directives.mustInclude.append(id)
         }
@@ -158,6 +163,8 @@ extension MomentSequence {
         case outsideOnlySelected([UUID])
         /// Typed text asks to open on one Moment while the sequence's top card is another.
         case openingDiffersFromTopCard(typed: UUID, top: UUID)
+        /// Typed text asks to end on one Moment while the sequence's bottom card is another.
+        case endingDiffersFromLastCard(typed: UUID, last: UUID)
     }
 
     /// Conflicts between this sequence and the directives interpreted from the user's typed text. Pass the
@@ -169,6 +176,10 @@ extension MomentSequence {
 
         if let typedOpening = typed.opening, let top = orderedIds.first, typedOpening != top {
             out.append(.openingDiffersFromTopCard(typed: typedOpening, top: top))
+        }
+
+        if orderedIds.count >= 2, let typedEnding = typed.ending, let last = orderedIds.last, typedEnding != last {
+            out.append(.endingDiffersFromLastCard(typed: typedEnding, last: last))
         }
 
         let excluded = typed.exclude.filter { sequenced.contains($0) }

@@ -303,3 +303,93 @@ def test_revise_with_top_card_opening_repositions_the_base_edit_deterministicall
     assert order[0] == M3.lower()
     assert _segkey(fixed) == _segkey(base)
     assert assess_creative_intent(fixed, inp)["satisfied"]
+
+
+# ---- bottom card = the video's ending (owner 2026-11-07, symmetric with the opening) ---------------------------
+# Sequence 3 -> 7 -> 12 now sends opening=3 AND ending=12 alongside must_include + the order_after chain. Both are
+# OBJECTIVES. A one-Moment sequence sends opening only (a single Moment cannot be both first and last).
+
+def _seq_directives_with_both_ends():
+    return {**_seq_directives(), "opening": M3, "ending": M12}
+
+
+def test_opening_and_ending_with_storyboard_chain_is_not_a_hard_conflict():
+    # The top card is never the "after" of a pair and the last card is never the "before", so neither contradiction
+    # check (opening-ordered-after, ending-ordered-before) can fire.
+    inp = _inputs_full(revision_context=_rev(_seq_directives_with_both_ends()))
+    hard, _ = _split_errors(_plan([M3, M_OTHER, M7, M12]), inp)
+    assert hard == []
+
+
+def test_plan_that_opens_on_top_and_ends_on_last_card_is_satisfied():
+    inp = _inputs_full(revision_context=_rev(_seq_directives_with_both_ends()))
+    assert assess_creative_intent(_plan([M3, M_OTHER, M7, M12]), inp)["satisfied"]
+
+
+def test_plan_ending_on_the_wrong_clip_ships_and_discloses_ending():
+    inp = _inputs_full(revision_context=_rev(_seq_directives_with_both_ends()))
+    plan = _plan([M3, M7, M12, M_OTHER])             # an unselected clip plays after the last card
+    hard, _ = _split_errors(plan, inp)
+    assert hard == [], "a playable video is never hard-blocked for a creative ending miss"
+    a = assess_creative_intent(plan, inp)
+    assert not a["satisfied"]
+    assert "ending" in {m["code"] for m in a["material_unmet"]}
+
+
+def test_deterministic_repair_places_both_ends_without_touching_any_segment():
+    inp = _inputs_full(revision_context=_rev(_seq_directives_with_both_ends()))
+    base = _plan([M12, M_OTHER, M7, M3])             # exactly backwards
+    fixed = _ep.repair_directive_placement(base, inp)
+    assert fixed is not None, "a pure placement miss is fixed by the deterministic reorder (no model call)"
+    order = [str(s["asset_id"]).lower() for s in fixed["segments"]]
+    assert order[0] == M3.lower() and order[-1] == M12.lower()
+    assert order.index(M3.lower()) < order.index(M7.lower()) < order.index(M12.lower())
+    assert _segkey(fixed) == _segkey(base), "same segments and timing — nothing dropped, added or re-timed"
+    assert assess_creative_intent(fixed, inp)["satisfied"]
+
+
+def test_policyB_both_ends_over_the_restricted_set():
+    inp = _inputs_only_selected(revision_context=_rev(_seq_directives_with_both_ends()))
+    assert assess_creative_intent(_plan([M3, M7, M12]), inp)["satisfied"]
+    wrong = _plan([M7, M3, M12])
+    assert not assess_creative_intent(wrong, inp)["satisfied"]
+    assert _split_errors(wrong, inp)[0] == []
+
+
+def test_revise_with_both_ends_repositions_the_base_edit_deterministically():
+    inp = _inputs_full(revision_context=_revise_ctx(_seq_directives_with_both_ends()))
+    base = _plan([M7, M12, M3, M_OTHER])
+    fixed = _ep.repair_directive_placement(base, inp)
+    assert fixed is not None
+    order = [str(s["asset_id"]).lower() for s in fixed["segments"]]
+    assert order[0] == M3.lower() and order[-1] == M12.lower()
+    assert _segkey(fixed) == _segkey(base)
+    assert assess_creative_intent(fixed, inp)["satisfied"]
+
+
+# ---- repair_directive_placement: the ENDING is now placed, not just checked ---------------------------------------
+
+def test_repair_moves_the_ending_to_the_end_and_changes_nothing_else():
+    # Before: the repair only verified `ending` and returned None when it was not already last.
+    inp = _inputs_full(revision_context=_rev({"ending": M12}))
+    base = _plan([M3, M12, M7, M_OTHER])
+    fixed = _ep.repair_directive_placement(base, inp)
+    assert fixed is not None
+    order = [str(s["asset_id"]).lower() for s in fixed["segments"]]
+    assert order[-1] == M12.lower()
+    assert order[:-1] == [M3.lower(), M7.lower(), M_OTHER.lower()], "the others keep their relative order"
+    assert _segkey(fixed) == _segkey(base)
+
+
+def test_repair_leaves_an_ending_that_is_part_of_an_adjacency_chain_unrepaired():
+    # M7 must immediately follow M3 AND be last: relocating M7 would split the chain, so reorder alone cannot
+    # satisfy it — unchanged behavior (None), the existing failure/disclosure path handles it.
+    inp = _inputs_full(revision_context=_rev({"ending": M7, "order_adjacent": [[M7, M3]]}))
+    assert _ep.repair_directive_placement(_plan([M3, M7, M12]), inp) is None
+
+
+def test_repair_with_ending_already_last_is_unchanged():
+    inp = _inputs_full(revision_context=_rev({"ending": M12}))
+    base = _plan([M3, M7, M12])
+    fixed = _ep.repair_directive_placement(base, inp)
+    assert fixed is not None and [str(s["asset_id"]) for s in fixed["segments"]] == [M3, M7, M12]
