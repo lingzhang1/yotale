@@ -274,6 +274,9 @@ struct ReviseStorySheet: View {
                      + "Remove it from the order, or don’t drop it."
             case .outsideOnlySelected(let ids):
                 return "\(names(ids)) isn’t in your selected Moments. Add it in Arrange, or remove the mention."
+            case .openingDiffersFromTopCard(let typed, let top):
+                return "Your text says to start with \(names([typed])), but your order starts with \(names([top])). "
+                     + "Drag the one you want to the top in Arrange, or edit the text."
             }
         }
         return nil

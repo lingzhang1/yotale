@@ -115,6 +115,12 @@ struct MomentSequence: Codable, Equatable {
     ///   must_include so each selected Moment is a required objective.
     func apply(to directives: inout ResolvedDirectives) {
         guard isActive else { return }
+        // The TOP card is the video's opening (owner 2026-11-07: dragging a Moment to the top must make it the
+        // first shot). Still an OBJECTIVE on the backend — honored when the footage allows and disclosed when
+        // not; the deterministic reorder places it first without a model call. Only set when no opening is
+        // already present: a typed opening that differs from the top card is a CONFLICT the caller must surface
+        // first (see `conflicts(with:)`), never silently overridden here.
+        if directives.opening == nil { directives.opening = orderedIds.first }
         for id in orderedIds where !directives.mustInclude.contains(id) {
             directives.mustInclude.append(id)
         }
@@ -150,6 +156,8 @@ extension MomentSequence {
         /// Policy "only the selected Moments" is on, but the typed text names Moments outside the sequence
         /// (opening / ending / include / order) — they are not eligible under that policy.
         case outsideOnlySelected([UUID])
+        /// Typed text asks to open on one Moment while the sequence's top card is another.
+        case openingDiffersFromTopCard(typed: UUID, top: UUID)
     }
 
     /// Conflicts between this sequence and the directives interpreted from the user's typed text. Pass the
@@ -158,6 +166,10 @@ extension MomentSequence {
         guard isActive else { return [] }
         let sequenced = Set(orderedIds)
         var out: [Conflict] = []
+
+        if let typedOpening = typed.opening, let top = orderedIds.first, typedOpening != top {
+            out.append(.openingDiffersFromTopCard(typed: typedOpening, top: top))
+        }
 
         let excluded = typed.exclude.filter { sequenced.contains($0) }
         if !excluded.isEmpty { out.append(.excludedButSequenced(excluded.uniqued())) }

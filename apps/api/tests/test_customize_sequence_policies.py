@@ -241,3 +241,65 @@ def test_revise_repositioned_moment_missing_from_base_is_disclosed_not_invented(
     a = assess_creative_intent(base, inp)
     assert not a["satisfied"]
     assert "inclusion" in {m["code"] for m in a["material_unmet"]}
+
+
+# ---- top card = the video's opening (owner 2026-11-07) ------------------------------------------------------
+# The storyboard now ALSO sends opening = the top card (alongside must_include + the order_after chain). Opening
+# stays an OBJECTIVE; a plan that misses it ships and is disclosed, and the deterministic reorder (no model call)
+# puts the top Moment first without dropping, adding or re-timing any segment.
+
+def _seq_directives_with_opening():
+    return {**_seq_directives(), "opening": M3}
+
+
+def _split_errors(plan, inp):
+    moments = {str(m["id"]).lower(): m for m in inp.moments}
+    return _ep._validate_directives_split(plan, inp, moments)
+
+
+def test_opening_plus_storyboard_chain_is_not_a_hard_conflict():
+    # The top card is never the "after" of any pair, so opening + chain cannot trip the contradiction checks.
+    inp = _inputs_full(revision_context=_rev(_seq_directives_with_opening()))
+    hard, _obj = _split_errors(_plan([M3, M_OTHER, M7, M12]), inp)
+    assert hard == []
+
+
+def test_plan_opening_on_top_card_satisfies_the_sequence():
+    inp = _inputs_full(revision_context=_rev(_seq_directives_with_opening()))
+    plan = _plan([M3, M_OTHER, M7, M12])           # opens on 3, 7 then 12 later, an unselected clip between
+    assert assess_creative_intent(plan, inp)["satisfied"]
+
+
+def test_plan_not_opening_on_top_card_ships_but_discloses_opening():
+    inp = _inputs_only_selected(revision_context=_rev(_seq_directives_with_opening()))
+    plan = _plan([M7, M3, M12])                    # the device case: the wrong Moment is first
+    hard, _ = _split_errors(plan, inp)
+    assert hard == [], "a playable video is never hard-blocked for a creative opening miss"
+    a = assess_creative_intent(plan, inp)
+    assert not a["satisfied"]
+    assert "opening" in {m["code"] for m in a["material_unmet"]}, "never claimed satisfied when it isn't"
+
+
+def test_deterministic_repair_moves_the_top_card_first_without_touching_any_segment():
+    inp = _inputs_full(revision_context=_rev(_seq_directives_with_opening()))
+    base = _plan([M_OTHER, M7, M3, M12])           # an unselected clip first, 3 later
+    assert not assess_creative_intent(base, inp)["satisfied"]
+    fixed = _ep.repair_directive_placement(base, inp)
+    assert fixed is not None, "a pure placement miss is fixed by the deterministic reorder (no model call)"
+    order = [str(s["asset_id"]).lower() for s in fixed["segments"]]
+    assert order[0] == M3.lower(), "the top card opens the video"
+    assert order.index(M3.lower()) < order.index(M7.lower()) < order.index(M12.lower())
+    assert _segkey(fixed) == _segkey(base), "same segments and timing — nothing dropped, added or re-timed"
+    assert assess_creative_intent(fixed, inp)["satisfied"]
+
+
+def test_revise_with_top_card_opening_repositions_the_base_edit_deterministically():
+    # Revise: base edit plays 7, 3, 12, other. The user repositions 3 to the top (3 -> 7 -> 12).
+    inp = _inputs_full(revision_context=_revise_ctx(_seq_directives_with_opening()))
+    base = _plan([M7, M3, M12, M_OTHER])
+    fixed = _ep.repair_directive_placement(base, inp)
+    assert fixed is not None
+    order = [str(s["asset_id"]).lower() for s in fixed["segments"]]
+    assert order[0] == M3.lower()
+    assert _segkey(fixed) == _segkey(base)
+    assert assess_creative_intent(fixed, inp)["satisfied"]

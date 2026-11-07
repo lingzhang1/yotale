@@ -88,6 +88,9 @@ final class MomentSequenceTests: XCTestCase {
         XCTAssertEqual(Set(dir.mustInclude), [a, b, c])
         XCTAssertEqual(dir.orderAfter, [[b, a], [c, b]])
         XCTAssertTrue(dir.exclude.isEmpty, "Policy A never excludes")
+        XCTAssertEqual(dir.opening, a, "the TOP card is the video's opening")
+        XCTAssertNil(dir.ending, "the last card is NOT forced to be the ending")
+        XCTAssertTrue(dir.orderAdjacent.isEmpty, "relative order only — never adjacency")
     }
 
     // ---- Policy B: only selected (allowed-set via eligibility, NOT creative exclude) ------------------
@@ -102,6 +105,35 @@ final class MomentSequenceTests: XCTestCase {
         XCTAssertEqual(dir.orderAfter, [[b, a], [c, b]])
         XCTAssertTrue(dir.exclude.isEmpty,
                       "Policy B does NOT use creative exclude for the allowed set (owner §6) — eligibility does")
+        XCTAssertEqual(dir.opening, a, "Policy B also opens on the top card")
+    }
+
+    // ---- top card = the video's opening (owner 2026-11-07) -------------------------------------------------
+
+    func test_top_card_follows_a_drag_to_the_top() {
+        // The device case: Moment 7 dragged to the top must become the opening.
+        var s = MomentSequence(orderedIds: [a, b, c, d])
+        s.move(from: 3, to: 0)                           // d dragged to the top
+        var dir = ResolvedDirectives(); s.apply(to: &dir)
+        XCTAssertEqual(dir.opening, d)
+        XCTAssertEqual(dir.orderAfter.first, [a, d], "and the rest of the chain follows from it")
+    }
+
+    func test_single_moment_sequence_opens_on_it() {
+        var dir = ResolvedDirectives(); MomentSequence(orderedIds: [b]).apply(to: &dir)
+        XCTAssertEqual(dir.opening, b)
+        XCTAssertEqual(dir.mustInclude, [b])
+    }
+
+    func test_inactive_sequence_sets_no_opening() {
+        var dir = ResolvedDirectives(); MomentSequence().apply(to: &dir)
+        XCTAssertNil(dir.opening, "no arranged sequence => AI chooses, nothing is pinned")
+    }
+
+    func test_apply_never_overrides_an_existing_opening() {
+        var dir = ResolvedDirectives(); dir.opening = d      // would already have been surfaced as a conflict
+        MomentSequence(orderedIds: [a, b]).apply(to: &dir)
+        XCTAssertEqual(dir.opening, d)
     }
 
     func test_apply_merges_with_existing_directives() {
@@ -137,11 +169,23 @@ final class MomentSequenceTests: XCTestCase {
     func test_conflict_typed_reference_outside_only_selected() {
         var typed = ResolvedDirectives(); typed.opening = d              // "Start with Moment d", d not selected
         let s = MomentSequence(orderedIds: [a, b], policy: .onlySelected)
-        XCTAssertEqual(s.conflicts(with: typed), [.outsideOnlySelected([d])])
+        XCTAssertEqual(s.conflicts(with: typed),
+                       [.openingDiffersFromTopCard(typed: d, top: a), .outsideOnlySelected([d])])
+    }
+
+    func test_conflict_typed_opening_differs_from_top_card() {
+        var typed = ResolvedDirectives(); typed.opening = b             // "Start with Moment b"
+        let s = MomentSequence(orderedIds: [a, b, c], policy: .allowOthers)
+        XCTAssertEqual(s.conflicts(with: typed), [.openingDiffersFromTopCard(typed: b, top: a)])
+    }
+
+    func test_typed_opening_equal_to_top_card_is_not_a_conflict() {
+        var typed = ResolvedDirectives(); typed.opening = a
+        XCTAssertEqual(MomentSequence(orderedIds: [a, b], policy: .allowOthers).conflicts(with: typed), [])
     }
 
     func test_no_conflict_for_allowOthers_with_outside_reference() {
-        var typed = ResolvedDirectives(); typed.opening = d
+        var typed = ResolvedDirectives(); typed.mustInclude = [d]       // "also include Moment d" — not in the sequence
         let s = MomentSequence(orderedIds: [a, b], policy: .allowOthers)
         XCTAssertEqual(s.conflicts(with: typed), [], "others are allowed under Policy A")
     }
