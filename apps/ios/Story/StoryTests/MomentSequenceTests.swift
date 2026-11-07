@@ -159,6 +159,38 @@ final class MomentSequenceTests: XCTestCase {
         XCTAssertEqual(request.orderAfter, [[d, b]])
     }
 
+    // ---- conflicts between the storyboard and typed text (owner §10) ---------------------------------------
+
+    func test_conflict_required_and_excluded() {
+        var typed = ResolvedDirectives(); typed.exclude = [b]            // "drop Moment b"
+        let s = MomentSequence(orderedIds: [a, b, c], policy: .allowOthers)
+        XCTAssertEqual(s.conflicts(with: typed), [.excludedButSequenced([b])])
+    }
+
+    func test_conflict_typed_reference_outside_only_selected() {
+        var typed = ResolvedDirectives(); typed.opening = d              // "Start with Moment d", d not selected
+        let s = MomentSequence(orderedIds: [a, b], policy: .onlySelected)
+        XCTAssertEqual(s.conflicts(with: typed), [.outsideOnlySelected([d])])
+    }
+
+    func test_no_conflict_for_allowOthers_with_outside_reference() {
+        var typed = ResolvedDirectives(); typed.opening = d
+        let s = MomentSequence(orderedIds: [a, b], policy: .allowOthers)
+        XCTAssertEqual(s.conflicts(with: typed), [], "others are allowed under Policy A")
+    }
+
+    func test_no_conflict_when_sequence_inactive_or_text_inside_set() {
+        var typed = ResolvedDirectives(); typed.exclude = [a]; typed.opening = d
+        XCTAssertEqual(MomentSequence().conflicts(with: typed), [], "inactive sequence => nothing to contradict")
+        var inside = ResolvedDirectives(); inside.opening = a; inside.mustInclude = [b]
+        XCTAssertEqual(MomentSequence(orderedIds: [a, b], policy: .onlySelected).conflicts(with: inside), [])
+    }
+
+    func test_excluding_something_already_left_out_is_not_a_conflict() {
+        var typed = ResolvedDirectives(); typed.exclude = [d]            // d is not in the only-selected set
+        XCTAssertEqual(MomentSequence(orderedIds: [a, b], policy: .onlySelected).conflicts(with: typed), [])
+    }
+
     func test_inactive_sequence_serializes_nil() {
         XCTAssertNil(MomentSequence().toJSON(), "an inactive sequence has no draft to persist")
         XCTAssertNil(MomentSequence.fromJSON(nil))

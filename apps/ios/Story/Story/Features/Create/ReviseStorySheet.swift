@@ -1,10 +1,11 @@
 import SwiftUI
 
-// Post-generation Natural-Language Revision — the Revise entry. Reuses the SAME MomentReferencePicker and
-// MomentReferenceResolver as pre-creation Creative Direction (owner: one shared picker + resolution; do not
-// duplicate). The user types a change and/or adds Moment references; on Apply we resolve them into hard
+// Post-generation Natural-Language Revision — the Revise entry. Shares the SAME interpretation
+// (InterpretationCoordinator / MomentReferenceResolver) and, since Customize UX v2, the SAME Arrange Moments
+// storyboard as pre-creation Customize (ArrangeMomentsSheet, `.revise` mode) instead of the old include-only
+// Moment picker. The user types a change and/or repositions Moments; on Apply we resolve them into hard
 // directives + a soft-direction string and hand them to the coordinator's Revise path, which carries the
-// EXACT base plan so unaffected edits are preserved.
+// EXACT base plan so unaffected edits are preserved. In Revise the storyboard only REPOSITIONS (others stay).
 //
 // SOURCE-MOMENT vs GENERATED-SEGMENT (owner Phase F): this sheet references SOURCE Moments only
 // ("include/exclude/start-with Moment N"). A segment-occurrence reference ("remove the third shot") is a
@@ -21,8 +22,11 @@ struct ReviseStorySheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var instruction = ""
-    @State private var chips: [MomentReferenceChipModel] = []
-    @State private var showPicker = false
+    // Customize UX v2: the storyboard replaces the old include-only Moment picker + chip list. In Revise it only
+    // REPOSITIONS the chosen Moments (policy is always "others stay" — see ArrangeMomentsSheet.Mode.revise).
+    // Inactive by default = "keep the current order".
+    @State private var momentSequence = MomentSequence()
+    @State private var showArrange = false
     @State private var clarification: String?
     // Pre-submit capability confirmation (Phase 4): a mixed supported+unsupported ask confirms partial
     // execution before planning; a fully-unsupported ask is blocked with an explanation and never planned.
@@ -61,19 +65,7 @@ struct ReviseStorySheet: View {
                             if retryable { retryable = false; clarification = nil }
                         }
 
-                    if !story.moments.isEmpty {
-                        Button { showPicker = true } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "photo.on.rectangle.angled").font(.system(size: 13, weight: .semibold))
-                                Text("Add Moment reference").font(StoryTheme.body(13, .medium))
-                            }
-                            .foregroundStyle(StoryTheme.gold)
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .overlay(Capsule().stroke(StoryTheme.gold.opacity(0.5), lineWidth: 1))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    MomentReferenceChipRow(chips: chips) { id in chips.removeAll { $0.id == id } }
+                    if !story.moments.isEmpty { momentOrderRow }
                     if let clarification {
                         Text(clarification).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.danger)
                     }
@@ -112,16 +104,13 @@ struct ReviseStorySheet: View {
                         .disabled(!canApply || isInterpreting)
                 }
             }
-            .sheet(isPresented: $showPicker) {
-                MomentReferencePicker(
+            .sheet(isPresented: $showArrange) {
+                ArrangeMomentsSheet(
+                    mode: .revise,
                     numbering: numbering,
                     momentForId: { id in story.moments.first { $0.id == id } },
-                    alreadyReferenced: Set(chips.map(\.id)),
-                    onConfirm: { ids in
-                        let n = numbering
-                        chips = n.items.filter { ids.contains($0.id) }
-                            .map { MomentReferenceChipModel(id: $0.id, displayNumber: $0.number) }
-                    })
+                    initial: momentSequence,
+                    onSave: { momentSequence = $0 })
             }
             // Phase 4 — fully-unsupported ask: explain + preserve, never plan.
             .alert("Can't do that edit yet", isPresented: Binding(
@@ -142,7 +131,40 @@ struct ReviseStorySheet: View {
     }
 
     private var canApply: Bool {
-        !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chips.isEmpty
+        !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || momentSequence.isActive
+    }
+
+    /// "Moment order" row — mirrors Customize. Default "Keep current order"; opens the storyboard (revise mode)
+    /// to reposition specific Moments. No include-only chips, no hidden must_include.
+    private var momentOrderRow: some View {
+        Button { showArrange = true } label: {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Moment order").font(StoryTheme.body(15, .semibold)).foregroundStyle(StoryTheme.cream)
+                    Text(sequenceSummary).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                HStack(spacing: 5) {
+                    Text(momentSequence.isActive ? "Edit" : "Arrange")
+                        .font(StoryTheme.body(13, .medium)).foregroundStyle(StoryTheme.cream)
+                    Image(systemName: "arrow.right").font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(StoryTheme.cream)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .overlay(Capsule().stroke(StoryTheme.cream.opacity(0.25), lineWidth: 1))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Moment order. \(sequenceSummary)")
+        .accessibilityHint("Opens the storyboard to reposition Moments")
+    }
+
+    private var sequenceSummary: String {
+        guard momentSequence.isActive else { return "Keep current order" }
+        let nums = momentSequence.orderedIds.compactMap { numbering.number(forId: $0) }.map(String.init)
+        return "\(nums.count) repositioned · \(nums.joined(separator: " → "))"
     }
 
     private func apply() {
@@ -176,7 +198,7 @@ struct ReviseStorySheet: View {
     }
 
     private func performApply(_ snapshotText: String) {
-        let snapshotChips = chips
+        let snapshotSequence = momentSequence
         let n = numbering
         let token = UUID()
         interpretToken = token
@@ -201,12 +223,18 @@ struct ReviseStorySheet: View {
                 case .ok:
                     break
                 }
-                // Merge include chips; the Revise path carries the EXACT base plan via onApply (unchanged
-                // semantics — revision operates on the selected version).
                 var directives = outcome.directives
-                for c in snapshotChips where !directives.mustInclude.contains(c.id) {
-                    directives.mustInclude.append(c.id)
+                // Surface a storyboard<->typed-text contradiction BEFORE planning (owner §10) rather than let
+                // the planner reject it as a hard conflict (e.g. "drop Moment 8" typed while Moment 8 is in the
+                // repositioned sequence). Block with a short, actionable message; nothing is silently dropped.
+                let conflicts = snapshotSequence.conflicts(with: directives)
+                if let msg = Self.conflictMessage(conflicts, numbering: n) {
+                    clarification = msg
+                    return
                 }
+                // Fold the repositioned sequence (must_include + order_after). Revise mode never restricts the
+                // source set, so the base edit's other clips are preserved via the base plan carried by onApply.
+                snapshotSequence.apply(to: &directives)
                 if !musicSuffix.isEmpty { clarification = outcome.unsupportedMusicNote }  // non-blocking note
                 // Pass the interpreter's RESIDUAL soft direction (creative leftover only), NOT the raw
                 // instruction. For a pure-structural revise ("Start with Moment 1, then Moment 6, end with
@@ -223,12 +251,31 @@ struct ReviseStorySheet: View {
     private func clarificationText(_ o: InterpretationOutcome, numbering: StoryMomentNumbering) -> String {
         if !o.unresolvedMomentNumbers.isEmpty {
             let list = o.unresolvedMomentNumbers.map { "Moment \($0)" }.joined(separator: ", ")
-            return "\(list) couldn't be matched (this Story has \(numbering.count)). Pick it with “Add Moment reference”, or rephrase."
+            return "\(list) couldn't be matched (this Story has \(numbering.count)). Reposition it with “Arrange”, or rephrase."
         }
         if !o.unresolved.isEmpty {
-            return o.unresolved.joined(separator: " ") + " Try rephrasing, or use “Add Moment reference”."
+            return "I couldn’t apply: “" + o.unresolved.joined(separator: "”, “")
+                + "”. Try rephrasing it, or use “Arrange” to set the order."
         }
         if let b = o.blocking.first { return b }
         return "Please rephrase your instruction so I can apply it."
+    }
+
+    /// Plain-language message for a storyboard<->typed conflict (owner §10). nil when there is no conflict.
+    private static func conflictMessage(_ conflicts: [MomentSequence.Conflict],
+                                        numbering: StoryMomentNumbering) -> String? {
+        func names(_ ids: [UUID]) -> String {
+            ids.compactMap { numbering.number(forId: $0) }.sorted().map { "Moment \($0)" }.joined(separator: ", ")
+        }
+        for c in conflicts {
+            switch c {
+            case .excludedButSequenced(let ids):
+                return "\(names(ids)) is both in your arranged order and asked to be dropped. "
+                     + "Remove it from the order, or don’t drop it."
+            case .outsideOnlySelected(let ids):
+                return "\(names(ids)) isn’t in your selected Moments. Add it in Arrange, or remove the mention."
+            }
+        }
+        return nil
     }
 }

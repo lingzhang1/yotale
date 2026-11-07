@@ -216,6 +216,25 @@ struct CustomizeYourStoryView: View {
             : MomentSequence(orderedIds: present, policy: initialMomentSequence?.policy ?? .allowOthers))
     }
 
+    /// Plain-language message for a storyboard<->typed-text conflict (owner §10); nil when there is none.
+    private static func sequenceConflictMessage(_ conflicts: [MomentSequence.Conflict],
+                                                numbering: StoryMomentNumbering) -> String? {
+        func names(_ ids: [UUID]) -> String {
+            ids.compactMap { numbering.number(forId: $0) }.sorted().map { "Moment \($0)" }.joined(separator: ", ")
+        }
+        for c in conflicts {
+            switch c {
+            case .excludedButSequenced(let ids):
+                return "\(names(ids)) is in your Moment sequence but your text asks to drop it. "
+                     + "Remove it from the sequence, or edit the text."
+            case .outsideOnlySelected(let ids):
+                return "\(names(ids)) isn’t in your sequence, which is set to “Use only the selected Moments”. "
+                     + "Add it in Arrange Moments, change that setting, or edit the text."
+            }
+        }
+        return nil
+    }
+
     /// Split a saved soft-direction draft into the user's own words + the soft shortcuts / Mood preset the app
     /// generated (see GeneratedSoftSplitter). Only the user's words are returned as text.
     private static func splitGeneratedSoft(_ text: String)
@@ -467,6 +486,15 @@ struct CustomizeYourStoryView: View {
                 // Merge the visual-picker include chips into the interpreted directives (chips are include-only;
                 // the typed text owns opening/ending/ordering via the coordinator). Keeps BOTH inputs, one path.
                 var directives = outcome.directives
+                // Owner §10: a contradiction between the storyboard and the typed text is explained BEFORE any
+                // paid planning call, instead of the planner rejecting it (a typed "Start with Moment 9" under
+                // "only these Moments" is an ineligible reference; "drop Moment 4" while 4 is sequenced is
+                // required-AND-excluded). Nothing is silently dropped on either side.
+                if let msg = Self.sequenceConflictMessage(snapshotSequence.conflicts(with: directives),
+                                                          numbering: snapshotNumbering) {
+                    clarification = msg
+                    return
+                }
                 for c in snapshotChips where !directives.mustInclude.contains(c.id) {
                     directives.mustInclude.append(c.id)
                 }

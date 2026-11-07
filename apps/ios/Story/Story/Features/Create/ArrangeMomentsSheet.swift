@@ -15,6 +15,11 @@ import SwiftUI
 // the final cut will match exactly — the Customize screen shows the validated result separately.
 
 struct ArrangeMomentsSheet: View {
+    /// Where the sheet is used. `.create` (Customize) offers both policies. `.revise` edits an EXISTING video
+    /// against its base plan, so it only repositions the chosen Moments and leaves everything else as it is:
+    /// no "use only the selected Moments" (that would contradict preserving the base edit), and the copy says so.
+    enum Mode { case create, revise }
+    var mode: Mode = .create
     let numbering: StoryMomentNumbering
     let momentForId: (UUID) -> MomentModel?
     /// The sequence to edit (seeded from the current draft so reopening is non-destructive — owner §4).
@@ -34,19 +39,24 @@ struct ArrangeMomentsSheet: View {
     /// The card currently highlighted as the drop target while a Moment is being dragged over it.
     @State private var dropTargetId: UUID?
 
-    init(numbering: StoryMomentNumbering,
+    init(mode: Mode = .create,
+         numbering: StoryMomentNumbering,
          momentForId: @escaping (UUID) -> MomentModel?,
          initial: MomentSequence,
          onSave: @escaping (MomentSequence) -> Void) {
+        self.mode = mode
         self.numbering = numbering
         self.momentForId = momentForId
         self.initial = initial
         self.onSave = onSave
         _orderedIds = State(initialValue: initial.orderedIds)
-        _policy = State(initialValue: initial.policy)
+        _policy = State(initialValue: mode == .revise ? .allowOthers : initial.policy)
     }
 
-    private var sequence: MomentSequence { MomentSequence(orderedIds: orderedIds, policy: policy) }
+    /// Revise can only ever reposition (policy fixed to "others stay"); Create honors the user's choice.
+    private var sequence: MomentSequence {
+        MomentSequence(orderedIds: orderedIds, policy: mode == .revise ? .allowOthers : policy)
+    }
     private func number(_ id: UUID) -> Int? { numbering.number(forId: id) }
 
     /// Moments not yet in the sequence (candidates for "Add"). Snapshot order for a stable picker.
@@ -59,7 +69,9 @@ struct ArrangeMomentsSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("Choose the Moments you want to show, then drag to arrange them.")
+                    Text(mode == .revise
+                         ? "Choose the Moments you want to reposition, then drag to arrange them. Everything else in your video stays as it is."
+                         : "Choose the Moments you want to show, then drag to arrange them.")
                         .font(StoryTheme.body(14)).foregroundStyle(StoryTheme.textSecondary)
 
                     header
@@ -67,7 +79,7 @@ struct ArrangeMomentsSheet: View {
 
                     addRow
                     Divider().overlay(StoryTheme.cream.opacity(0.1))
-                    policySection
+                    if mode == .create { policySection }
                     disclosure
                 }
                 .padding(StoryTheme.screenPadding)
@@ -107,9 +119,10 @@ struct ArrangeMomentsSheet: View {
             if orderedIds.isEmpty {
                 Text("Press and hold to drag").font(StoryTheme.body(12)).foregroundStyle(StoryTheme.textMuted)
             } else {
-                Button("Reset to AI order") { orderedIds = []; tapMoveId = nil }
+                Button(mode == .revise ? "Clear" : "Reset to AI order") { orderedIds = []; tapMoveId = nil }
                     .font(StoryTheme.body(13)).foregroundStyle(StoryTheme.gold)
-                    .accessibilityHint("Clears the sequence so the editor chooses the order")
+                    .accessibilityHint(mode == .revise ? "Clears the sequence so your current order is kept"
+                                                       : "Clears the sequence so the editor chooses the order")
             }
         }
     }
@@ -118,7 +131,8 @@ struct ArrangeMomentsSheet: View {
         VStack(spacing: 8) {
             Image(systemName: "rectangle.stack.badge.plus")
                 .font(.system(size: 28)).foregroundStyle(StoryTheme.textMuted)
-            Text("No sequence yet — the editor chooses the order.")
+            Text(mode == .revise ? "No change — your current order is kept."
+                                 : "No sequence yet — the editor chooses the order.")
                 .font(StoryTheme.body(13)).foregroundStyle(StoryTheme.textSecondary)
             Text("Add Moments below to arrange them yourself.")
                 .font(StoryTheme.body(12)).foregroundStyle(StoryTheme.textMuted)
@@ -312,9 +326,15 @@ struct ArrangeMomentsSheet: View {
 
     private var disclosureText: String {
         guard !orderedIds.isEmpty else {
-            return "The editor will choose the order. Add Moments above to arrange them yourself."
+            return mode == .revise
+                ? "Your current order is kept. Add Moments above to reposition them."
+                : "The editor will choose the order. Add Moments above to arrange them yourself."
         }
         let nums = orderedIds.compactMap { number($0) }.map(String.init).joined(separator: ", ")
+        if mode == .revise {
+            return "Moments \(nums) will be placed in this intended order. The rest of your video stays as it is. "
+                 + "If the footage can't fully allow it, the result says so rather than forcing it."
+        }
         switch policy {
         case .allowOthers:
             return "Moments \(nums) are required in this intended order. The editor may include other Moments "

@@ -153,3 +153,49 @@ extension ResolvedDirectives {
         return out.isEmpty ? nil : out
     }
 }
+
+// MARK: - Conflicts between the storyboard and typed instructions (owner §10)
+
+extension MomentSequence {
+
+    /// A contradiction between the arranged sequence and what the user typed. Surfaced BEFORE any paid planning
+    /// call with a short, actionable message — the planner would otherwise reject the request as a hard
+    /// directive conflict / ineligible reference (never silently dropping either side).
+    enum Conflict: Equatable {
+        /// Typed "drop/skip/exclude" for a Moment that is also in the arranged sequence (required AND excluded).
+        case excludedButSequenced([UUID])
+        /// Policy "only the selected Moments" is on, but the typed text names Moments outside the sequence
+        /// (opening / ending / include / order) — they are not eligible under that policy.
+        case outsideOnlySelected([UUID])
+    }
+
+    /// Conflicts between this sequence and the directives interpreted from the user's typed text. Pass the
+    /// TYPED directives (before `apply(to:)` folds the sequence in). Empty when the sequence is inactive.
+    func conflicts(with typed: ResolvedDirectives) -> [Conflict] {
+        guard isActive else { return [] }
+        let sequenced = Set(orderedIds)
+        var out: [Conflict] = []
+
+        let excluded = typed.exclude.filter { sequenced.contains($0) }
+        if !excluded.isEmpty { out.append(.excludedButSequenced(excluded.uniqued())) }
+
+        if policy == .onlySelected {
+            var referenced: [UUID] = typed.mustInclude
+            if let o = typed.opening { referenced.append(o) }
+            if let e = typed.ending { referenced.append(e) }
+            for p in typed.orderAfter + typed.orderAdjacent { referenced.append(contentsOf: p) }
+            // An excluded id outside the set is fine (excluding something already left out is a no-op).
+            let outside = referenced.filter { !sequenced.contains($0) }
+            if !outside.isEmpty { out.append(.outsideOnlySelected(outside.uniqued())) }
+        }
+        return out
+    }
+}
+
+private extension Array where Element == UUID {
+    /// De-duplicate preserving first-seen order.
+    func uniqued() -> [UUID] {
+        var seen = Set<UUID>()
+        return filter { seen.insert($0).inserted }
+    }
+}

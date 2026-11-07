@@ -23,6 +23,7 @@ from edit_planner import (
     EditPlanInputs,
     validate_plan,
     assess_creative_intent,
+    repair_directive_placement,
 )
 import edit_planner as _ep
 
@@ -193,3 +194,50 @@ def test_default_no_sequence_imposes_no_objective():
     assert not hard
     a = assess_creative_intent(plan, inp)
     assert a["satisfied"], "with no directives there are no objectives to miss"
+
+
+# ---- Revise: repositioning the base edit with the storyboard (Customize UX v2, Revise parity) ------------
+# Revise edits an EXISTING video: the base plan is carried and every clip is preserved; the storyboard only
+# REPOSITIONS the chosen Moments (Policy A — others stay). The deterministic reorder (no model call) honors the
+# order_after chain without dropping, adding or re-timing any segment.
+
+def _revise_ctx(directives):
+    return {"mode": "revise", "directives": directives}
+
+
+def _segkey(plan):
+    return sorted((str(x["asset_id"]).lower(), x["source_start_seconds"], x["source_end_seconds"],
+                   x["output_duration_seconds"]) for x in plan["segments"])
+
+
+def test_revise_reposition_reorders_base_plan_deterministically_and_preserves_every_clip():
+    # Base edit plays 3, 12, 7, other. The user repositions 3 -> 7 -> 12 (order_after chain, must_include).
+    base = _plan([M3, M12, M7, M_OTHER])
+    inp = _inputs_full(revision_context=_revise_ctx(_seq_directives()))
+    assert _hard_errors(base, inp) == []
+    assert not assess_creative_intent(base, inp)["satisfied"], "base order violates the repositioned sequence"
+
+    fixed = repair_directive_placement(base, inp)
+    assert fixed is not None, "a pure order violation is fixed by the deterministic reorder (no model call)"
+    order = [str(x["asset_id"]).lower() for x in fixed["segments"]]
+    assert order.index(M3.lower()) < order.index(M7.lower()) < order.index(M12.lower())
+    assert _segkey(fixed) == _segkey(base), "same segments, same timing — nothing dropped, added or re-timed"
+    assert assess_creative_intent(fixed, inp)["satisfied"], "and the objective is now actually met"
+
+
+def test_revise_with_no_sequence_is_untouched():
+    # No directives => nothing to repair; the base edit is preserved as-is (Revise default: keep current order).
+    base = _plan([M3, M12, M7, M_OTHER])
+    inp = _inputs_full(revision_context=_revise_ctx({}))
+    assert assess_creative_intent(base, inp)["satisfied"]
+
+
+def test_revise_repositioned_moment_missing_from_base_is_disclosed_not_invented():
+    # M7 is not in the base video. Repositioning it cannot conjure footage into the edit: the reorder leaves the
+    # plan alone and the unmet inclusion is DISCLOSED (never claimed satisfied), and it is still not a hard block.
+    base = _plan([M3, M12])
+    inp = _inputs_full(revision_context=_revise_ctx(_seq_directives()))
+    assert _hard_errors(base, inp) == []
+    a = assess_creative_intent(base, inp)
+    assert not a["satisfied"]
+    assert "inclusion" in {m["code"] for m in a["material_unmet"]}
