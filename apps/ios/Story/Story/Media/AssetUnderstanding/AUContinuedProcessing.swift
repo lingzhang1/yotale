@@ -25,7 +25,7 @@ enum AUContinuedProcessing {
     static var identifier: String { (Bundle.main.bundleIdentifier ?? "app.yotale") + ".au.import" }
     /// Smallest import that earns a system-visible task (≈15 s of analysis per clip).
     static let minimumBatch = 3
-    private static let log = Logger(subsystem: "app.yotale", category: "au-continued")
+    nonisolated private static let log = Logger(subsystem: "app.yotale", category: "au-continued")
 
     /// True ONLY while a system task is really running for this work — drives the "continues in the background"
     /// copy. Never claimed otherwise.
@@ -69,6 +69,7 @@ enum AUContinuedProcessing {
         do {
             try BGTaskScheduler.shared.submit(request)
             submitted = true
+            log.notice("continued processing submitted batch=\(batchCount)")
         } catch {
             // Unavailable (Simulator) / NotPermitted / TooManyPendingTaskRequests: foreground-only, no harm done.
             log.notice("continued processing unavailable: \(String(describing: error), privacy: .public)")
@@ -82,16 +83,19 @@ enum AUContinuedProcessing {
         let task = box.task
         submitted = false
         isRunning = true
+        log.notice("continued processing started")
         let finished = OSAllocatedUnfairLock(initialState: false)
         func complete(_ success: Bool) {
             let already = finished.withLock { v -> Bool in let o = v; v = true; return o }
             guard !already else { return }
             isRunning = false
+            log.notice("continued processing completed success=\(success)")
             task.setTaskCompleted(success: success)
         }
         // Expiration/cancel: stop starting NEW jobs. The in-flight request is left to finish or be torn down by
         // suspension; it is never cancelled mid-flight (that would resend and double-bill on the next drain).
         task.expirationHandler = {
+            log.notice("continued processing expired or cancelled by system/user")
             AssetUnderstandingQueue.stopGate.set()
             Task { @MainActor in complete(false) }
         }
@@ -101,6 +105,7 @@ enum AUContinuedProcessing {
         var doneAtLastLaunch = -1
         var fruitlessLaunches = 0
         var backoffSince: Date?
+        var lastState: AUQueueSnapshot.State?
         let backoffPatience: TimeInterval = 180   // ride out a short 503/429 blip, never an endless one
 
         while !AssetUnderstandingQueue.stopGate.isSet, !finished.withLock({ $0 }) {
@@ -111,6 +116,10 @@ enum AUContinuedProcessing {
             task.updateTitle("Analyzing your Moments", subtitle: "\(snap.done) of \(snap.total) done")
 
             // Done, or waiting on something only the user / the clock / the network can supply.
+            if snap.state != lastState {
+                log.notice("supervisor state=\(String(describing: snap.state), privacy: .public) done=\(snap.done) total=\(snap.total) draining=\(AssetUnderstandingQueue.isDraining)")
+                lastState = snap.state
+            }
             switch snap.state {
             case .idle, .complete, .waitingForNetwork, .waitingToSignIn, .usageLimit, .retryRequired:
                 complete(snap.state == .complete || snap.state == .idle)
@@ -131,7 +140,7 @@ enum AUContinuedProcessing {
                 // the rest is backing off / failing: stop instead of spinning. Jobs stay PENDING for the next
                 // foreground / reconnect / retry timer.
                 if snap.done == doneAtLastLaunch { fruitlessLaunches += 1 } else { fruitlessLaunches = 0 }
-                if fruitlessLaunches >= 2 { break }
+                if fruitlessLaunches >= 2 { log.notice("supervisor stop=no_progress done=\(snap.done)"); break }
                 doneAtLastLaunch = snap.done
                 Task { @MainActor in await queue.drain() }
             }

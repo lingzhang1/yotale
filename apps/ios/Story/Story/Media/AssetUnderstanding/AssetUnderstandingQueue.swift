@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import UIKit
 
 // AssetUnderstandingQueue — the FROZEN persistent on-device AU job queue
 // (06-asset-understanding.md §6-7, §9-10).
@@ -66,6 +67,18 @@ final class AssetUnderstandingQueue {
     /// stop two drains (e.g. scene-active + a background continued-processing task) from analyzing the same job
     /// twice — which would double-bill. All drains share this one flag.
     private static var drainInFlight = false
+    private static var drainStartedAt: Date?
+    /// Upper bound for one LOCAL step (frame extraction or source hash) of one clip. Normal is a few seconds.
+    static let localStepDeadline: TimeInterval = 90
+    /// "fg" / "bg" / "inactive" for diagnostics (UIApplication state; main actor).
+    static func backgroundState() -> String {
+        switch UIApplication.shared.applicationState {
+        case .active: return "fg"
+        case .background: return "bg"
+        case .inactive: return "inactive"
+        @unknown default: return "unknown"
+        }
+    }
     /// True while any drain in this process is processing jobs (live fact for the status UI / supervisor).
     static var isDraining: Bool { drainInFlight }
     /// Thread-safe stop request set by a system expiration / cancel. Checked between jobs by EVERY drain (never
@@ -157,11 +170,21 @@ final class AssetUnderstandingQueue {
     /// after sign-in. This is the "defer background AI until an authenticated session exists" boundary; there
     /// is NO sign-in prompt here (background work waits silently).
     func drain(maxJobs: Int = 50, shouldContinue: @escaping () -> Bool = { true }) async {
-        if Self.drainInFlight { return }
-        guard isAuthed() else { return }   // defer silently until authenticated
-        guard Self.sharedIsOnline() else { return }   // offline: leave jobs untouched, resume on reconnect
+        if Self.drainInFlight {
+            let held = Self.drainStartedAt.map { Int(Date().timeIntervalSince($0)) } ?? -1
+            AULog.queue.notice("au drain skip=in_flight held_s=\(held)")
+            return
+        }
+        guard isAuthed() else { AULog.queue.notice("au drain skip=signed_out"); return }   // defer silently until authenticated
+        guard Self.sharedIsOnline() else { AULog.queue.notice("au drain skip=offline"); return }   // resume on reconnect
         Self.drainInFlight = true
-        defer { Self.drainInFlight = false }
+        Self.drainStartedAt = Date()
+        AULog.queue.notice("au drain begin bg=\(Self.backgroundState(), privacy: .public)")
+        defer {
+            Self.drainInFlight = false
+            Self.drainStartedAt = nil
+            AULog.queue.notice("au drain end")
+        }
 
         var processed = 0
         var completedAny = false
@@ -173,7 +196,10 @@ final class AssetUnderstandingQueue {
             // Skipped for THIS drain only (it never spins on the same job).
             if CloudHydrationGate.shared.isHydrating(momentId: job.momentId) { skipped.insert(job.momentId); continue }
             // Token freshness BEFORE the paid request (the snapshot provider is stale after a long background).
-            guard await Self.sharedEnsureFreshToken() else { markAuthRequired(job); break }
+            guard await Self.sharedEnsureFreshToken() else {
+                AULog.queue.notice("au job=\(AULog.short(job.momentId), privacy: .public) token=unavailable -> auth_required")
+                markAuthRequired(job); break
+            }
             processed += 1
             let before = job.stateRaw
             let outcome = await run(job)
@@ -288,8 +314,14 @@ final class AssetUnderstandingQueue {
             return .continue
         }
 
+        let tag = AULog.short(job.momentId)
+        let started = Date()
+        func ms() -> Int { Int(Date().timeIntervalSince(started) * 1000) }
         do {
-            let frames = try await extractFrames(url)
+            AULog.queue.notice("au job=\(tag, privacy: .public) step=extract begin bg=\(Self.backgroundState(), privacy: .public)")
+            let extract = extractFrames
+            let frames = try await AUStepDeadline.run("extract", seconds: Self.localStepDeadline) { try await extract(url) }
+            AULog.queue.notice("au job=\(tag, privacy: .public) step=extract ok frames=\(frames.count) ms=\(ms())")
             var ctx: [String: Any]?
             if let j = job.captureContextJSON, let d = j.data(using: .utf8) {
                 ctx = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
@@ -298,7 +330,10 @@ final class AssetUnderstandingQueue {
             // frames were just extracted from (so sha + frames refer to one file version). Best-effort — a
             // hash failure (missing/replaced file, read error) simply yields nil and AU proceeds WITHOUT an
             // evidence claim (caching unavailable this run; never blocks AU). Reuses the streaming upload hasher.
-            let contentSha: String? = await Self.hashSource(url: url)
+            let contentSha: String? = try await AUStepDeadline.run("hash", seconds: Self.localStepDeadline) {
+                await Self.hashSource(url: url)
+            }
+            AULog.queue.notice("au job=\(tag, privacy: .public) step=request begin ms=\(ms()) bg=\(Self.backgroundState(), privacy: .public)")
             let dto = try await service.analyze(
                 frames: frames,
                 momentId: job.momentId,
@@ -306,6 +341,7 @@ final class AssetUnderstandingQueue {
                 captureContext: ctx,
                 contentSha256: contentSha
             )
+            AULog.queue.notice("au job=\(tag, privacy: .public) step=request ok ms=\(ms())")
             try upsertUnderstanding(dto)
             job.state = .complete
             job.lastError = nil
@@ -314,6 +350,17 @@ final class AssetUnderstandingQueue {
             // Transient derived frames are released here (never persisted).
             return .continue
         } catch {
+            AULog.queue.error("au job=\(tag, privacy: .public) failed ms=\(ms()) bg=\(Self.backgroundState(), privacy: .public) error=\(String(describing: error).prefix(200), privacy: .public)")
+            if let timeout = error as? AUStepTimeout {
+                // A LOCAL step (no paid request yet) never returned. Not a failure of the Moment: back to
+                // PENDING, no attempt burned, and stop this drain so the single-flight lock is released and the
+                // next foreground / reconnect / supervisor round starts fresh.
+                job.state = .pending
+                job.lastError = timeout.description
+                job.updatedAt = .now
+                try? context.save()
+                return .stop
+            }
             // Classify the failure to decide RETRY vs STOP (pre-beta AU-429 hardening). All state uses the
             // EXISTING persisted fields (attempts / nextEligibleAt / lastError / state) so the SwiftData
             // @Model shape is UNCHANGED (no migration; honors the FROZEN model + device-build gate).
