@@ -132,9 +132,10 @@ struct StoryHomeView: View {
                         .disabled(!readiness.isPlannable)
                         .accessibilityHint(readiness.isPlannable ? "" : readiness.copy)
                         // Honest status line — never a generic "coming later".
-                        Text(readiness.copy)
-                            .font(StoryTheme.body(11))
-                            .foregroundStyle(readiness.isPlannable ? StoryTheme.cream.opacity(0.3) : StoryTheme.textMuted)
+                        AUProgressStatusView(
+                            momentIds: Set(story.moments.map(\.id)),
+                            fallback: readiness.copy,
+                            foreground: readiness.isPlannable ? StoryTheme.cream.opacity(0.3) : StoryTheme.textMuted)
                     }
                 }
                 .padding(.top, 20)
@@ -348,7 +349,8 @@ struct StoryHomeView: View {
             if !created.isEmpty {
                 let auQueue = AssetUnderstandingQueue(context: context)
                 auQueue.enqueueImportedVideos(created)
-                Task { await auQueue.drain() }        // opportunistic; failures leave the job PENDING
+                // Foreground drain now; on iOS 26+ also asks the system to keep going if the user leaves.
+                AUContinuedProcessing.startAfterImport(queue: auQueue, context: context, momentIds: Set(created.map(\.id)))
                 Task { await refreshAfterCapture() }  // reuse the capture poll: AU lands -> Coverage/Idea update
             }
         }

@@ -157,6 +157,7 @@ enum AssetUnderstandingServiceError: Error, LocalizedError {
                                          // after Retry-After (the server's ai_sync 20/min window).
     case quotaExhausted(scope: String)   // 429 error:"quota_exceeded" — an ALLOWANCE is spent (daily gens /
                                          // monthly USD / global). PERMANENT for the period: do NOT auto-retry.
+    case unauthorized(Int)         // 401/403 — token expired/rejected; the job waits for a refresh, never fails
     case badStatus(Int)
     case decoding(Error)
 
@@ -165,7 +166,7 @@ enum AssetUnderstandingServiceError: Error, LocalizedError {
     /// NOT (retrying an exhausted daily cap just burns attempts and never succeeds until the period resets).
     var isRetryable: Bool {
         switch self {
-        case .transport, .unavailableRetryable, .rateLimited: return true
+        case .transport, .unavailableRetryable, .rateLimited, .unauthorized: return true
         case .quotaExhausted, .badStatus, .decoding: return false
         }
     }
@@ -183,6 +184,7 @@ enum AssetUnderstandingServiceError: Error, LocalizedError {
         case .unavailableRetryable: return "Moment analysis is busy; will retry."
         case .rateLimited: return "Moment analysis is rate-limited; will retry shortly."
         case .quotaExhausted(let s): return "Moment analysis paused — usage limit reached (\(s))."
+        case .unauthorized: return "Sign-in expired; Moment analysis will continue after you reopen YoTale."
         case .badStatus(let c): return "Unexpected analysis response (\(c))."
         case .decoding: return "Analysis returned an unexpected shape."
         }
@@ -260,6 +262,9 @@ struct AssetUnderstandingService: AUAnalyzing {
             // quota_exceeded (or an unrecognized 429): treat as a permanent allowance stop — no auto-retry.
             let scope = (err?["scope"] as? String) ?? (err?["class"] as? String) ?? "quota"
             throw AssetUnderstandingServiceError.quotaExhausted(scope: scope)
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            throw AssetUnderstandingServiceError.unauthorized(http.statusCode)
         }
         guard http.statusCode == 200 else {
             throw AssetUnderstandingServiceError.badStatus(http.statusCode)

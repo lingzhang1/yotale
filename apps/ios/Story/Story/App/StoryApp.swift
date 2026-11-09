@@ -90,6 +90,20 @@ struct StoryApp: App {
                     // only when this returns true. In dev optional-auth a restored/real session reports true;
                     // signed out, AU jobs stay PENDING and resume on sign-in (no model call meanwhile).
                     AssetUnderstandingQueue.sharedIsAuthed = { [weak auth] in auth?.isSignedIn ?? false }
+                    // AU background continuity: refresh the token BEFORE each paid request (the captured
+                    // authTokenProvider snapshot goes stale while backgrounded), know the live network path, and
+                    // resume the queue when the network returns.
+                    AssetUnderstandingQueue.sharedEnsureFreshToken = { [weak auth] in
+                        guard let auth else { return false }
+                        return await auth.validAccessToken() != nil
+                    }
+                    AssetUnderstandingQueue.sharedIsOnline = { NetworkReachability.shared.isSatisfied }
+                    AUDiag.printAtLaunch()   // the previous run's AU/background-task events, incl. how it ended
+                    AUDiag.record("launch app=\(AssetUnderstandingQueue.backgroundState())")
+                    NetworkReachability.shared.onBecameSatisfied = {
+                        let q = AssetUnderstandingQueue(context: container.mainContext)
+                        Task { await q.drain() }
+                    }
                     // P1-E (AU durability): push a completed understanding to the account store as soon as it
                     // is produced (AU drain) OR as soon as its media becomes cloud-backed (upload verified),
                     // instead of only on the next foreground/sign-in. Bound here to the live AuthStore +
@@ -213,6 +227,7 @@ struct StoryApp: App {
             // Opportunistic AU drain when the app becomes active (network may now be up,
             // or pending jobs may have been enqueued last session).
             if phase == .active {
+                AssetUnderstandingQueue.stopGate.clear()   // a prior system expiration only paused the drain
                 let q = AssetUnderstandingQueue(context: container.mainContext)
                 Task { await q.drain() }
                 // P0 Phase 2 + R1: on every foreground, resume any unfinished edit-plan operation whose poll was

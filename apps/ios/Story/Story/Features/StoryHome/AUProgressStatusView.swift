@@ -1,0 +1,55 @@
+import SwiftUI
+import SwiftData
+
+/// Honest Asset Understanding status for Story Home. Every word comes from the PERSISTED queue rows
+/// (AssetUnderstandingJobModel) mapped by AUQueueStatusMapper — no timers, no guessed percentages. The @Query
+/// makes it re-render whenever the queue writes a state change; the live facts (network, a drain running, a
+/// system background task running) are read at render time.
+struct AUProgressStatusView: View {
+    let momentIds: Set<UUID>
+    /// Shown when the queue has nothing to report for this Story (the readiness copy stays the source of truth).
+    let fallback: String
+    let foreground: Color
+
+    @Environment(\.modelContext) private var context
+    @Query private var jobs: [AssetUnderstandingJobModel]
+    @State private var showDiag = false
+    #if DEBUG
+    private let diagEnabled = true
+    #else
+    private let diagEnabled = false
+    #endif
+
+    var body: some View {
+        let snapshot = AssetUnderstandingQueue.snapshot(context: context, momentIds: momentIds)
+        let line = AUQueueStatusMapper.line(snapshot, continuesInBackground: AUContinuedProcessing.isRunning)
+        VStack(spacing: 4) {
+            Text(line ?? fallback)
+                .font(StoryTheme.body(11))
+                .foregroundStyle(foreground)
+                .multilineTextAlignment(.center)
+                .onTapGesture { if diagEnabled { showDiag.toggle() } }   // DEBUG: tap for the AU event log
+            if diagEnabled && showDiag {
+                Text(AUDiag.lines().suffix(25).joined(separator: "\n"))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(foreground)
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if AUQueueStatusMapper.offersRetry(snapshot) {
+                Button("Retry") {
+                    let q = AssetUnderstandingQueue(context: context)
+                    q.retryParked()
+                    AUContinuedProcessing.startAfterImport(queue: q, context: context)
+                }
+                .font(StoryTheme.body(11))
+                .foregroundStyle(StoryTheme.cream.opacity(0.7))
+                .accessibilityHint("Tries the Moments that couldn't be analyzed again")
+            }
+        }
+        .accessibilityElement(children: .combine)
+        // `jobs` is read only to subscribe this view to queue writes.
+        .accessibilityIdentifier("au-status-\(jobs.count)")
+    }
+}

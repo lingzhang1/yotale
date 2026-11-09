@@ -97,7 +97,7 @@ struct MomentsManageView: View {
             if !created.isEmpty {
                 let auQueue = AssetUnderstandingQueue(context: context)
                 auQueue.enqueueImportedVideos(created)
-                Task { await auQueue.drain() }
+                AUContinuedProcessing.startAfterImport(queue: auQueue, context: context, momentIds: Set(created.map(\.id)))
             }
         }
         .confirmationDialog("Remove this moment?",
