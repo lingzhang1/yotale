@@ -38,6 +38,12 @@
         <string>DMSans-Italic.ttf</string>
     </array>
     <!-- P0 Beta Auth Increment 4: custom-scheme redirect for the Cognito OAuth (Sign in with Apple) callback. -->
+    <!-- AU background continuity: the ONE BGContinuedProcessingTask identifier (iOS 26+, user-initiated imports
+         only). Must equal AUContinuedProcessing.identifier = <bundle id>.au.import. No UIBackgroundModes entry. -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>$(PRODUCT_BUNDLE_IDENTIFIER).au.import</string>
+    </array>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

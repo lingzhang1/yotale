@@ -53,6 +53,28 @@ final class AssetUnderstandingQueue {
     /// understanding whose media is not yet cloud-backed — so a Moment whose sha is not ready is simply retried
     /// by the upload-complete hook later, never lost.
     nonisolated(unsafe) static var sharedPushUnderstanding: () -> Void = { }
+
+    /// Ensures the bearer token the NEXT request will carry is fresh (refreshing it when it is inside the expiry
+    /// margin). `StoryBackend.authTokenProvider` is a captured SNAPSHOT that only foreground handlers refresh, so
+    /// a drain running while the app is backgrounded for an hour would otherwise send an expired token. Wired by
+    /// StoryApp to `AuthStore.validAccessToken() != nil`; default true so tests/unwired sites are unchanged.
+    nonisolated(unsafe) static var sharedEnsureFreshToken: () async -> Bool = { true }
+    /// Whether the network path is currently usable (wired to NetworkReachability). Default true.
+    nonisolated(unsafe) static var sharedIsOnline: () -> Bool = { true }
+
+    /// PROCESS-WIDE single-flight. Every call site builds its own queue instance, so a per-instance flag could not
+    /// stop two drains (e.g. scene-active + a background continued-processing task) from analyzing the same job
+    /// twice — which would double-bill. All drains share this one flag.
+    private static var drainInFlight = false
+    /// True while any drain in this process is processing jobs (live fact for the status UI / supervisor).
+    static var isDraining: Bool { drainInFlight }
+    /// Thread-safe stop request set by a system expiration / cancel. Checked between jobs by EVERY drain (never
+    /// cancels an in-flight billed request). Cleared on foreground and at the start of a user-initiated import.
+    static let stopGate = AUStopGate()
+    private static var retryTask: Task<Void, Never>?
+    /// Longest in-app retry timer; farther-out jobs wait for the next trigger (foreground / network / import).
+    static let retryTimerCeiling: TimeInterval = 15 * 60
+
     private let framePolicy = MomentFrameExtractor.framePolicy
     private let promptVersion = "au_prompt/2"
     private let schemaVersion = "moment_understanding/2"
@@ -60,8 +82,6 @@ final class AssetUnderstandingQueue {
     // Bounded exponential backoff: 5s, 20s, 80s, ... capped at 10 min.
     private let baseBackoff: TimeInterval = 5
     private let maxBackoff: TimeInterval = 600
-
-    private var draining = false
 
     init(
         context: ModelContext,
@@ -136,33 +156,124 @@ final class AssetUnderstandingQueue {
     /// no-op — pending jobs are left untouched (not failed, no backoff burned) and resume on the next drain
     /// after sign-in. This is the "defer background AI until an authenticated session exists" boundary; there
     /// is NO sign-in prompt here (background work waits silently).
-    func drain(maxJobs: Int = 50) async {
-        if draining { return }
+    func drain(maxJobs: Int = 50, shouldContinue: @escaping () -> Bool = { true }) async {
+        if Self.drainInFlight { return }
         guard isAuthed() else { return }   // defer silently until authenticated
-        draining = true
-        defer { draining = false }
+        guard Self.sharedIsOnline() else { return }   // offline: leave jobs untouched, resume on reconnect
+        Self.drainInFlight = true
+        defer { Self.drainInFlight = false }
 
         var processed = 0
         var completedAny = false
-        while processed < maxJobs, let job = nextEligibleJob() {
-            processed += 1
+        var skipped = Set<UUID>()
+        while processed < maxJobs, shouldContinue(), !Self.stopGate.isSet, !Task.isCancelled,
+              let job = nextEligibleJob(excluding: skipped) {
             // R7-F: do NOT analyze a Moment while its Story's cloud state is still hydrating — a restore may
             // be about to supply a reusable understanding (restore first, regenerate only if missing).
-            if CloudHydrationGate.shared.isHydrating(momentId: job.momentId) { continue }
+            // Skipped for THIS drain only (it never spins on the same job).
+            if CloudHydrationGate.shared.isHydrating(momentId: job.momentId) { skipped.insert(job.momentId); continue }
+            // Token freshness BEFORE the paid request (the snapshot provider is stale after a long background).
+            guard await Self.sharedEnsureFreshToken() else { markAuthRequired(job); break }
+            processed += 1
             let before = job.stateRaw
-            await run(job)
+            let outcome = await run(job)
             if before != "complete" && job.stateRaw == "complete" { completedAny = true }
+            if outcome == .stop { break }
         }
         // P1-E (AU durability): a result produced in THIS session is pushed now (coalesced: one push for the
         // whole batch, not one per Moment) instead of waiting for the next foreground/sign-in. No-op until
         // StoryApp wires the seam; idempotent PUT; media-not-yet-backed understandings are retried by the
         // upload-complete hook, never lost.
         if completedAny { Self.sharedPushUnderstanding() }
+        scheduleRetryIfNeeded()
+    }
+
+    /// Reset jobs that exhausted their bounded retries (parked ~24h out) so a user-initiated Retry runs them now.
+    /// Returns how many were reset. Does not drain; the caller does.
+    @discardableResult
+    func retryParked() -> Int {
+        let now = Date()
+        let pending = (try? context.fetch(FetchDescriptor<AssetUnderstandingJobModel>(
+            predicate: #Predicate { $0.stateRaw == "pending" }
+        ))) ?? []
+        var n = 0
+        for job in pending where AUQueueStatusMapper.isParkedForRetry(Self.facts(job), now: now) {
+            job.attempts = 0
+            job.nextEligibleAt = now
+            job.lastError = nil
+            job.updatedAt = now
+            n += 1
+        }
+        if n > 0 { try? context.save() }
+        return n
+    }
+
+    /// A job in ordinary backoff would otherwise wait for the next app trigger. While the app is alive, wake once
+    /// when the soonest backoff ends (bounded to 15 min). Never for auth/offline/quota/parked jobs — those wait
+    /// for their own signal (sign-in / reconnect / next day / manual retry).
+    private func scheduleRetryIfNeeded() {
+        Self.retryTask?.cancel(); Self.retryTask = nil
+        let now = Date()
+        let pending = (try? context.fetch(FetchDescriptor<AssetUnderstandingJobModel>(
+            predicate: #Predicate { $0.stateRaw == "pending" && $0.nextEligibleAt > now }
+        ))) ?? []
+        let waits = pending.compactMap { j -> TimeInterval? in
+            let err = j.lastError ?? ""
+            if err.hasPrefix(AUMarker.quotaPrefix) || err.hasPrefix(AUMarker.authRequired) || err.hasPrefix(AUMarker.offline) { return nil }
+            let w = j.nextEligibleAt.timeIntervalSince(now)
+            return w <= Self.retryTimerCeiling ? w : nil
+        }
+        guard let soonest = waits.min() else { return }
+        Self.retryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((soonest + 0.5) * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            await self.drain()
+        }
+    }
+
+    private func markAuthRequired(_ job: AssetUnderstandingJobModel) {
+        job.state = .pending
+        job.lastError = AUMarker.authRequired
+        job.updatedAt = .now
+        try? context.save()
+    }
+
+    static let recentWindow: TimeInterval = 12 * 3600
+
+    /// Moment ids of every job not yet complete (pending or running).
+    static func unfinishedMomentIds(context: ModelContext) -> Set<UUID> {
+        let all = (try? context.fetch(FetchDescriptor<AssetUnderstandingJobModel>())) ?? []
+        return Set(all.filter { $0.state != .complete }.map(\.momentId))
+    }
+
+    static func facts(_ j: AssetUnderstandingJobModel) -> AUJobFacts {
+        AUJobFacts(momentId: j.momentId, state: j.state, attempts: j.attempts,
+                   nextEligibleAt: j.nextEligibleAt, lastError: j.lastError)
+    }
+
+    /// Status for the UI, built ONLY from persisted job rows + two live facts.
+    static func snapshot(context: ModelContext, momentIds: Set<UUID>? = nil) -> AUQueueSnapshot {
+        let all = (try? context.fetch(FetchDescriptor<AssetUnderstandingJobModel>())) ?? []
+        let scoped: [AssetUnderstandingJobModel]
+        if let momentIds {
+            scoped = all.filter { momentIds.contains($0.momentId) }
+        } else {
+            // Unfinished work plus what finished recently, so "X of Y" reads as the current batch and an old
+            // library never inflates it.
+            let since = Date().addingTimeInterval(-recentWindow)
+            scoped = all.filter { $0.state != .complete || $0.updatedAt >= since }
+        }
+        let facts = scoped.map(facts)
+        return AUQueueStatusMapper.snapshot(moments: facts.map(\.momentId), understood: [], jobs: facts,
+                                            isOnline: sharedIsOnline(), isDraining: drainInFlight)
     }
 
     // MARK: - One job
 
-    private func run(_ job: AssetUnderstandingJobModel) async {
+    private enum RunOutcome { case `continue`, stop }
+
+    @discardableResult
+    private func run(_ job: AssetUnderstandingJobModel) async -> RunOutcome {
         job.state = .running
         job.updatedAt = .now
         try? context.save()
@@ -174,7 +285,7 @@ final class AssetUnderstandingQueue {
            job.relativeMediaPath.hasPrefix("media/") {
             context.delete(job)
             try? context.save()
-            return
+            return .continue
         }
 
         do {
@@ -201,10 +312,33 @@ final class AssetUnderstandingQueue {
             job.updatedAt = .now
             try? context.save()
             // Transient derived frames are released here (never persisted).
+            return .continue
         } catch {
             // Classify the failure to decide RETRY vs STOP (pre-beta AU-429 hardening). All state uses the
             // EXISTING persisted fields (attempts / nextEligibleAt / lastError / state) so the SwiftData
             // @Model shape is UNCHANGED (no migration; honors the FROZEN model + device-build gate).
+            let disposition = AUDisposition.classify(error, isOnline: Self.sharedIsOnline())
+            switch disposition {
+            case .authPause:
+                // Token rejected: not a failure of the work. Back to PENDING, no attempt burned, stop the drain.
+                markAuthRequired(job)
+                return .stop
+            case .offlinePause:
+                job.state = .pending
+                job.lastError = AUMarker.offline
+                job.updatedAt = .now
+                try? context.save()
+                return .stop
+            case .cancelled:
+                // System expiration / user cancel: put it back untouched (the interrupted request is retried
+                // later; idempotent upsert guarantees one understanding per Moment).
+                job.state = .pending
+                job.updatedAt = .now
+                try? context.save()
+                return .stop
+            default:
+                break
+            }
             job.lastError = String(describing: error).prefix(300).description
             let auErr = error as? AssetUnderstandingServiceError
 
@@ -219,7 +353,7 @@ final class AssetUnderstandingQueue {
                 job.lastError = "quota_exhausted:\(scope) (deferred to next day)"
                 job.updatedAt = .now
                 try? context.save()
-                return
+                return .continue
             }
 
             if case let .rateLimited(retryAfter)? = auErr {
@@ -236,7 +370,7 @@ final class AssetUnderstandingQueue {
                 job.nextEligibleAt = Date().addingTimeInterval(Self.withJitter(base))
                 job.updatedAt = .now
                 try? context.save()
-                return
+                return .continue
             }
 
             // Transient (503 / transport) OR a hard error (badStatus / decoding). Transient errors are
@@ -244,7 +378,7 @@ final class AssetUnderstandingQueue {
             // retrying; bound it by attempts so the queue stops hammering it (parks far out once the ceiling
             // is reached) while still surviving a restart (state persists).
             job.attempts += 1
-            let retryable = auErr?.isRetryable ?? true   // unknown (non-AU) error -> treat as transient
+            let retryable = disposition != .hardError   // unknown (non-AU) error -> treat as transient
             if !retryable && job.attempts >= Self.maxHardAttempts {
                 // Permanent-looking failure that exhausted its bounded attempts: park far out (no terminal
                 // state exists in the FROZEN model, so a distant nextEligibleAt is the no-migration stop).
@@ -256,6 +390,7 @@ final class AssetUnderstandingQueue {
             }
             job.updatedAt = .now
             try? context.save()
+            return .continue
         }
     }
 
@@ -317,14 +452,14 @@ final class AssetUnderstandingQueue {
         ))?.first) != nil
     }
 
-    private func nextEligibleJob() -> AssetUnderstandingJobModel? {
+    private func nextEligibleJob(excluding skipped: Set<UUID> = []) -> AssetUnderstandingJobModel? {
         let now = Date()
         var desc = FetchDescriptor<AssetUnderstandingJobModel>(
             predicate: #Predicate { $0.stateRaw == "pending" && $0.nextEligibleAt <= now },
             sortBy: [SortDescriptor(\.createdAt, order: .forward)]
         )
-        desc.fetchLimit = 1
-        return (try? context.fetch(desc))?.first
+        if skipped.isEmpty { desc.fetchLimit = 1 }
+        return ((try? context.fetch(desc)) ?? []).first { !skipped.contains($0.momentId) }
     }
 
     private func backoff(for attempts: Int) -> TimeInterval {
@@ -367,4 +502,13 @@ final class AssetUnderstandingQueue {
             try? MediaUploadService.sha256Hex(fileURL: url)
         }.value
     }
+}
+
+/// A tiny lock-protected flag (the expiration handler runs on an arbitrary queue).
+final class AUStopGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
+    func clear() { lock.lock(); value = false; lock.unlock() }
 }

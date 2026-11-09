@@ -160,7 +160,8 @@ struct MomentsLibraryView: View {
         try? context.save()
         // Auto-enroll each imported Moment for backup when Auto Backup is on (no-op otherwise).
         for m in created { uploadQueue.autoEnrollIfEnabled(moment: m) }
-        Task { await auQueue.drain(); await uploadQueue.drain(); reload() }
+        AUContinuedProcessing.startAfterImport(queue: auQueue, context: context)
+        Task { await uploadQueue.drain(); reload() }
     }
 
     /// R4-A.1: build an upload queue bound to the live AuthStore (owner-scoped token; Wi-Fi/cellular gate from
