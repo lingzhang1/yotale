@@ -123,6 +123,13 @@ enum AUContinuedProcessing {
         let backoffPatience: TimeInterval = 180   // ride out a short 503/429 blip, never an endless one
 
         while !AssetUnderstandingQueue.stopGate.isSet, !finished.withLock({ $0 }) {
+            // The job already in flight when the task started is real work this task carries out: count it, so
+            // progress is not stuck at 0 while it finishes (device: expired 30 s after backgrounding at 0/6 while
+            // an older backlog job, outside the batch, was mid-request).
+            if let cur = AssetUnderstandingQueue.currentStage, !taskBatch.contains(cur.momentId) {
+                taskBatch.insert(cur.momentId)
+                AUDiag.record("supervisor adopted in-flight job \(AULog.short(cur.momentId))")
+            }
             let snap = AssetUnderstandingQueue.snapshot(context: context, momentIds: taskBatch)   // later imports join
             // Real per-step progress (no timers): 4 units per Moment — frames extracted (+1), source hashed (+1),
             // analysis returned (+2). The system expires tasks whose progress stops moving, and whole-Moment

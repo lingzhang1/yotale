@@ -314,6 +314,7 @@ final class AssetUnderstandingQueue {
         // test is not coupled to the device filesystem.
         if !fileExists(job.relativeMediaPath),
            job.relativeMediaPath.hasPrefix("media/") {
+            Self.currentStage = nil
             context.delete(job)
             try? context.save()
             return .continue
@@ -321,6 +322,7 @@ final class AssetUnderstandingQueue {
 
         let tag = AULog.short(job.momentId)
         let started = Date()
+        Self.currentStage = (job.momentId, 0)
         func ms() -> Int { Int(Date().timeIntervalSince(started) * 1000) }
         do {
             AULog.queue.notice("au job=\(tag, privacy: .public) step=extract begin bg=\(Self.backgroundState(), privacy: .public)")
