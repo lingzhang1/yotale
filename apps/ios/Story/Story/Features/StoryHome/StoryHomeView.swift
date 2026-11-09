@@ -350,7 +350,7 @@ struct StoryHomeView: View {
                 let auQueue = AssetUnderstandingQueue(context: context)
                 auQueue.enqueueImportedVideos(created)
                 // Foreground drain now; on iOS 26+ also asks the system to keep going if the user leaves.
-                AUContinuedProcessing.startAfterImport(queue: auQueue, context: context)
+                AUContinuedProcessing.startAfterImport(queue: auQueue, context: context, momentIds: Set(created.map(\.id)))
                 Task { await refreshAfterCapture() }  // reuse the capture poll: AU lands -> Coverage/Idea update
             }
         }

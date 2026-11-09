@@ -68,6 +68,8 @@ final class AssetUnderstandingQueue {
     /// twice — which would double-bill. All drains share this one flag.
     private static var drainInFlight = false
     private static var drainStartedAt: Date?
+    /// Moments a user just imported: picked before older backlog (still oldest-first within each group).
+    static var priorityMomentIds = Set<UUID>()
     /// Upper bound for one LOCAL step (frame extraction or source hash) of one clip. Normal is a few seconds.
     static let localStepDeadline: TimeInterval = 90
     /// "fg" / "bg" / "inactive" for diagnostics (UIApplication state; main actor).
@@ -341,7 +343,8 @@ final class AssetUnderstandingQueue {
                 captureContext: ctx,
                 contentSha256: contentSha
             )
-            AULog.queue.notice("au job=\(tag, privacy: .public) step=request ok ms=\(ms())")
+            AULog.queue.notice("au job=\(tag, privacy: .public) step=request ok ms=\(ms()) priority=\(Self.priorityMomentIds.contains(job.momentId))")
+            Self.priorityMomentIds.remove(job.momentId)
             try upsertUnderstanding(dto)
             job.state = .complete
             job.lastError = nil
@@ -505,8 +508,9 @@ final class AssetUnderstandingQueue {
             predicate: #Predicate { $0.stateRaw == "pending" && $0.nextEligibleAt <= now },
             sortBy: [SortDescriptor(\.createdAt, order: .forward)]
         )
-        if skipped.isEmpty { desc.fetchLimit = 1 }
-        return ((try? context.fetch(desc)) ?? []).first { !skipped.contains($0.momentId) }
+        let eligible = ((try? context.fetch(desc)) ?? []).filter { !skipped.contains($0.momentId) }
+        let prio = Self.priorityMomentIds
+        return eligible.first { prio.contains($0.momentId) } ?? eligible.first
     }
 
     private func backoff(for attempts: Int) -> TimeInterval {

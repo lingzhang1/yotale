@@ -35,14 +35,25 @@ enum AUContinuedProcessing {
 
     /// Replaces `Task { await queue.drain() }` at the user-initiated import sites. Always drains in the foreground
     /// right away; additionally asks the system to keep going if the user leaves.
-    static func startAfterImport(queue: AssetUnderstandingQueue, context: ModelContext) {
+    ///
+    /// `momentIds` = the Moments THIS user action is about (the import, or nil for a Retry of everything). They
+    /// run first (ahead of older library backlog) and they alone define the task's progress and success, so an
+    /// unrelated stuck Moment elsewhere can neither inflate "X of Y" nor turn a finished import into "failed".
+    static func startAfterImport(queue: AssetUnderstandingQueue, context: ModelContext, momentIds: Set<UUID>? = nil) {
         AssetUnderstandingQueue.stopGate.clear()
+        let unfinished = AssetUnderstandingQueue.unfinishedMomentIds(context: context)
+        let scope = momentIds.map { $0.intersection(unfinished) } ?? unfinished
+        if !isRunning && !submitted { taskBatch.removeAll() }   // a refused/finished task's batch is stale
+        AssetUnderstandingQueue.priorityMomentIds.formUnion(scope)
+        taskBatch.formUnion(scope)   // a running task picks these up on its next tick
         Task { await queue.drain() }
         guard #available(iOS 26.0, *) else { return }
-        let unfinished = AssetUnderstandingQueue.unfinishedMomentIds(context: context)
-        guard unfinished.count >= minimumBatch else { return }
-        submitIfNeeded(context: context, batchCount: unfinished.count)
+        guard taskBatch.count >= minimumBatch else { return }
+        submitIfNeeded(context: context, batchCount: taskBatch.count)
     }
+
+    /// Moments the current/pending system task reports on. Grows with later imports; cleared when it ends.
+    private static var taskBatch = Set<UUID>()
 
     @available(iOS 26.0, *)
     private static func submitIfNeeded(context: ModelContext, batchCount: Int) {
@@ -89,6 +100,7 @@ enum AUContinuedProcessing {
             let already = finished.withLock { v -> Bool in let o = v; v = true; return o }
             guard !already else { return }
             isRunning = false
+            taskBatch.removeAll()
             log.notice("continued processing completed success=\(success)")
             task.setTaskCompleted(success: success)
         }
@@ -101,7 +113,6 @@ enum AUContinuedProcessing {
         }
 
         let queue = AssetUnderstandingQueue(context: context)
-        var batch = AssetUnderstandingQueue.unfinishedMomentIds(context: context)
         var doneAtLastLaunch = -1
         var fruitlessLaunches = 0
         var backoffSince: Date?
@@ -109,8 +120,7 @@ enum AUContinuedProcessing {
         let backoffPatience: TimeInterval = 180   // ride out a short 503/429 blip, never an endless one
 
         while !AssetUnderstandingQueue.stopGate.isSet, !finished.withLock({ $0 }) {
-            batch.formUnion(AssetUnderstandingQueue.unfinishedMomentIds(context: context))   // later imports join
-            let snap = AssetUnderstandingQueue.snapshot(context: context, momentIds: batch)
+            let snap = AssetUnderstandingQueue.snapshot(context: context, momentIds: taskBatch)   // later imports join
             task.progress.totalUnitCount = Int64(snap.total)
             task.progress.completedUnitCount = Int64(snap.done)
             task.updateTitle("Analyzing your Moments", subtitle: "\(snap.done) of \(snap.total) done")
@@ -122,6 +132,7 @@ enum AUContinuedProcessing {
             }
             switch snap.state {
             case .idle, .complete, .waitingForNetwork, .waitingToSignIn, .usageLimit, .retryRequired:
+                log.notice("supervisor end state=\(String(describing: snap.state), privacy: .public) done=\(snap.done) total=\(snap.total)")
                 complete(snap.state == .complete || snap.state == .idle)
                 return
             case .analyzing, .waitingToContinue, .retryingSoon:
@@ -131,7 +142,7 @@ enum AUContinuedProcessing {
             if snap.state == .retryingSoon {
                 // Jobs are in ordinary backoff; the queue's own retry timer re-drains them. Just wait (bounded).
                 let since = backoffSince ?? Date(); backoffSince = since
-                if Date().timeIntervalSince(since) > backoffPatience { break }
+                if Date().timeIntervalSince(since) > backoffPatience { log.notice("supervisor stop=backoff_patience done=\(snap.done)"); break }
             } else {
                 backoffSince = nil
             }

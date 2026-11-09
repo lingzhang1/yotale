@@ -160,7 +160,7 @@ struct MomentsLibraryView: View {
         try? context.save()
         // Auto-enroll each imported Moment for backup when Auto Backup is on (no-op otherwise).
         for m in created { uploadQueue.autoEnrollIfEnabled(moment: m) }
-        AUContinuedProcessing.startAfterImport(queue: auQueue, context: context)
+        AUContinuedProcessing.startAfterImport(queue: auQueue, context: context, momentIds: Set(created.map(\.id)))
         Task { await uploadQueue.drain(); reload() }
     }
 
