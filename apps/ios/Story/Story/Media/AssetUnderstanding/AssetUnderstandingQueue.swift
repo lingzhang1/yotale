@@ -70,6 +70,8 @@ final class AssetUnderstandingQueue {
     private static var drainStartedAt: Date?
     /// Moments a user just imported: picked before older backlog (still oldest-first within each group).
     static var priorityMomentIds = Set<UUID>()
+    /// The job being worked on and how many REAL steps of it are done (1 = frames extracted, 2 = hashed).
+    static var currentStage: (momentId: UUID, stage: Int)?
     /// Upper bound for one LOCAL step (frame extraction or source hash) of one clip. Normal is a few seconds.
     static let localStepDeadline: TimeInterval = 90
     /// "fg" / "bg" / "inactive" for diagnostics (UIApplication state; main actor).
@@ -175,17 +177,18 @@ final class AssetUnderstandingQueue {
         if Self.drainInFlight {
             let held = Self.drainStartedAt.map { Int(Date().timeIntervalSince($0)) } ?? -1
             AULog.queue.notice("au drain skip=in_flight held_s=\(held)")
+            if held > 120 { AUDiag.record("drain skip in_flight held_s=\(held)") }
             return
         }
         guard isAuthed() else { AULog.queue.notice("au drain skip=signed_out"); return }   // defer silently until authenticated
         guard Self.sharedIsOnline() else { AULog.queue.notice("au drain skip=offline"); return }   // resume on reconnect
         Self.drainInFlight = true
         Self.drainStartedAt = Date()
-        AULog.queue.notice("au drain begin bg=\(Self.backgroundState(), privacy: .public)")
+        AUDiag.record("drain begin app=\(Self.backgroundState())")
         defer {
             Self.drainInFlight = false
             Self.drainStartedAt = nil
-            AULog.queue.notice("au drain end")
+            AUDiag.record("drain end app=\(Self.backgroundState())")
         }
 
         var processed = 0
@@ -324,6 +327,7 @@ final class AssetUnderstandingQueue {
             let extract = extractFrames
             let frames = try await AUStepDeadline.run("extract", seconds: Self.localStepDeadline) { try await extract(url) }
             AULog.queue.notice("au job=\(tag, privacy: .public) step=extract ok frames=\(frames.count) ms=\(ms())")
+            Self.currentStage = (job.momentId, 1)
             var ctx: [String: Any]?
             if let j = job.captureContextJSON, let d = j.data(using: .utf8) {
                 ctx = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
@@ -335,7 +339,8 @@ final class AssetUnderstandingQueue {
             let contentSha: String? = try await AUStepDeadline.run("hash", seconds: Self.localStepDeadline) {
                 await Self.hashSource(url: url)
             }
-            AULog.queue.notice("au job=\(tag, privacy: .public) step=request begin ms=\(ms()) bg=\(Self.backgroundState(), privacy: .public)")
+            Self.currentStage = (job.momentId, 2)
+            AUDiag.record("job \(tag) request begin app=\(Self.backgroundState()) prio=\(Self.priorityMomentIds.contains(job.momentId))")
             let dto = try await service.analyze(
                 frames: frames,
                 momentId: job.momentId,
@@ -343,7 +348,8 @@ final class AssetUnderstandingQueue {
                 captureContext: ctx,
                 contentSha256: contentSha
             )
-            AULog.queue.notice("au job=\(tag, privacy: .public) step=request ok ms=\(ms()) priority=\(Self.priorityMomentIds.contains(job.momentId))")
+            Self.currentStage = nil
+            AUDiag.record("job \(tag) ok ms=\(ms()) app=\(Self.backgroundState())")
             Self.priorityMomentIds.remove(job.momentId)
             try upsertUnderstanding(dto)
             job.state = .complete
@@ -353,7 +359,8 @@ final class AssetUnderstandingQueue {
             // Transient derived frames are released here (never persisted).
             return .continue
         } catch {
-            AULog.queue.error("au job=\(tag, privacy: .public) failed ms=\(ms()) bg=\(Self.backgroundState(), privacy: .public) error=\(String(describing: error).prefix(200), privacy: .public)")
+            Self.currentStage = nil
+            AUDiag.record("job \(tag) FAILED ms=\(ms()) app=\(Self.backgroundState()) error=\(String(describing: error).prefix(160))")
             if let timeout = error as? AUStepTimeout {
                 // A LOCAL step (no paid request yet) never returned. Not a failure of the Moment: back to
                 // PENDING, no attempt burned, and stop this drain so the single-flight lock is released and the

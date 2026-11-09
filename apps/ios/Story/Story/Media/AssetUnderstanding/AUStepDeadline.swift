@@ -48,3 +48,33 @@ enum AULog {
     static let queue = Logger(subsystem: "app.yotale", category: "au-queue")
     static func short(_ id: UUID) -> String { String(id.uuidString.prefix(8)) }
 }
+
+/// Durable AU diagnostics: the last 80 events (local time, privacy-safe) in UserDefaults, so the reason a
+/// background run ended survives suspension, a detached debugger and relaunch. Printed at launch as AU_DIAG lines
+/// and shown on Story Home in DEBUG builds. Also mirrored to the unified log.
+enum AUDiag {
+    private static let key = "au.diag.v1"
+    private static let limit = 80
+    private static let lock = NSLock()
+    private static let fmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
+    }()
+
+    static func record(_ line: String) {
+        AULog.queue.notice("\(line, privacy: .public)")
+        lock.lock(); defer { lock.unlock() }
+        var lines = UserDefaults.standard.stringArray(forKey: key) ?? []
+        lines.append("\(fmt.string(from: Date())) \(line)")
+        if lines.count > limit { lines.removeFirst(lines.count - limit) }
+        UserDefaults.standard.set(lines, forKey: key)
+    }
+
+    static func lines() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return UserDefaults.standard.stringArray(forKey: key) ?? []
+    }
+
+    static func printAtLaunch() {
+        for l in lines().suffix(40) { print("AU_DIAG \(l)") }
+    }
+}

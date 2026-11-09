@@ -25,6 +25,7 @@ enum AUContinuedProcessing {
     static var identifier: String { (Bundle.main.bundleIdentifier ?? "app.yotale") + ".au.import" }
     /// Smallest import that earns a system-visible task (≈15 s of analysis per clip).
     static let minimumBatch = 3
+    static let unitsPerMoment = 4
     nonisolated private static let log = Logger(subsystem: "app.yotale", category: "au-continued")
 
     /// True ONLY while a system task is really running for this work — drives the "continues in the background"
@@ -68,7 +69,7 @@ enum AUContinuedProcessing {
                 let box = TaskBox(task)
                 Task { @MainActor in await supervise(box, context: context) }
             }
-            guard ok else { log.error("register failed"); return }
+            guard ok else { AUDiag.record("bgtask register failed"); return }
             registered = true
         }
         let request = BGContinuedProcessingTaskRequest(
@@ -80,10 +81,10 @@ enum AUContinuedProcessing {
         do {
             try BGTaskScheduler.shared.submit(request)
             submitted = true
-            log.notice("continued processing submitted batch=\(batchCount)")
+            AUDiag.record("bgtask submitted batch=\(batchCount) app=\(AssetUnderstandingQueue.backgroundState())")
         } catch {
             // Unavailable (Simulator) / NotPermitted / TooManyPendingTaskRequests: foreground-only, no harm done.
-            log.notice("continued processing unavailable: \(String(describing: error), privacy: .public)")
+            AUDiag.record("bgtask submit refused: \(String(describing: error).prefix(160))")
         }
     }
 
@@ -94,22 +95,22 @@ enum AUContinuedProcessing {
         let task = box.task
         submitted = false
         isRunning = true
-        log.notice("continued processing started")
+        AUDiag.record("bgtask started app=\(AssetUnderstandingQueue.backgroundState())")
         let finished = OSAllocatedUnfairLock(initialState: false)
-        func complete(_ success: Bool) {
+        func complete(_ success: Bool, _ reason: String) {
             let already = finished.withLock { v -> Bool in let o = v; v = true; return o }
             guard !already else { return }
             isRunning = false
             taskBatch.removeAll()
-            log.notice("continued processing completed success=\(success)")
+            AUDiag.record("bgtask completed success=\(success) reason=\(reason)")
             task.setTaskCompleted(success: success)
         }
         // Expiration/cancel: stop starting NEW jobs. The in-flight request is left to finish or be torn down by
         // suspension; it is never cancelled mid-flight (that would resend and double-bill on the next drain).
         task.expirationHandler = {
-            log.notice("continued processing expired or cancelled by system/user")
+            AUDiag.record("bgtask EXPIRED (system expiry or user cancel)")
             AssetUnderstandingQueue.stopGate.set()
-            Task { @MainActor in complete(false) }
+            Task { @MainActor in complete(false, "expiration_handler") }
         }
 
         let queue = AssetUnderstandingQueue(context: context)
@@ -117,23 +118,31 @@ enum AUContinuedProcessing {
         var fruitlessLaunches = 0
         var backoffSince: Date?
         var lastState: AUQueueSnapshot.State?
+        var lastApp = ""
+        var stopReason = "stop_gate (expired/cancelled)"
         let backoffPatience: TimeInterval = 180   // ride out a short 503/429 blip, never an endless one
 
         while !AssetUnderstandingQueue.stopGate.isSet, !finished.withLock({ $0 }) {
             let snap = AssetUnderstandingQueue.snapshot(context: context, momentIds: taskBatch)   // later imports join
-            task.progress.totalUnitCount = Int64(snap.total)
-            task.progress.completedUnitCount = Int64(snap.done)
+            // Real per-step progress (no timers): 4 units per Moment — frames extracted (+1), source hashed (+1),
+            // analysis returned (+2). The system expires tasks whose progress stops moving, and whole-Moment
+            // steps (~15-20 s each) were too coarse to show the work was advancing.
+            var units = snap.done * Self.unitsPerMoment
+            if let cur = AssetUnderstandingQueue.currentStage, taskBatch.contains(cur.momentId) { units += cur.stage }
+            task.progress.totalUnitCount = Int64(snap.total * Self.unitsPerMoment)
+            task.progress.completedUnitCount = Int64(min(units, snap.total * Self.unitsPerMoment))
             task.updateTitle("Analyzing your Moments", subtitle: "\(snap.done) of \(snap.total) done")
 
             // Done, or waiting on something only the user / the clock / the network can supply.
-            if snap.state != lastState {
-                log.notice("supervisor state=\(String(describing: snap.state), privacy: .public) done=\(snap.done) total=\(snap.total) draining=\(AssetUnderstandingQueue.isDraining)")
+            let app = AssetUnderstandingQueue.backgroundState()
+            if snap.state != lastState || app != lastApp {
+                AUDiag.record("supervisor state=\(snap.state) done=\(snap.done)/\(snap.total) draining=\(AssetUnderstandingQueue.isDraining) app=\(app)")
                 lastState = snap.state
+                lastApp = app
             }
             switch snap.state {
             case .idle, .complete, .waitingForNetwork, .waitingToSignIn, .usageLimit, .retryRequired:
-                log.notice("supervisor end state=\(String(describing: snap.state), privacy: .public) done=\(snap.done) total=\(snap.total)")
-                complete(snap.state == .complete || snap.state == .idle)
+                complete(snap.state == .complete || snap.state == .idle, "end_state=\(snap.state) done=\(snap.done)/\(snap.total)")
                 return
             case .analyzing, .waitingToContinue, .retryingSoon:
                 break
@@ -142,7 +151,7 @@ enum AUContinuedProcessing {
             if snap.state == .retryingSoon {
                 // Jobs are in ordinary backoff; the queue's own retry timer re-drains them. Just wait (bounded).
                 let since = backoffSince ?? Date(); backoffSince = since
-                if Date().timeIntervalSince(since) > backoffPatience { log.notice("supervisor stop=backoff_patience done=\(snap.done)"); break }
+                if Date().timeIntervalSince(since) > backoffPatience { stopReason = "backoff_patience done=\(snap.done)"; break }
             } else {
                 backoffSince = nil
             }
@@ -151,13 +160,13 @@ enum AUContinuedProcessing {
                 // the rest is backing off / failing: stop instead of spinning. Jobs stay PENDING for the next
                 // foreground / reconnect / retry timer.
                 if snap.done == doneAtLastLaunch { fruitlessLaunches += 1 } else { fruitlessLaunches = 0 }
-                if fruitlessLaunches >= 2 { log.notice("supervisor stop=no_progress done=\(snap.done)"); break }
+                if fruitlessLaunches >= 2 { stopReason = "no_progress done=\(snap.done)"; break }
                 doneAtLastLaunch = snap.done
                 Task { @MainActor in await queue.drain() }
             }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
-        complete(false)
+        complete(false, stopReason)
     }
 }
 

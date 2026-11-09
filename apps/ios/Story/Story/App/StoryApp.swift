@@ -98,6 +98,8 @@ struct StoryApp: App {
                         return await auth.validAccessToken() != nil
                     }
                     AssetUnderstandingQueue.sharedIsOnline = { NetworkReachability.shared.isSatisfied }
+                    AUDiag.printAtLaunch()   // the previous run's AU/background-task events, incl. how it ended
+                    AUDiag.record("launch app=\(AssetUnderstandingQueue.backgroundState())")
                     NetworkReachability.shared.onBecameSatisfied = {
                         let q = AssetUnderstandingQueue(context: container.mainContext)
                         Task { await q.drain() }
