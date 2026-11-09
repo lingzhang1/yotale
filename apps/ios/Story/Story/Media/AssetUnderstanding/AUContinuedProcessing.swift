@@ -25,7 +25,6 @@ enum AUContinuedProcessing {
     static var identifier: String { (Bundle.main.bundleIdentifier ?? "app.yotale") + ".au.import" }
     /// Smallest import that earns a system-visible task (≈15 s of analysis per clip).
     static let minimumBatch = 3
-    static let unitsPerMoment = 4
     nonisolated private static let log = Logger(subsystem: "app.yotale", category: "au-continued")
 
     /// True ONLY while a system task is really running for this work — drives the "continues in the background"
@@ -95,12 +94,14 @@ enum AUContinuedProcessing {
         let task = box.task
         submitted = false
         isRunning = true
+        AssetUnderstandingQueue.parallelWorkersEnabled = true   // two analyses at once while the task runs
         AUDiag.record("bgtask started app=\(AssetUnderstandingQueue.backgroundState())")
         let finished = OSAllocatedUnfairLock(initialState: false)
         func complete(_ success: Bool, _ reason: String) {
             let already = finished.withLock { v -> Bool in let o = v; v = true; return o }
             guard !already else { return }
             isRunning = false
+            AssetUnderstandingQueue.parallelWorkersEnabled = false   // back to one at a time
             taskBatch.removeAll()
             AUDiag.record("bgtask completed success=\(success) reason=\(reason)")
             task.setTaskCompleted(success: success)
@@ -120,24 +121,34 @@ enum AUContinuedProcessing {
         var lastState: AUQueueSnapshot.State?
         var lastApp = ""
         var stopReason = "stop_gate (expired/cancelled)"
+        var highWater: Int64 = 0   // the system progress value never moves backwards (e.g. a job re-queued)
         let backoffPatience: TimeInterval = 180   // ride out a short 503/429 blip, never an endless one
 
         while !AssetUnderstandingQueue.stopGate.isSet, !finished.withLock({ $0 }) {
             // The job already in flight when the task started is real work this task carries out: count it, so
             // progress is not stuck at 0 while it finishes (device: expired 30 s after backgrounding at 0/6 while
             // an older backlog job, outside the batch, was mid-request).
-            if let cur = AssetUnderstandingQueue.currentStage, !taskBatch.contains(cur.momentId) {
-                taskBatch.insert(cur.momentId)
-                AUDiag.record("supervisor adopted in-flight job \(AULog.short(cur.momentId))")
+            for id in AssetUnderstandingQueue.inFlight.keys where !taskBatch.contains(id) {
+                taskBatch.insert(id)
+                AUDiag.record("supervisor adopted in-flight job \(AULog.short(id))")
             }
+            AssetUnderstandingQueue.kickParallel()
             let snap = AssetUnderstandingQueue.snapshot(context: context, momentIds: taskBatch)   // later imports join
-            // Real per-step progress (no timers): 4 units per Moment — frames extracted (+1), source hashed (+1),
-            // analysis returned (+2). The system expires tasks whose progress stops moving, and whole-Moment
-            // steps (~15-20 s each) were too coarse to show the work was advancing.
-            var units = snap.done * Self.unitsPerMoment
-            if let cur = AssetUnderstandingQueue.currentStage, taskBatch.contains(cur.momentId) { units += cur.stage }
-            task.progress.totalUnitCount = Int64(snap.total * Self.unitsPerMoment)
-            task.progress.completedUnitCount = Int64(min(units, snap.total * Self.unitsPerMoment))
+            // Per-step progress: real for the steps the app observes, ESTIMATED only while waiting on the server
+            // (AUTaskProgress). The system expires a task whose progress stops moving; a single 30-50 s request
+            // with no movement was enough to get it expired on device.
+            let now = Date()
+            let typical = AssetUnderstandingQueue.typicalRequestSeconds
+            var units = snap.done * AUTaskProgress.unitsPerMoment
+            for (id, f) in AssetUnderstandingQueue.inFlight where taskBatch.contains(id) {
+                units += AUTaskProgress.units(stage: f.stage,
+                                              requestElapsed: f.requestStartedAt.map { now.timeIntervalSince($0) },
+                                              typicalRequest: typical)
+            }
+            let totalUnits = Int64(snap.total * AUTaskProgress.unitsPerMoment)
+            highWater = min(totalUnits, max(highWater, Int64(units)))
+            task.progress.totalUnitCount = totalUnits
+            task.progress.completedUnitCount = highWater
             task.updateTitle("Analyzing your Moments", subtitle: "\(snap.done) of \(snap.total) done")
 
             // Done, or waiting on something only the user / the clock / the network can supply.

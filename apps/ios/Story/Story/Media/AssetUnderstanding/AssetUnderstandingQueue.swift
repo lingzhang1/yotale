@@ -70,8 +70,21 @@ final class AssetUnderstandingQueue {
     private static var drainStartedAt: Date?
     /// Moments a user just imported: picked before older backlog (still oldest-first within each group).
     static var priorityMomentIds = Set<UUID>()
-    /// The job being worked on and how many REAL steps of it are done (1 = frames extracted, 2 = hashed).
-    static var currentStage: (momentId: UUID, stage: Int)?
+    /// Jobs being worked on right now (up to `maxWorkers`), with how many REAL steps are done
+    /// (0 = started, 1 = frames extracted, 2 = hashed, request in flight since `requestStartedAt`).
+    static var inFlight: [UUID: AUInFlight] = [:]
+    /// Smoothed duration of recent successful AU requests; feeds the ESTIMATED in-request progress only.
+    static var typicalRequestSeconds: TimeInterval = 20
+    /// At most this many jobs at once. A second worker runs ONLY while `parallelWorkersEnabled` (set by the
+    /// iOS continued-processing supervisor while its system task runs); otherwise the queue stays sequential.
+    /// Two concurrent requests stay under the server's per-user ai_sync limit (20/min, shared with other AI calls).
+    static let maxWorkers = 2
+    static var parallelWorkersEnabled = false
+    /// Moment ids a worker has picked but not yet marked RUNNING (the token refresh awaits in between), so two
+    /// workers can never pick, and bill, the same job.
+    private static var claimed = Set<UUID>()
+    /// The drain currently running, so the supervisor can add the second worker mid-drain.
+    private static var currentRun: DrainRun?
     /// Upper bound for one LOCAL step (frame extraction or source hash) of one clip. Normal is a few seconds.
     static let localStepDeadline: TimeInterval = 90
     /// "fg" / "bg" / "inactive" for diagnostics (UIApplication state; main actor).
@@ -191,32 +204,58 @@ final class AssetUnderstandingQueue {
             AUDiag.record("drain end app=\(Self.backgroundState())")
         }
 
-        var processed = 0
-        var completedAny = false
-        var skipped = Set<UUID>()
-        while processed < maxJobs, shouldContinue(), !Self.stopGate.isSet, !Task.isCancelled,
-              let job = nextEligibleJob(excluding: skipped) {
-            // R7-F: do NOT analyze a Moment while its Story's cloud state is still hydrating — a restore may
-            // be about to supply a reusable understanding (restore first, regenerate only if missing).
-            // Skipped for THIS drain only (it never spins on the same job).
-            if CloudHydrationGate.shared.isHydrating(momentId: job.momentId) { skipped.insert(job.momentId); continue }
-            // Token freshness BEFORE the paid request (the snapshot provider is stale after a long background).
-            guard await Self.sharedEnsureFreshToken() else {
-                AULog.queue.notice("au job=\(AULog.short(job.momentId), privacy: .public) token=unavailable -> auth_required")
-                markAuthRequired(job); break
-            }
-            processed += 1
-            let before = job.stateRaw
-            let outcome = await run(job)
-            if before != "complete" && job.stateRaw == "complete" { completedAny = true }
-            if outcome == .stop { break }
+        let r = DrainRun(maxJobs: maxJobs, shouldContinue: shouldContinue)
+        r.spawnSecond = { [unowned self] in
+            r.secondActive = true
+            AUDiag.record("drain second worker on app=\(Self.backgroundState())")
+            r.secondTasks.append(Task { @MainActor in await self.worker(1, r) })
         }
+        Self.currentRun = r
+        await worker(0, r)
+        while let t = r.secondTasks.popLast() { await t.value }   // never end the drain under a running job
+        Self.currentRun = nil
+        let completedAny = r.completedAny
         // P1-E (AU durability): a result produced in THIS session is pushed now (coalesced: one push for the
         // whole batch, not one per Moment) instead of waiting for the next foreground/sign-in. No-op until
         // StoryApp wires the seam; idempotent PUT; media-not-yet-backed understandings are retried by the
         // upload-complete hook, never lost.
         if completedAny { Self.sharedPushUnderstanding() }
         scheduleRetryIfNeeded()
+    }
+
+    /// Add the second worker to the running drain if parallel work is allowed and it is not already running.
+    /// Called by worker 0 between jobs and by the supervisor every tick, so it starts while worker 0 is still
+    /// waiting on a long request, not only after it.
+    static func kickParallel() {
+        guard maxWorkers > 1, parallelWorkersEnabled, let r = currentRun, !r.secondActive, !r.stopped else { return }
+        r.spawnSecond?()
+    }
+
+    /// One worker of a drain. Worker 0 is the existing sequential loop; worker 1 runs only while parallel work
+    /// is enabled and stops picking new jobs as soon as it is not (its current job always finishes).
+    private func worker(_ index: Int, _ r: DrainRun) async {
+        defer { if index > 0 { r.secondActive = false } }
+        while !r.stopped, r.processed < r.maxJobs, r.shouldContinue(), !Self.stopGate.isSet, !Task.isCancelled {
+            if index == 0 { Self.kickParallel() }
+            if index > 0, !Self.parallelWorkersEnabled { break }
+            guard let job = nextEligibleJob(excluding: r.skipped) else { break }
+            // R7-F: do NOT analyze a Moment while its Story's cloud state is still hydrating — a restore may
+            // be about to supply a reusable understanding (restore first, regenerate only if missing).
+            // Skipped for THIS drain only (it never spins on the same job).
+            if CloudHydrationGate.shared.isHydrating(momentId: job.momentId) { r.skipped.insert(job.momentId); continue }
+            Self.claimed.insert(job.momentId)
+            defer { Self.claimed.remove(job.momentId) }
+            // Token freshness BEFORE the paid request (the snapshot provider is stale after a long background).
+            guard await Self.sharedEnsureFreshToken() else {
+                AULog.queue.notice("au job=\(AULog.short(job.momentId), privacy: .public) token=unavailable -> auth_required")
+                markAuthRequired(job); r.stopped = true; break
+            }
+            r.processed += 1
+            let before = job.stateRaw
+            let outcome = await run(job)
+            if before != "complete" && job.stateRaw == "complete" { r.completedAny = true }
+            if outcome == .stop { r.stopped = true; break }   // auth / offline / cancel / local timeout: both stop
+        }
     }
 
     /// Reset jobs that exhausted their bounded retries (parked ~24h out) so a user-initiated Retry runs them now.
@@ -314,7 +353,7 @@ final class AssetUnderstandingQueue {
         // test is not coupled to the device filesystem.
         if !fileExists(job.relativeMediaPath),
            job.relativeMediaPath.hasPrefix("media/") {
-            Self.currentStage = nil
+            Self.inFlight[job.momentId] = nil
             context.delete(job)
             try? context.save()
             return .continue
@@ -322,14 +361,14 @@ final class AssetUnderstandingQueue {
 
         let tag = AULog.short(job.momentId)
         let started = Date()
-        Self.currentStage = (job.momentId, 0)
+        Self.inFlight[job.momentId] = AUInFlight(stage: 0, requestStartedAt: nil)
         func ms() -> Int { Int(Date().timeIntervalSince(started) * 1000) }
         do {
             AULog.queue.notice("au job=\(tag, privacy: .public) step=extract begin bg=\(Self.backgroundState(), privacy: .public)")
             let extract = extractFrames
             let frames = try await AUStepDeadline.run("extract", seconds: Self.localStepDeadline) { try await extract(url) }
             AULog.queue.notice("au job=\(tag, privacy: .public) step=extract ok frames=\(frames.count) ms=\(ms())")
-            Self.currentStage = (job.momentId, 1)
+            Self.inFlight[job.momentId] = AUInFlight(stage: 1, requestStartedAt: nil)
             var ctx: [String: Any]?
             if let j = job.captureContextJSON, let d = j.data(using: .utf8) {
                 ctx = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
@@ -341,7 +380,8 @@ final class AssetUnderstandingQueue {
             let contentSha: String? = try await AUStepDeadline.run("hash", seconds: Self.localStepDeadline) {
                 await Self.hashSource(url: url)
             }
-            Self.currentStage = (job.momentId, 2)
+            let requestStarted = Date()
+            Self.inFlight[job.momentId] = AUInFlight(stage: 2, requestStartedAt: requestStarted)
             AUDiag.record("job \(tag) request begin app=\(Self.backgroundState()) prio=\(Self.priorityMomentIds.contains(job.momentId))")
             let dto = try await service.analyze(
                 frames: frames,
@@ -350,7 +390,9 @@ final class AssetUnderstandingQueue {
                 captureContext: ctx,
                 contentSha256: contentSha
             )
-            Self.currentStage = nil
+            Self.inFlight[job.momentId] = nil
+            Self.typicalRequestSeconds = AUTaskProgress.smoothed(Self.typicalRequestSeconds,
+                                                                 Date().timeIntervalSince(requestStarted))
             AUDiag.record("job \(tag) ok ms=\(ms()) app=\(Self.backgroundState())")
             Self.priorityMomentIds.remove(job.momentId)
             try upsertUnderstanding(dto)
@@ -361,7 +403,7 @@ final class AssetUnderstandingQueue {
             // Transient derived frames are released here (never persisted).
             return .continue
         } catch {
-            Self.currentStage = nil
+            Self.inFlight[job.momentId] = nil
             AUDiag.record("job \(tag) FAILED ms=\(ms()) app=\(Self.backgroundState()) error=\(String(describing: error).prefix(160))")
             if let timeout = error as? AUStepTimeout {
                 // A LOCAL step (no paid request yet) never returned. Not a failure of the Moment: back to
@@ -517,7 +559,9 @@ final class AssetUnderstandingQueue {
             predicate: #Predicate { $0.stateRaw == "pending" && $0.nextEligibleAt <= now },
             sortBy: [SortDescriptor(\.createdAt, order: .forward)]
         )
-        let eligible = ((try? context.fetch(desc)) ?? []).filter { !skipped.contains($0.momentId) }
+        let eligible = ((try? context.fetch(desc)) ?? []).filter {
+            !skipped.contains($0.momentId) && !Self.claimed.contains($0.momentId)
+        }
         let prio = Self.priorityMomentIds
         return eligible.first { prio.contains($0.momentId) } ?? eligible.first
     }
@@ -562,6 +606,29 @@ final class AssetUnderstandingQueue {
             try? MediaUploadService.sha256Hex(fileURL: url)
         }.value
     }
+}
+
+/// Shared state of one drain across its workers (main actor only).
+@MainActor
+final class DrainRun {
+    let maxJobs: Int
+    let shouldContinue: () -> Bool
+    var processed = 0
+    var completedAny = false
+    var skipped = Set<UUID>()
+    var stopped = false
+    var secondActive = false
+    var secondTasks: [Task<Void, Never>] = []
+    var spawnSecond: (() -> Void)?
+    init(maxJobs: Int, shouldContinue: @escaping () -> Bool) {
+        self.maxJobs = maxJobs
+        self.shouldContinue = shouldContinue
+    }
+}
+
+struct AUInFlight {
+    var stage: Int
+    var requestStartedAt: Date?
 }
 
 /// A tiny lock-protected flag (the expiration handler runs on an arbitrary queue).

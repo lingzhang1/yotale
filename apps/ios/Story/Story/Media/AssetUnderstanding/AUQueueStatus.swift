@@ -230,3 +230,38 @@ enum AUQueueStatusMapper {
     /// Whether the status line should offer a Retry action (some job exhausted its bounded retries).
     static func offersRetry(_ s: AUQueueSnapshot) -> Bool { s.parkedForRetry > 0 || s.state == .retryRequired }
 }
+
+
+// MARK: - Background task progress (iOS continued processing)
+
+/// Progress units for ONE Moment in the system background task. Steps the app can observe are REAL (frames
+/// extracted, source hashed, analysis returned). The wait on the server's analysis is the one part the app
+/// cannot observe, so while a request is in flight the value is ESTIMATED from recent request durations: it
+/// rises toward, and never reaches, the request ceiling, and the jump to 100% happens only when the server
+/// actually answers. Used ONLY for the system task's progress (the system expires a task whose progress stops
+/// moving); Story Home's "X of Y done" stays strictly persisted-state.
+enum AUTaskProgress {
+    static let unitsPerMoment = 1000
+    static let afterExtract = 100
+    static let afterHash = 150
+    /// The estimate never passes this; the remaining units arrive only with the real response.
+    static let requestCeiling = 950
+
+    static func units(stage: Int, requestElapsed: TimeInterval?, typicalRequest: TimeInterval) -> Int {
+        switch stage {
+        case ..<1: return 0
+        case 1: return afterExtract
+        default:
+            guard let t = requestElapsed, t > 0 else { return afterHash }
+            let tau = max(1, typicalRequest)
+            let span = Double(requestCeiling - afterHash)
+            let est = span * (1 - exp(-t / tau))
+            return min(requestCeiling - 1, afterHash + Int(est))
+        }
+    }
+
+    /// Exponential smoothing of real request durations, clamped to a sane band.
+    static func smoothed(_ previous: TimeInterval, _ sample: TimeInterval) -> TimeInterval {
+        min(90, max(8, previous * 0.7 + sample * 0.3))
+    }
+}

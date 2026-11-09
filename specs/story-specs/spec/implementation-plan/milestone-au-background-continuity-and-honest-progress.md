@@ -84,3 +84,20 @@ State from `AUQueueStatusMapper` (pure; persisted rows + live network/draining f
 ## 8. Limitations
 
 Not guaranteed (system may refuse, delay, or expire); user can cancel; a queued request is dropped if the app is removed from the app switcher; force-quit during an in-flight billed request can repeat that single request; photos are not importable/analyzable; Auto Backup off by default; foreground expiration also stops foreground drain until the next scene-active; iOS 18.5-25 only get honest foreground status.
+
+## 9. Device findings and mitigations (2026-11-09)
+
+Device runs on iOS 27.0.1 (beta backend), read from the on-device `AUDiag` event log (tap the Story Home status line in Debug builds):
+
+| Finding | Fix |
+|---|---|
+| A local step that never returned held the process-wide single-flight drain, so later drains were no-ops ("1 of 39" frozen) | Frame extraction and hashing bounded at 90 s; timeout returns the job to pending, no attempt burned (`09b8924`) |
+| The task's batch included 31 older library Moments; the import ran last ("0 of 6") | Imported Moments run first and alone define the task's progress and success (`41aed66`) |
+| System expired the task ~30 s after backgrounding with progress stuck at 0, while one 50 s request was in flight | Count the in-flight job (`cc5f13e`); then the two mitigations below |
+
+Owner-approved mitigations for long requests (model latency on beta rose from ~15 s to 24-49 s):
+
+1. **Estimated progress while waiting on the server.** The system task's progress is real for every step the app can observe (frames extracted, hashed, response returned). Only the wait on the server response is estimated: `AUTaskProgress` rises toward 95% of the Moment using the smoothed recent request duration, never reaches it, and the remainder arrives only with the real response. The value never moves backwards. Story Home's "X of Y done" stays persisted-state only.
+2. **Two analyses at once, only while the background task runs.** `AssetUnderstandingQueue.maxWorkers = 2`; the second worker is enabled by the supervisor for the life of the system task and is otherwise off, so foreground behavior is unchanged (one at a time). A claimed set prevents two workers from picking the same job across the token-refresh await; auth, offline, cancel and local-timeout stops end both workers; the in-flight request is never cancelled.
+
+Rate-limit check: the backend's `ai_sync` throttle (`apps/api/app/throttle.py`) is per user (`story_user_id`) and per class, default 20 per fixed one-minute window, and the class is shared with the other synchronous AI routes (creative-intent, story-guide, story-guide-v2, story-coverage, director, music-plan, duration-recommendation and others). Epidemic music and scene-image calls are a separate `music_provider` class. Two concurrent AU requests at observed latencies (15-50 s) are about 2-8 per minute. A 429 takes the existing `rateLimited` path (Retry-After plus backoff, no completed work resent).

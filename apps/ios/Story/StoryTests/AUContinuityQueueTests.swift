@@ -21,6 +21,7 @@ final class AUContinuityQueueTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        AssetUnderstandingQueue.parallelWorkersEnabled = false
         AssetUnderstandingQueue.stopGate.clear()
         AssetUnderstandingQueue.sharedIsOnline = { true }
         AssetUnderstandingQueue.sharedEnsureFreshToken = { true }
@@ -30,10 +31,18 @@ final class AUContinuityQueueTests: XCTestCase {
         var errors: [Error?] = []     // consumed per call; nil = success
         var calls = 0
         var onCall: (() -> Void)?
+        var delayNs: UInt64 = 0       // > 0 suspends inside the "request" so a second worker can overlap
+        var concurrent = 0
+        var maxConcurrent = 0
+        var analyzed: [UUID] = []
         func analyze(frames: [AUExtractedFrame], momentId: UUID, sourceCaptureId: UUID?,
                      captureContext: [String: Any]?, contentSha256: String?) async throws -> MomentUnderstandingDTO {
             calls += 1
+            analyzed.append(momentId)
             onCall?()
+            concurrent += 1; maxConcurrent = max(maxConcurrent, concurrent)
+            defer { concurrent -= 1 }
+            if delayNs > 0 { try await Task.sleep(nanoseconds: delayNs) }
             if !errors.isEmpty, let e = errors.removeFirst() { throw e }
             return MomentUnderstandingDTO(
                 momentId: momentId, sourceCaptureId: sourceCaptureId,
@@ -163,5 +172,42 @@ final class AUContinuityQueueTests: XCTestCase {
         XCTAssertEqual(s.done, 2)   // job 2 is backing off, 1 and 3 completed
         XCTAssertEqual(s.total, 3)
         XCTAssertEqual(s.state, .retryingSoon)
+    }
+
+    // MARK: - Two workers while a background task runs
+
+    func testParallelWorkersAnalyzeEachMomentOnceAtMostTwoAtATime() async {
+        let f = Fake(); f.delayNs = 50_000_000
+        AssetUnderstandingQueue.parallelWorkersEnabled = true
+        let q = queue(f); let ids = add(q, 6)
+        await q.drain()
+        XCTAssertEqual(f.calls, 6)
+        XCTAssertEqual(Set(f.analyzed), Set(ids), "every Moment analyzed")
+        XCTAssertEqual(f.analyzed.count, Set(f.analyzed).count, "no Moment analyzed twice (no double billing)")
+        XCTAssertEqual(f.maxConcurrent, 2, "two at once while enabled, never more")
+        XCTAssertTrue(jobs().allSatisfy { $0.state == .complete })
+        XCTAssertEqual((try? ctx.fetch(FetchDescriptor<MomentUnderstandingModel>()))?.count, 6)
+        XCTAssertTrue(AssetUnderstandingQueue.inFlight.isEmpty)
+        XCTAssertFalse(AssetUnderstandingQueue.isDraining)
+    }
+
+    func testSequentialWhenParallelDisabled() async {
+        let f = Fake(); f.delayNs = 20_000_000
+        AssetUnderstandingQueue.parallelWorkersEnabled = false
+        let q = queue(f); _ = add(q, 4)
+        await q.drain()
+        XCTAssertEqual(f.calls, 4)
+        XCTAssertEqual(f.maxConcurrent, 1, "outside a background task the queue stays one at a time")
+    }
+
+    func testAuthPauseInOneWorkerStopsBoth() async {
+        let f = Fake(); f.delayNs = 30_000_000
+        f.errors = [AssetUnderstandingServiceError.unauthorized(401)]
+        AssetUnderstandingQueue.parallelWorkersEnabled = true
+        let q = queue(f); _ = add(q, 6)
+        await q.drain()
+        XCTAssertLessThanOrEqual(f.calls, 2, "only the request(s) already in flight; nothing new after the 401")
+        XCTAssertTrue(jobs().allSatisfy { $0.attempts == 0 }, "no attempt burned")
+        XCTAssertFalse(AssetUnderstandingQueue.isDraining)
     }
 }
