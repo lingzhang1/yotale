@@ -37,6 +37,9 @@ struct VisualBudgetInput {
     let durationSeconds: Double
     let usefulSegmentCount: Int     // from AU observed.useful_segments (richness signal)
     let eventCount: Int             // from AU observed.events (richness signal)
+    /// Optional AU editorial guidance for FRAME SELECTION on this (cache-miss) Moment. nil => uniform coverage.
+    /// Selection only — it never changes the frame budget, tier ladder, or which Moments get a sheet.
+    var guidance: EditorialFrameGuidance? = nil
 }
 
 /// What the preflight decided and produced, plus diagnostics (never includes image bytes/content).
@@ -139,7 +142,7 @@ enum MultimodalVisualBudget {
             do {
                 let sheet = try await MomentContactSheetBuilder.build(
                     momentId: inp.momentId, url: inp.url,
-                    durationSeconds: inp.durationSeconds, budget: budget)
+                    durationSeconds: inp.durationSeconds, budget: budget, guidance: inp.guidance)
                 if sheet.jpeg.count <= limits.maxSheetBytes {
                     out.append(sheet)
                     misses.removeValue(forKey: key)

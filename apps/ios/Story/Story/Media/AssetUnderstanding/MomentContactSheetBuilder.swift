@@ -52,12 +52,15 @@ struct MomentContactSheetBuilder {
     /// Build one tiled contact-sheet JPEG for a Moment video. Reuses MomentFrameExtractor's ordered,
     /// timestamped frames, then evenly subsamples to `budget.framesPerMoment` and tiles them.
     static func build(momentId: UUID, url: URL, durationSeconds: Double,
-                      budget: ContactSheetBudget) async throws -> MomentContactSheet {
-        // Reuse the frozen 24-frame extractor, then pick an evenly-spaced subset (never MORE than extracted).
+                      budget: ContactSheetBudget,
+                      guidance: EditorialFrameGuidance? = nil) async throws -> MomentContactSheet {
+        // Reuse the frozen 24-frame extractor, then pick the subset (never MORE than extracted). With AU
+        // editorial `guidance` the existing EvidenceFrameMapper picks it (cache-miss alignment); without it,
+        // or with no candidates, the pick is the unchanged even subsample.
         let all = try await MomentFrameExtractor.extract(from: url)
         guard !all.isEmpty else { throw ContactSheetError.noFrames }
         let want = max(1, min(budget.framesPerMoment, all.count))
-        let picked = evenlySubsample(all, count: want)
+        let picked = EvidenceFrameMapper.selectExtracted(all, guidance: guidance, count: want)
         guard let jpeg = tile(frames: picked, momentId: momentId, durationSeconds: durationSeconds,
                               budget: budget) else { throw ContactSheetError.encodeFailed }
         return MomentContactSheet(momentId: momentId, jpeg: jpeg, frameCount: picked.count)

@@ -9,7 +9,21 @@ import Foundation
 // count: returns a subset within the existing per-Moment budget. Candidate peaks/intervals are advisory;
 // sampled timestamps are provenance only; the model `evidence` string is never consulted.
 
-enum EvidenceVideoType { case highlights, fullStory }
+enum EvidenceVideoType {
+    case highlights, fullStory
+
+    /// Which selection rule (Highlights vs Full Story) this attempt's contact sheets use. The attempt's own
+    /// resolved editorial type wins (Original = Story selection/default, Revise = base output's type,
+    /// Explore = requested or parent type); only when the attempt carries none (legacy/unstamped base) do we
+    /// fall back to the Story's legacy `editorialMode` seed, preserving prior behavior for that case.
+    static func forAttempt(editorialType: String?, legacyStoryMode: String?) -> EvidenceVideoType {
+        switch editorialType {
+        case EditorialType.fullStory.rawValue: return .fullStory
+        case EditorialType.highlights.rawValue: return .highlights
+        default: return (legacyStoryMode?.lowercased() == "full") ? .fullStory : .highlights
+        }
+    }
+}
 
 struct EvidenceCandidate {
     let start: Double      // seconds
@@ -115,6 +129,48 @@ enum EvidenceFrameMapper {
             if sa != sb { return sa < sb }
             return (a.confidence ?? 0) > (b.confidence ?? 0)
         }
+    }
+}
+
+// MARK: - Editorial guidance (shared by the cache-hit AND cache-miss paths)
+
+/// The AU editorial information that steers frame SELECTION for one Moment: the attempt's video type plus the
+/// Moment's visual/narrative candidates and event times (all ADVISORY, parsed from its local
+/// MomentUnderstanding). The cache-hit path feeds it to the mapper over the cached AU timestamps; the
+/// cache-miss path feeds the SAME value to the SAME mapper over the freshly extracted timestamps, so both
+/// paths select frames by the same editorial rule (P1-F pre-beta alignment).
+struct EditorialFrameGuidance {
+    let videoType: EvidenceVideoType
+    let visual: [EvidenceCandidate]
+    let narrative: [EvidenceCandidate]
+    let eventTimesS: [Double]
+
+    /// True when the mapper would have at least one candidate for this video type. Mirrors the mapper's own
+    /// candidate selection (Highlights = visual; Full Story = narrative + events). When false there is no
+    /// editorial signal, so callers keep the plain uniform-coverage selection — nothing is fabricated.
+    var hasCandidates: Bool {
+        switch videoType {
+        case .highlights: return !visual.isEmpty
+        case .fullStory: return !narrative.isEmpty || !eventTimesS.isEmpty
+        }
+    }
+}
+
+extension EvidenceFrameMapper {
+    /// Cache-MISS selection: choose which of the freshly extracted frames go on the sheet. With editorial
+    /// candidates, runs the existing mapper over the ACTUAL extracted timestamps (the source pixels may differ
+    /// from AU's accepted JPEGs, but the choice is still guided by the Moment's editorial information). With
+    /// no guidance or no candidates, falls back to the existing even subsample (uniform coverage, unchanged).
+    static func selectExtracted(_ frames: [AUExtractedFrame], guidance: EditorialFrameGuidance?,
+                                count: Int) -> [AUExtractedFrame] {
+        guard let g = guidance, g.hasCandidates, count > 0, !frames.isEmpty else {
+            return MomentContactSheetBuilder.evenlySubsample(frames, count: count)
+        }
+        let idx = selectFrames(videoType: g.videoType, sampledFrameMs: frames.map { $0.tMs },
+                               visualCandidates: g.visual, narrativeCandidates: g.narrative,
+                               eventTimesS: g.eventTimesS, budget: count)
+        let picked = idx.compactMap { $0 < frames.count ? frames[$0] : nil }
+        return picked.isEmpty ? MomentContactSheetBuilder.evenlySubsample(frames, count: count) : picked
     }
 }
 

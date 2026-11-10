@@ -150,3 +150,56 @@ No change to `au_frames/1`, `moment_understanding/2`, `au_prompt/3`, `edit_plan/
 - P1-F.3 device 8-i retrieval + cache-hit skip — **done, parse-clean; device ⌘U pending.**
 - P1-F.4 worker-side tiling (8-ii) — **deferred** (format compatible).
 - P1-F.5 deletion — Moment delete **done**; account delete **unwired**; sweep **primitive only**.
+
+
+---
+
+## 8. Pre-beta completion addendum (2026-11-10) — default reuse + consistent frame selection
+
+Supersedes the activation statements above ("`STORY_REUSABLE_EVIDENCE` OFF by default", "persistence dev-only / OFF for beta").
+State at this addendum: backend `STORY_EVIDENCE_PERSIST_ENABLED=1` in BOTH dev and beta (beta promoted 2026-10-27, see the CDK note);
+`STORY_EVIDENCE_PERSIST_ENABLED` itself is unchanged and remains the server-side privacy kill-switch.
+
+**Root cause of default-OFF.** `StoryReusableEvidence._enabledDefault = false` ("OFF until device-accepted"). Acceptance (Gate 1/2) ran with the scheme
+env `STORY_REUSABLE_EVIDENCE=1`, which exists only on an attached ⌘R launch. P1-D flipped the default for `EditorialTypeFlag` but not for this flag, and
+the scheme variable was later removed, so a normal/detached/TestFlight build persisted frames on the server and never reused them.
+
+**Change 1 — reuse is standard behavior.** The flag, its env/UserDefaults resolution and its file were deleted; the Create flow always tries the cache
+first. Any miss, validation failure or transport failure is a silent fallback to restore + extract (unchanged). A stale UserDefaults value can no longer
+disable reuse because nothing reads it. No emergency toggle was retained: the cache path cannot reduce coverage (a failure is a miss), and the server
+kill-switch already stops new packages. `GET /v1/evidence` is NOT gated by the persist flag, so existing packages stay retrievable; with no package it
+is a miss.
+
+**Change 2 — cache-miss frames are selected by the same editorial mapper.** Previously a miss went `MultimodalVisualBudget` → `MomentContactSheetBuilder.build`
+→ `MomentFrameExtractor` (24 even frames) → `evenlySubsample`, ignoring AU candidates and events. Now the miss path passes `EditorialFrameGuidance`
+(video type + visual/narrative candidates + events) to `EvidenceFrameMapper.selectExtracted`, i.e. the SAME mapper as the cache-hit path, run over the
+ACTUAL extracted timestamps. With no applicable candidates it keeps the uniform subsample (nothing fabricated). Frame budget and tier ladder unchanged.
+
+**Change 3 — the attempt's editorial type picks the rule.** The video type was derived from the Story's legacy `editorialMode` seed. It now follows the
+attempt's resolved type (`pendingEditorialType`: Original = Story selection/default, Revise = base output's type, Explore = requested or parent type);
+the legacy seed is only a fallback for an unstamped attempt (`EvidenceVideoType.forAttempt`).
+
+**v5.3 request verification.** `EditPlanRequestBuilder` forwards per Moment: `useful_segments`, `summary`, `editorial` (visual + narrative candidates,
+untrusted `evidence` string stripped), `events`, `sampled_frame_ms`, plus request-level `editorial_type`. These are gated ONLY by `EditorialTypeFlag`
+(default ON; an explicit env "0" or a UserDefaults override can still strip them — removal belongs to the P1-G0 cleanup). Backend retention under 5.3 is
+covered by `apps/api/tests/test_edit_plan_v53.py`.
+
+**Known limitations (not changed here).**
+- `visualBudgetInputs` still passes `eventCount: 0` (budget richness ranking only).
+- The visual-first block iterates `build.includedMedia`, which is the LOCAL set; an eligible Moment whose bytes are evicted gets neither a cache lookup nor
+  a restore, so it is planned text-only. Using the eligible set for the cache lookup would let evicted Moments be served from cache. Needs an owner decision.
+- Cache hits bypass the 16 MB device payload ceiling that extracted sheets go through (pre-existing, bounded by the per-Moment frame budget).
+- The miss path reuses AU's frame timestamps as a guide; the pixels come from a fresh extraction and can differ from the JPEGs AU saw.
+
+**Offline verification.** Backend: `test_edit_plan_v53.py`, `test_evidence_r1_lifecycle.py`, `packages/evidence_mapper` — 35 passed. iOS: 23 logic/pipeline
+tests (13 new in `EvidenceMissPathTests`, 2 new in `EditPlanV53RequestFieldsTests`, 8 existing `EvidenceReuseTests`) executed in an iOS simulator via a
+standalone harness; the Xcode ⌘U run could not be done in the agent sandbox (Swift macros do not expand there), so the owner's device/Xcode build is the gate.
+
+**Owner device gate (no Xcode environment variables needed; do not set `STORY_REUSABLE_EVIDENCE`).**
+1. Check this branch out in the MAIN story worktree (Xcode cannot see other worktrees), Clean Build Folder, run once from Xcode, stop it, then launch the app from the home screen.
+2. A (hit): pick Moments whose AU finished and upload is verified; Create Highlights. Expect backend access log `GET /v1/evidence/<id> 200` per Moment, job diagnostics `sheet_count` = eligible count, a playable MP4.
+3. B (miss with candidates): use Moments whose package is missing (new capture, or `DELETE /v1/evidence/<id>`); Create. Expect restore/extract, `sheet_count` = eligible count, a playable MP4. With `STORY_DIAG_BEACONS=1` attached, the console shows `evidence miss-path: N Moment(s) extracted, G editorially guided, U uniform coverage` (diagnostic only, never changes behavior).
+4. C (miss, no rich AU): a v1/older Moment must still produce a sheet (uniform) and a playable MP4; beacon counts it under uniform coverage.
+5. D (IMG_9091): Highlights on the real clip. Each contact-sheet cell carries a burned-in `t=…s` label; if the staged planner sheet for that Moment is viewable, confirm cells before and after the ~16.6s reveal. Visual review was NOT done offline (no device media in the sandbox); the offline test only proves the selected timestamps bracket the reveal.
+6. Original, Revise (inherits base type), Explore with a type switch each complete; Full Story vs Highlights sheets differ.
+Note the beacon line only prints with `STORY_DIAG_BEACONS=1`; its absence is NOT evidence that reuse is off — read `GET /v1/evidence` in the API log and `sheet_count` instead.
