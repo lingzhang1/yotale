@@ -199,6 +199,11 @@ final class StoryCreationCoordinator {
     private let selectedMusicAssetId: String?
     private let musicAnalysis: MusicAnalysisV1?
     private let soundtrackURL: URL?
+    /// Test seams for the two side effects of planning-time visual evidence. nil in production, which uses the
+    /// authorized evidence fetch and the R6 resolver. Injected only by tests so the coordinator wiring can be
+    /// exercised without network.
+    private let evidenceFetchOverride: ((EvidenceMomentRef) async -> [AUExtractedFrame]?)?
+    private let sourceRestoreOverride: (([UUID]) async -> (restored: [UUID: URL], unavailable: [UUID]))?
 
     /// R-d: a music selection RESOLVED by the UI (MusicPlan + chosen track + its analysis + a downloaded
     /// local soundtrack file). Set per-run via create(for:music:). When nil the pipeline runs the
@@ -365,8 +370,12 @@ final class StoryCreationCoordinator {
         musicPlan: JSONValue? = nil,
         selectedMusicAssetId: String? = nil,
         musicAnalysis: MusicAnalysisV1? = nil,
-        soundtrackURL: URL? = nil
+        soundtrackURL: URL? = nil,
+        evidenceFetch: ((EvidenceMomentRef) async -> [AUExtractedFrame]?)? = nil,
+        sourceRestore: (([UUID]) async -> (restored: [UUID: URL], unavailable: [UUID]))? = nil
     ) {
+        self.evidenceFetchOverride = evidenceFetch
+        self.sourceRestoreOverride = sourceRestore
         self.planner = planner
         self.jobClient = jobClient
         self.renderer = renderer
@@ -646,81 +655,72 @@ final class StoryCreationCoordinator {
             var sheetMissReasons: [String: SheetMissReason] = [:]
             var restoreUnavailableIds: [String] = []
             if wantMultimodal {
-                // P1-F (Option 8-i): FIRST try to satisfy each included Moment from DURABLE cached AU evidence
-                // — on a valid cache hit we build the contact sheet from the cached frames and SKIP both the
-                // full-video restore AND MomentFrameExtractor re-extraction for that Moment. Only the MISSES
-                // fall through to the existing restore+extract path below, so coverage is preserved exactly
-                // while duplicate extraction / pre-planning downloads are eliminated on hits. This is standard
-                // behavior (no feature flag): any miss/validation/transport failure is a silent fallback.
+                // P1-F: build planning-time visual evidence for EVERY eligible Moment — local OR cloud-only —
+                // through VisualEvidencePreparation (cache -> restore+extract -> truthful none), all under ONE
+                // MultimodalVisualBudget. A valid cache hit needs no source video, so an evicted original is
+                // neither restored nor re-extracted for planning; only cache MISSES are restored (R6) when their
+                // bytes are not local. Render-time restoration is separate and unchanged. Standard behavior
+                // (no feature flag): any miss/validation/transport failure is a silent fallback.
+                //
+                // `build.includedMedia` is the LOCAL set, so it must not decide who gets evidence: that is
+                // `build.eligibility.eligibleIds` (AU + positive duration + renderable local-or-cloud source).
                 //
                 // The selection rule follows THIS attempt's editorial type (Original/Revise/Explore resolve it
-                // into pendingEditorialType), not the Story's legacy default seed — so an Explore that switches
-                // type, or a Revise that inherits its base's type, picks frames for the type actually planned.
+                // into pendingEditorialType), not the Story's legacy default seed.
                 let evVideoType = EvidenceVideoType.forAttempt(editorialType: pendingEditorialType,
                                                                legacyStoryMode: story.editorialMode)
-                var cachedSheets: [MomentContactSheet] = []
-                var cachedHitIds = Set<UUID>()
-                let includedIds0 = Set(build.includedMedia.map { $0.momentId })
-                let includedMoments0 = story.moments.filter { includedIds0.contains($0.id) }
-                for m in includedMoments0 {
-                    let dur = MomentResolver.plannerDuration(for: m)
-                    let budgetN = ContactSheetBudget.tier1(forDuration: dur)
+                let eligibleSet = Set(build.eligibility.eligibleIds)
+                let eligibleMoments = story.moments
+                    .filter { eligibleSet.contains($0.id) }
+                    .sorted { $0.createdAt < $1.createdAt }
+                let momentById = Dictionary(eligibleMoments.map { ($0.id, $0) }) { a, _ in a }
+                let refs: [EvidenceMomentRef] = eligibleMoments.map { m in
                     let cand = Self.editorialCandidates(for: m.id, context: context)
-                    if let sheet = await AUEvidenceCacheHit.buildSheet(
-                        momentId: m.id, videoType: evVideoType,
-                        visualCandidates: cand.visual, narrativeCandidates: cand.narrative,
-                        eventTimesS: cand.events, budget: budgetN) {
-                        cachedSheets.append(sheet); cachedHitIds.insert(m.id)
-                    }
+                    return EvidenceMomentRef(
+                        momentId: m.id,
+                        durationSeconds: MomentResolver.plannerDuration(for: m),
+                        usefulSegmentCount: build.auUsefulRanges[m.id.uuidString.lowercased()]?.count ?? 0,
+                        guidance: EditorialFrameGuidance(videoType: evVideoType, visual: cand.visual,
+                                                         narrative: cand.narrative, eventTimesS: cand.events))
                 }
-                if !cachedSheets.isEmpty {
-                    MediaEngineV1.beacon("evidence cache: \(cachedSheets.count) of \(includedMoments0.count) Moment(s) served from cached AU frames (no restore/extract)")
-                }
-
-                // RELIABILITY (visual-first): a Moment whose local file is evicted (R5) or not-yet-restored is
-                // otherwise SILENTLY skipped by visualBudgetInputs (fileExists -> continue) and planned
-                // text-only — which made an initial create sheet only the Moments that happened to be local at
-                // that instant (observed: 7 of 16 sheets one run, 16/16 the next). Restore the included
-                // Moments to local FIRST (reusing the same R6 path as the render step), so visual-first covers
-                // every Moment regardless of eviction state. A Moment that genuinely cannot be restored still
-                // falls back to text-only (never fabricated), and is counted in momentsTextOnly for diagnostics.
-                // P1-F: EXCLUDE Moments already served from cache — they need neither restore nor extraction.
-                let includedIds = Set(build.includedMedia.map { $0.momentId }).subtracting(cachedHitIds)
-                let includedMoments = story.moments.filter { includedIds.contains($0.id) }
-                let restored = await MomentResolver.resolveEnsuringLocal(
-                    moments: includedMoments, context: context,
-                    activeOwner: AuthStore.shared?.storyUserId,
-                    token: { await AuthStore.shared?.validAccessToken() })
-                var mediaById = Dictionary(build.includedMedia.filter { !cachedHitIds.contains($0.momentId) }
-                    .map { ($0.momentId, $0) }) { a, _ in a }
-                for md in restored.media { mediaById[md.momentId] = md }
-                restoreUnavailableIds = restored.unavailable.map { $0.momentId.uuidString.lowercased() }
-                if !restored.unavailable.isEmpty {
-                    MediaEngineV1.beacon("visual-first restore: \(restored.unavailable.count) of \(includedMoments.count) Moment(s) could not be restored -> text-only")
-                }
-                // Cache MISSES: the frames are freshly extracted, but their SELECTION is guided by the same AU
-                // editorial candidates/events and the same mapper the cache-hit path uses. A Moment with no
-                // candidates keeps the uniform-coverage selection (nothing is fabricated).
-                var guidanceById: [UUID: EditorialFrameGuidance] = [:]
-                for id in mediaById.keys {
-                    let cand = Self.editorialCandidates(for: id, context: context)
-                    guidanceById[id] = EditorialFrameGuidance(
-                        videoType: evVideoType, visual: cand.visual,
-                        narrative: cand.narrative, eventTimesS: cand.events)
-                }
-                let budget = await MultimodalVisualBudget.build(
-                    Self.visualBudgetInputs(fromMedia: Array(mediaById.values),
-                                            auUsefulRanges: build.auUsefulRanges,
-                                            guidance: guidanceById))
-                let guided = guidanceById.values.filter { $0.hasCandidates }.count
-                MediaEngineV1.beacon("evidence miss-path: \(guidanceById.count) Moment(s) extracted, "
-                    + "\(guided) editorially guided, \(guidanceById.count - guided) uniform coverage")
-                // Merge cached-hit sheets with the freshly-extracted budget sheets. Cached hits are already
-                // within the per-Moment budget; the global payload ceiling still applies to the extracted set.
-                sheets = cachedSheets + budget.sheets
-                sheetMissReasons = budget.sheetMissReasons
-                budgetDiag = (budget.selectedTier, budget.appliedSteps, budget.momentsTextOnly,
-                              sheets.reduce(0) { $0 + $1.jpeg.count })
+                let localMediaById = Dictionary(build.includedMedia.map { ($0.momentId, $0) }) { a, _ in a }
+                let prepared = await VisualEvidencePreparation.prepare(
+                    moments: refs,
+                    localURL: { id in
+                        guard let md = localMediaById[id],
+                              MediaStore.shared.fileExists(relativePath: md.relativePath) else { return nil }
+                        return MediaStore.shared.absoluteURL(for: md.relativePath)
+                    },
+                    fetchCachedFrames: { ref in
+                        if let f = self.evidenceFetchOverride { return await f(ref) }
+                        return await AUEvidenceCacheHit.fetchSelectedFrames(
+                            momentId: ref.momentId, guidance: ref.guidance,
+                            budget: ContactSheetBudget.tier1(forDuration: ref.durationSeconds))
+                    },
+                    restoreSources: { ids in
+                        if let r = self.sourceRestoreOverride { return await r(ids) }
+                        let restored = await MomentResolver.resolveEnsuringLocal(
+                            moments: ids.compactMap { momentById[$0] }, context: context,
+                            activeOwner: AuthStore.shared?.storyUserId,
+                            token: { await AuthStore.shared?.validAccessToken() })
+                        var urls: [UUID: URL] = [:]
+                        for md in restored.media where ids.contains(md.momentId) {
+                            urls[md.momentId] = MediaStore.shared.absoluteURL(for: md.relativePath)
+                        }
+                        return (urls, restored.unavailable.map { $0.momentId })
+                    })
+                sheets = prepared.sheets
+                sheetMissReasons = prepared.sheetMissReasons
+                restoreUnavailableIds = prepared.restoreUnavailableIds
+                // textOnly = eligible Moments that reached the planner without a sheet (includes unrestorable).
+                budgetDiag = (prepared.budget.selectedTier, prepared.budget.appliedSteps,
+                              prepared.eligibleCount - prepared.sheets.count, prepared.budget.totalImageBytes)
+                // Privacy-safe counts only (no ids/content). A missing beacon is NOT evidence reuse is off.
+                MediaEngineV1.beacon("evidence prep: eligible=\(prepared.eligibleCount) cacheHit=\(prepared.cacheHitCount) "
+                    + "cacheMiss=\(prepared.cacheMissCount) restored=\(prepared.restoredCount) "
+                    + "unavailable=\(prepared.restoreUnavailableIds.count) sheets=\(prepared.sheets.count) "
+                    + "guided=\(prepared.guidedCount) uniform=\(prepared.uniformCount) "
+                    + "tier=\(prepared.budget.selectedTier) wireBytes=\(prepared.wireBytes)")
             }
             // operation_id = idempotency key. Persist BEFORE submit so a crash/restart/retry/dup-tap reuses the
             // SAME job (no duplicate inference). Reuse the Story's existing id on recovery; mint one otherwise.
@@ -1114,44 +1114,6 @@ final class StoryCreationCoordinator {
             for ev in evs { if let s = (ev["start_time"] as? NSNumber)?.doubleValue { events.append(s) } }
         }
         return (visual, narrative, events)
-    }
-
-    /// MVP multimodal: assemble the adaptive-visual-budget inputs for the INCLUDED Moments (those actually in
-    /// the planner request). Source URL is resolved from the Moment's local relativePath via MediaStore;
-    /// richness uses the SAME AU useful_segments the planner sees (events aren't in the request, so eventCount
-    /// is 0 — honest, never fabricated). A Moment with no resolvable file is skipped (it is also not in the
-    /// request). Deterministic.
-    static func visualBudgetInputs(from build: EditPlanRequestBuilder.Build) -> [VisualBudgetInput] {
-        let ranges = build.auUsefulRanges   // [lowercased id: [(a,b)]]
-        var out: [VisualBudgetInput] = []
-        for m in build.includedMedia {
-            guard MediaStore.shared.fileExists(relativePath: m.relativePath) else { continue }
-            let url = MediaStore.shared.absoluteURL(for: m.relativePath)
-            let key = m.momentId.uuidString.lowercased()
-            out.append(VisualBudgetInput(
-                momentId: m.momentId, url: url, durationSeconds: m.durationSeconds,
-                usefulSegmentCount: ranges[key]?.count ?? 0, eventCount: 0))
-        }
-        return out
-    }
-
-    /// Visual-budget inputs from an EXPLICIT media set (e.g. the post-R6-restore union), so a Moment that was
-    /// cloud-only/evicted and has just been restored is included rather than dropped. A file that STILL does
-    /// not exist locally (genuinely unrestorable) is skipped — it plans text-only, honestly, never fabricated.
-    static func visualBudgetInputs(fromMedia media: [MomentMedia],
-                                   auUsefulRanges: [String: [(Double, Double)]],
-                                   guidance: [UUID: EditorialFrameGuidance] = [:]) -> [VisualBudgetInput] {
-        var out: [VisualBudgetInput] = []
-        for m in media {
-            guard MediaStore.shared.fileExists(relativePath: m.relativePath) else { continue }
-            let url = MediaStore.shared.absoluteURL(for: m.relativePath)
-            let key = m.momentId.uuidString.lowercased()
-            out.append(VisualBudgetInput(
-                momentId: m.momentId, url: url, durationSeconds: m.durationSeconds,
-                usefulSegmentCount: auUsefulRanges[key]?.count ?? 0, eventCount: 0,
-                guidance: guidance[m.momentId]))
-        }
-        return out
     }
 
     /// P0 — assemble the reconciling MomentEvidenceAccounting census (stages 1-10) from the pieces each stage

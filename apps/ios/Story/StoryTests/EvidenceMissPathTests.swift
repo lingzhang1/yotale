@@ -152,40 +152,8 @@ final class EvidenceMissPathTests: XCTestCase {
 
     // MARK: - end to end on a real (synthetic) video: restore/extract fallback + mapper + tiled sheet
 
-    /// Writes a small H.264 video whose frame at second s is a flat colour keyed to s. Enough for the REAL
-    /// MomentFrameExtractor + MomentContactSheetBuilder pipeline; contains no personal media.
-    private func makeVideo(seconds: Int, fps: Int32 = 10) async throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("p1f-miss-\(UUID().uuidString).mp4")
-        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-        let settings: [String: Any] = [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 240]
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: input,
-            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                                          kCVPixelBufferWidthKey as String: 320, kCVPixelBufferHeightKey as String: 240])
-        writer.add(input)
-        XCTAssertTrue(writer.startWriting())
-        writer.startSession(atSourceTime: .zero)
-        for i in 0..<(seconds * Int(fps)) {
-            while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 2_000_000) }
-            var pb: CVPixelBuffer?
-            CVPixelBufferCreate(nil, 320, 240, kCVPixelFormatType_32BGRA, nil, &pb)
-            guard let buf = pb else { continue }
-            CVPixelBufferLockBaseAddress(buf, [])
-            if let base = CVPixelBufferGetBaseAddress(buf) {
-                memset(base, Int32((i / Int(fps)) * 20 % 250), CVPixelBufferGetDataSize(buf))
-            }
-            CVPixelBufferUnlockBaseAddress(buf, [])
-            adaptor.append(buf, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: fps))
-        }
-        input.markAsFinished()
-        await writer.finishWriting()
-        XCTAssertEqual(writer.status, .completed)
-        return url
-    }
-
     func test_pipeline_extract_then_select_is_candidate_guided_and_still_yields_a_sheet() async throws {
-        let url = try await makeVideo(seconds: 12)
+        let url = try await SyntheticMedia.makeVideo(seconds: 12)
         defer { try? FileManager.default.removeItem(at: url) }
         let frames = try await MomentFrameExtractor.extract(from: url)
         XCTAssertGreaterThan(frames.count, 8)
@@ -213,7 +181,7 @@ final class EvidenceMissPathTests: XCTestCase {
     }
 
     func test_budget_preflight_accepts_guided_inputs_and_returns_a_sheet() async throws {
-        let url = try await makeVideo(seconds: 8)
+        let url = try await SyntheticMedia.makeVideo(seconds: 8)
         defer { try? FileManager.default.removeItem(at: url) }
         let id = UUID()
         let g = EditorialFrameGuidance(videoType: .highlights,

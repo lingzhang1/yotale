@@ -25,6 +25,11 @@ struct VisualBudgetLimits {
     var maxTotalImageBytes: Int = 16 * 1024 * 1024     // 16 MB device target (< 20 MB server ceiling)
     var maxSheetBytes: Int = 900 * 1024                // 900 KB/sheet device target (< 1 MB server ceiling)
     var maxSheets: Int = 120
+    /// Multipart framing per attached sheet (boundary line + Content-Disposition + Content-Type headers).
+    /// Counted against the total ceiling so the budget is enforced on what is actually put on the wire, not
+    /// only on the raw JPEG bytes. The server counts raw sheet bytes (20 MB); the device target (16 MB) leaves
+    /// the remaining headroom for the JSON request part.
+    var perSheetOverheadBytes: Int = 512
     /// Degradation floors — never go below these before falling back to text-only for a Moment.
     var minCellSide: CGFloat = 200
     var minJpegQuality: CGFloat = 0.45
@@ -33,13 +38,19 @@ struct VisualBudgetLimits {
 
 struct VisualBudgetInput {
     let momentId: UUID
-    let url: URL
+    /// Local source video. nil when this Moment's frames come from `cachedFrames` (cloud-only source that is
+    /// deliberately NOT restored for planning) — a Moment needs one or the other.
+    let url: URL?
     let durationSeconds: Double
     let usefulSegmentCount: Int     // from AU observed.useful_segments (richness signal)
     let eventCount: Int             // from AU observed.events (richness signal)
     /// Optional AU editorial guidance for FRAME SELECTION on this (cache-miss) Moment. nil => uniform coverage.
     /// Selection only — it never changes the frame budget, tier ladder, or which Moments get a sheet.
     var guidance: EditorialFrameGuidance? = nil
+    /// Frames already in hand from a valid cached AU evidence package (ascending `tMs`, already editorially
+    /// selected at the Tier-1 frame count). When set, the sheet is built from these — no video, no extraction —
+    /// but still goes through the SAME tier ladder and byte budget as an extracted sheet (no cache exemption).
+    var cachedFrames: [AUExtractedFrame]? = nil
 }
 
 /// What the preflight decided and produced, plus diagnostics (never includes image bytes/content).
@@ -84,7 +95,7 @@ enum MultimodalVisualBudget {
         // Try each tier at FULL coverage; if even the smallest tier overflows, reduce coverage (step 5).
         for (ti, tier) in tiers.enumerated() {
             let (sheets, misses) = await buildSheets(ranked, tier: tier, limits: limits)
-            let total = sheets.reduce(0) { $0 + $1.jpeg.count }
+            let total = wireBytes(sheets, limits: limits)
             if ti >= 1 && !applied.contains("resize") { applied.append("resize") }
             if ti >= 2 && !applied.contains("compress") { applied.append("compress") }
             if ti >= 3 && !applied.contains("reduce-frames") { applied.append("reduce-frames") }
@@ -92,8 +103,8 @@ enum MultimodalVisualBudget {
                 return VisualBudgetResult(
                     sheets: sheets, sheetOrder: sheets.map { $0.momentId },
                     momentsWithImages: sheets.count, momentsTextOnly: inputs.count - sheets.count,
-                    totalImageBytes: total, selectedTier: tier.label, appliedSteps: applied,
-                    sheetMissReasons: misses)
+                    totalImageBytes: sheets.reduce(0) { $0 + $1.jpeg.count }, selectedTier: tier.label,
+                    appliedSteps: applied, sheetMissReasons: misses)
             }
         }
 
@@ -106,17 +117,24 @@ enum MultimodalVisualBudget {
         var running = 0
         var misses = smallestMisses
         for s in allSheets {   // allSheets is in richness order (ranked)
-            if running + s.jpeg.count > limits.maxTotalImageBytes || kept.count >= limits.maxSheets {
+            if running + s.jpeg.count + limits.perSheetOverheadBytes > limits.maxTotalImageBytes
+                || kept.count >= limits.maxSheets {
                 misses[s.momentId.uuidString.lowercased()] = .budgetCoverageDropped   // sized but cut by budget
                 continue
             }
-            kept.append(s); running += s.jpeg.count
+            kept.append(s); running += s.jpeg.count + limits.perSheetOverheadBytes
         }
         return VisualBudgetResult(
             sheets: kept, sheetOrder: kept.map { $0.momentId },
             momentsWithImages: kept.count, momentsTextOnly: inputs.count - kept.count,
-            totalImageBytes: running, selectedTier: smallest.label + "+partial-coverage",
+            totalImageBytes: kept.reduce(0) { $0 + $1.jpeg.count }, selectedTier: smallest.label + "+partial-coverage",
             appliedSteps: applied, sheetMissReasons: misses)
+    }
+
+    /// What the attached sheets cost on the wire: raw JPEG bytes plus per-part multipart framing. This is the
+    /// number every ceiling check uses, for cached and extracted sheets alike.
+    static func wireBytes(_ sheets: [MomentContactSheet], limits: VisualBudgetLimits = VisualBudgetLimits()) -> Int {
+        sheets.reduce(0) { $0 + $1.jpeg.count + limits.perSheetOverheadBytes }
     }
 
     /// Build one sheet per input at the given tier, skipping any sheet that still exceeds the per-sheet cap
@@ -140,9 +158,23 @@ enum MultimodalVisualBudget {
             budget.cellLongestSide = tier.cell
             budget.jpegQuality = tier.q
             do {
-                let sheet = try await MomentContactSheetBuilder.build(
-                    momentId: inp.momentId, url: inp.url,
-                    durationSeconds: inp.durationSeconds, budget: budget, guidance: inp.guidance)
+                let sheet: MomentContactSheet
+                if let cached = inp.cachedFrames, !cached.isEmpty {
+                    // Cache-hit frames: re-select within the held subset for this tier's frame count, then tile.
+                    // Same mapper, same tier knobs, same byte checks below as the extraction path.
+                    let picked = EvidenceFrameMapper.selectExtracted(
+                        cached, guidance: inp.guidance, count: max(1, min(budget.framesPerMoment, cached.count)))
+                    sheet = try MomentContactSheetBuilder.buildFromFrames(
+                        momentId: inp.momentId, frames: picked,
+                        durationSeconds: inp.durationSeconds, budget: budget)
+                } else if let url = inp.url {
+                    sheet = try await MomentContactSheetBuilder.build(
+                        momentId: inp.momentId, url: url,
+                        durationSeconds: inp.durationSeconds, budget: budget, guidance: inp.guidance)
+                } else {
+                    misses[key] = .extractionError   // no frames and no source: nothing to build from (never fabricate)
+                    continue
+                }
                 if sheet.jpeg.count <= limits.maxSheetBytes {
                     out.append(sheet)
                     misses.removeValue(forKey: key)

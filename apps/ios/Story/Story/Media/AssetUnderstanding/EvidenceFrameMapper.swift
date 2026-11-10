@@ -174,35 +174,32 @@ extension EvidenceFrameMapper {
     }
 }
 
-// MARK: - Cache-hit orchestrator
+// MARK: - Cache-hit retrieval
 
 enum AUEvidenceCacheHit {
-    /// Attempt a full cache-hit sheet build for one Moment. Returns a contact sheet on success, or nil on ANY
-    /// miss/validation failure (caller falls back to restore/extract). Pure of restore + MomentFrameExtractor.
-    /// `editorialCandidates` are parsed from the Moment's local MomentUnderstanding (visual/narrative/events).
-    static func buildSheet(momentId: UUID,
-                           videoType: EvidenceVideoType,
-                           visualCandidates: [EvidenceCandidate],
-                           narrativeCandidates: [EvidenceCandidate],
-                           eventTimesS: [Double],
-                           budget: ContactSheetBudget,
-                           service: AUEvidenceService = AUEvidenceService()) async -> MomentContactSheet? {
+    /// Attempt a cache hit for one Moment: fetch the authorized evidence package (identity, source SHA,
+    /// extraction version and blob integrity are validated server-side at retrieval and again by the service),
+    /// unpack the ORIGINAL accepted AU frames, and let the editorial mapper pick the Tier-1 subset. Returns the
+    /// selected frames (ascending `tMs`) or nil on ANY miss/validation/transport failure so the caller falls
+    /// back to restore + extract. It deliberately does NOT build a contact sheet: the frames join the shared
+    /// `MultimodalVisualBudget` like every other source, so a cache hit has no payload-budget exemption. It
+    /// needs no local video, so it works for a cloud-only/evicted source.
+    static func fetchSelectedFrames(momentId: UUID,
+                                    guidance: EditorialFrameGuidance,
+                                    budget: ContactSheetBudget,
+                                    service: AUEvidenceService = AUEvidenceService()) async -> [AUExtractedFrame]? {
         do {
             let (manifest, download) = try await service.fetchManifest(momentId: momentId)
             let packed = try await service.downloadPacked(download, manifest: manifest)
             let allFrames = try service.unpackFrames(packed, manifest: manifest)
             let picked = EvidenceFrameMapper.selectFrames(
-                videoType: videoType, sampledFrameMs: manifest.sampledFrameMs,
-                visualCandidates: visualCandidates, narrativeCandidates: narrativeCandidates,
-                eventTimesS: eventTimesS, budget: budget.framesPerMoment)
+                videoType: guidance.videoType, sampledFrameMs: manifest.sampledFrameMs,
+                visualCandidates: guidance.visual, narrativeCandidates: guidance.narrative,
+                eventTimesS: guidance.eventTimesS, budget: budget.framesPerMoment)
             let selected = picked.compactMap { i in i < allFrames.count ? allFrames[i] : nil }
-            guard !selected.isEmpty else { return nil }
-            // duration ≈ last sampled timestamp (ms) in seconds; the sheet header uses it for labeling only.
-            let durationSeconds = Double(manifest.sampledFrameMs.last ?? 0) / 1000.0
-            return try MomentContactSheetBuilder.buildFromFrames(
-                momentId: momentId, frames: selected, durationSeconds: durationSeconds, budget: budget)
+            return selected.isEmpty ? nil : selected
         } catch {
-            return nil   // any miss/integrity/transport failure -> caller uses existing fallback
+            return nil   // any miss/integrity/transport failure -> caller uses the restore/extract fallback
         }
     }
 }
