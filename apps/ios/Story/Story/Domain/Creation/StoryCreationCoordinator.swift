@@ -431,7 +431,7 @@ final class StoryCreationCoordinator {
         cancelRequested = false
         partialRelativePath = nil
         lastFailure = nil
-        Self.setKeepAwake(true)   // don't let the screen sleep mid-plan/render (sleep tears down the connection)
+        Self.setKeepAwake(true, story.id)   // don't let the screen sleep mid-plan/render (sleep tears down the connection)
         task = Task { [weak self] in
             await self?.run(story: story, outputFormat: outputFormat, targetSeconds: targetSeconds)
         }
@@ -459,9 +459,12 @@ final class StoryCreationCoordinator {
 
     /// Keep the device awake during an active Create/Revise so a screen sleep cannot suspend the app and tear
     /// down the in-flight planning/render connection (observed as NSURLError -1005). Cleared when the run ends.
-    private static func setKeepAwake(_ on: Bool) {
+    private static func setKeepAwake(_ on: Bool, _ storyId: UUID) {
         #if canImport(UIKit)
-        UIApplication.shared.isIdleTimerDisabled = on
+        // Shared ownership (ScreenAwake): ending a run releases only THIS Story's claim, never another run's
+        // or the camera's.
+        let key = "create.coordinator.\(storyId.uuidString)"
+        if on { ScreenAwake.shared.hold(key) } else { ScreenAwake.shared.release(key) }
         #endif
     }
 
@@ -556,7 +559,7 @@ final class StoryCreationCoordinator {
     // MARK: - Pipeline
 
     private func run(story: StoryModel, outputFormat: String, targetSeconds: Double?) async {
-        defer { isCreating = false; task = nil; Self.setKeepAwake(false); Self.releaseActive(story.id) }
+        defer { isCreating = false; task = nil; Self.setKeepAwake(false, story.id); Self.releaseActive(story.id) }
 
         // ---- preparing: gather REAL persisted inputs; missing prerequisite -> honest failure ----
         state = .preparing
@@ -1545,7 +1548,7 @@ extension StoryCreationCoordinator {
         story.planJobId = jobId
         isCreating = true
         cancelRequested = false
-        Self.setKeepAwake(true)
+        Self.setKeepAwake(true, story.id)
         MediaEngineV1.beacon("editplan-recover: resume op=\(row.operationType) phase=\(row.phase) "
             + "job=\(jobId.prefix(8)) music=\(music == nil ? "none" : "set")")
         task = Task { [weak self] in
@@ -1557,7 +1560,7 @@ extension StoryCreationCoordinator {
     /// Drive a resumed operation to completion. For plan_ready with a saved plan we SKIP planning entirely and
     /// render from the saved plan; otherwise we re-enter the normal run (which reuses jobId -> no re-inference).
     private func resumeRun(story: StoryModel, row: PendingOperationModel) async {
-        defer { isCreating = false; task = nil; Self.setKeepAwake(false); Self.releaseActive(story.id) }
+        defer { isCreating = false; task = nil; Self.setKeepAwake(false, story.id); Self.releaseActive(story.id) }
         // Fast render-resume: a saved, completed plan -> render directly (Phase 3), no poll, no re-inference.
         if row.phase == "plan_ready" || row.phase == "rendering", let json = row.planJSON,
            let data = json.data(using: .utf8),

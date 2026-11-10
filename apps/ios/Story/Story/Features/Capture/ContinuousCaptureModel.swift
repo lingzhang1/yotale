@@ -9,7 +9,13 @@ import CoreLocation
 /// device-acceptance concern, not a unit test).
 enum CameraZoomFormat {
     static func label(_ z: Double) -> String {
-        if z < 1 { return String(format: ".%d", Int((z * 10).rounded())) }
+        // Below 1× the label is tenths with a leading dot (.5, .6). A value that ROUNDS to ten tenths
+        // (0.95..<1) is 1, never ".10" (seen on device while dragging through 1×).
+        if z < 1 {
+            let tenths = Int((z * 10).rounded())
+            if tenths >= 10 { return "1" }
+            return String(format: ".%d", max(tenths, 1))
+        }
         if z == z.rounded() { return "\(Int(z))" }
         return String(format: "%.1f", z)
     }
@@ -17,7 +23,7 @@ enum CameraZoomFormat {
     /// The live magnification shown on the ACTIVE zoom chip: "2.7×" style (one decimal + ×), "1×"/"2×"
     /// when sitting on/near an integer, ".5×" sub-1×. Separate from `label` (plain preset text).
     static func liveLabel(_ z: Double) -> String {
-        if z < 1 { return label(z) + "×" }
+        if z < 1 && (z * 10).rounded() < 10 { return label(z) + "×" }
         if abs(z - z.rounded()) < 0.05 { return "\(Int(z.rounded()))×" }
         return String(format: "%.1f×", z)
     }
@@ -160,25 +166,68 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
 
     /// Tap-to-focus at a view point (from the tap gesture). Also shows a brief focus reticle (UI state).
     func focusAndExpose(atViewPoint point: CGPoint) {
+        noteInteraction()
         controller?.focusAndExpose(atViewPoint: point)
     }
     /// Snap to a zoom preset (preset button).
     func setZoomPreset(_ userZoom: Double) {
-        currentUserZoom = userZoom
-        controller?.setUserZoom(userZoom)
+        noteInteraction()
+        zoomDrag = nil
+        setDisplayZoom(userZoom)
     }
-    /// Continuous absolute zoom from the thumb-dial (maps dial position → a user-× value). Reuses the
-    /// same clamped device setter as the presets; the controller reports the real value back via .zoomChanged.
+    /// Continuous absolute zoom (displayed ×). The controller clamps it and is the authority; the readout
+    /// shows the CLAMPED value immediately, and the device's report confirms it via .zoomChanged.
     func setDialZoom(_ userZoom: Double) {
-        currentUserZoom = userZoom
-        controller?.setUserZoom(userZoom)
+        setDisplayZoom(userZoom)
     }
-    /// The device's continuous user-× zoom range (for the dial extents). [1,1] until ready.
+    private func setDisplayZoom(_ userZoom: Double) {
+        guard let controller else { return }
+        controller.setUserZoom(userZoom)
+        currentUserZoom = controller.currentDisplayZoom
+    }
+    /// The device's continuous displayed zoom range (for the dial extents). [1,1] until ready.
     var userZoomRange: ClosedRange<Double> { controller?.userZoomRange ?? 1...1 }
-    /// Continuous pinch zoom. `base` is captured at gesture start from the controller.
-    func pinchZoom(scale: CGFloat, base: CGFloat) {
-        controller?.applyPinchZoom(scale: scale, base: base)
+
+    /// Thumb-dial drag. The FIRST update of a drag snapshots the controller's authoritative zoom and the
+    /// finger offset at that moment; every update after is relative to that snapshot, so a drag continues
+    /// from the current zoom (no jump to the dial minimum, no carry-over from a previous drag). The
+    /// snapshot lives on this reference type, not in SwiftUI @State, so it is readable right after it is set.
+    func dialDragChanged(move: Double) {
+        guard let controller else { return }
+        if zoomDrag == nil {
+            noteInteraction()
+            zoomDrag = ZoomDragSession(startZoom: controller.currentDisplayZoom, startMove: move,
+                                       range: controller.userZoomRange)
+        }
+        guard let drag = zoomDrag else { return }
+        setDisplayZoom(drag.zoom(forMove: move))
     }
+    func dialDragEnded() {
+        zoomDrag = nil
+        noteInteraction()
+    }
+    /// Current drag snapshot (tests / diagnostics).
+    private(set) var zoomDrag: ZoomDragSession?
+
+    /// Continuous pinch zoom. `base` is captured at gesture start from the controller's authoritative zoom.
+    func pinchZoom(scale: CGFloat, base: CGFloat) {
+        noteInteraction()
+        zoomDrag = nil   // a pinch takes over; the next dial drag re-snapshots from the pinched value
+        controller?.applyPinchZoom(scale: scale, base: base)
+        if let controller { currentUserZoom = controller.currentDisplayZoom }
+    }
+
+    // Screen awake (P0 camera): the capture screen keeps the display on while recording, and for a short
+    // idle window while framing. Released on close; suspended automatically while backgrounded.
+    private lazy var screenAwake = CaptureScreenAwake()
+    func screenAppeared() { screenAwake.appear() }
+    func screenDisappeared() {
+        zoomDrag = nil
+        screenAwake.disappear()
+    }
+    /// Any user action on the capture screen.
+    func noteInteraction() { screenAwake.interaction() }
+
     /// The controller's current raw zoom factor (gesture start reads this).
     var currentRawZoom: CGFloat { controller?.currentZoomFactor ?? 1.0 }
     /// Toggle the torch.
@@ -197,6 +246,8 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     /// Flip front/rear (UI gates this out of recording). Resets zoom to 1× on the new camera.
     func switchCamera() {
         guard !isRecording else { return }
+        noteInteraction()
+        zoomDrag = nil
         controller?.switchCamera()
     }
     /// Manual exposure bias from the slider.
@@ -266,7 +317,10 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         loadReferenceMediaForCurrentIdea()   // optional photo/video for the seeded guide idea (non-blocking)
     }
 
-    func toggleRecording() { controller?.toggleRecording() }
+    func toggleRecording() {
+        noteInteraction()
+        controller?.toggleRecording()
+    }
 
     /// Whether we hold a shot idea that can be reopened without a new scan (drives the chip):
     /// either live cached Director ideas OR an instant seeded guide idea.
@@ -276,6 +330,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     /// (no inference). Otherwise start a fresh scene scan on the LIVE session (does not stop any
     /// in-progress recording), then run the Director.
     func getAIShotIdeaTapped() {
+        noteInteraction()
         if hasCachedIdeas {
             reopenIdeas()
             return
@@ -554,6 +609,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
             break
         case .recordingStarted:
             isRecording = true
+            screenAwake.recordingChanged(true)
             // Phase 1+2: starting a recording cancels any IN-FLIGHT scan/inference (bump the
             // generation so a late Director response can't replace newer ideas or reopen the
             // overlay), and COLLAPSES the full idea card — but PRESERVES cached ideas + the
@@ -573,29 +629,36 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
             startRecordingTimer()
         case .recordingFinished(let url, let duration, let capturedAt, let fix):
             isRecording = false
+            screenAwake.recordingChanged(false)
             stopRecordingTimer()
             persist(tempURL: url, duration: duration, capturedAt: capturedAt, location: fix)
         case .captureFailed(let message):
             isRecording = false
+            screenAwake.recordingChanged(false)
             stopRecordingTimer()
             errorMessage = message
             showError = true
         case .interrupted:
             isRecording = false
+            screenAwake.recordingChanged(false)
             stopRecordingTimer()
         case .presetsReady(let presets):
             // The strip now renders from the model's OWN published copy (not a lazy controller read),
             // so it appears on OPEN instead of only after the first tap forces a re-render.
             publishedZoomPresets = presets
         case .zoomChanged(let userZoom):
-            // Live magnification from pinch or a preset tap — drives the active-chip value + highlight.
-            currentUserZoom = userZoom
+            // Live magnification from pinch, dial or a chip. The controller's authoritative target wins over a
+            // report that arrives late from an earlier request (fast drags), so the readout never steps back.
+            currentUserZoom = controller?.currentDisplayZoom ?? userZoom
         case .aeafLockChanged(let locked):
             isAEAFLocked = locked
+        case .stabilizationChanged:
+            break   // the active mode is logged by the controller (category "camera"); no on-screen readout
         case .cameraPositionChanged(let front):
             isFrontCamera = front
-            // A swap resets zoom to 1× and clears torch (front has none); reflect it.
-            currentUserZoom = 1.0
+            // A swap opens the new camera at displayed 1× (or its nearest reachable zoom); the controller
+            // reports the actual value via .zoomChanged. Any in-progress dial drag ends with the old camera.
+            zoomDrag = nil
             if front { torchOn = false }
             exposureBias = 0
         }

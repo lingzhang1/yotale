@@ -37,6 +37,7 @@ enum ContinuousCaptureEvent {
     case zoomChanged(Double)         // live USER-× zoom factor (pinch/preset) for the strip
     case aeafLockChanged(Bool)       // AE/AF lock engaged/released (Increment 2)
     case cameraPositionChanged(Bool) // true = front camera now active (Increment 2)
+    case stabilizationChanged(StabilizationStatus)   // requested vs ACTIVE mode on the recorded-video connection
 }
 
 protocol ContinuousCameraControllerDelegate: AnyObject {
@@ -79,6 +80,15 @@ final class ContinuousCameraController: UIViewController, AVCaptureFileOutputRec
     /// switch-over factors — NEVER a hardcoded lens list, so an SE with no ultra-wide/tele shows
     /// only [1×, 2×(digital)]. `1.0` is always present (the base wide). Published for the UI.
     private(set) var zoomPresets: [Double] = [1.0]
+    /// The single conversion between hardware and displayed zoom for the ACTIVE camera (see CameraZoomScale).
+    private(set) var zoomScale = CameraZoomScale(multiplier: 1, minRaw: 1, maxRaw: 1)
+    /// AUTHORITATIVE zoom (raw `videoZoomFactor`), main-thread only. Updated synchronously whenever a zoom is
+    /// REQUESTED (chip, dial, pinch, open, camera switch), before the device lock on `sessionQueue` applies it,
+    /// so a gesture that starts right after a request reads the value the camera is moving to, not a stale one.
+    private(set) var targetRawZoom: CGFloat = 1
+    /// Stabilization actually in effect on the recorded-video connection (KVO on activeVideoStabilizationMode).
+    private(set) var stabilizationStatus = StabilizationStatus(requested: .off, active: .off)
+    private var stabilizationObservation: NSKeyValueObservation?
     /// Whether this device has a torch (UI hides the control when false).
     var hasTorch: Bool { videoDevice?.hasTorch ?? false }
 
@@ -190,8 +200,11 @@ final class ContinuousCameraController: UIViewController, AVCaptureFileOutputRec
         }
         session.commitConfiguration()
 
-        // Compute device-supported zoom presets from the ACTUAL hardware (no fake lenses).
-        if let camera = device { self.zoomPresets = Self.zoomPresets(for: camera) }
+        // Compute the zoom conversion + device-supported presets from the ACTUAL hardware (no fake lenses).
+        if let camera = device {
+            self.zoomScale = Self.zoomScale(for: camera)
+            self.zoomPresets = Self.zoomPresets(for: camera, scale: zoomScale)
+        }
         // Publish presets to the owner immediately so the zoom strip renders on OPEN (not lazily on
         // first tap). Dispatched to main because the delegate drives @Published UI state.
         let presets = self.zoomPresets
@@ -205,6 +218,46 @@ final class ContinuousCameraController: UIViewController, AVCaptureFileOutputRec
 
         // Orientation verify/fix: observe + apply rotation to preview + movie connections.
         configureRotationCoordinator()
+
+        // Stabilization (recorded file + preview) for the active format, then open at displayed 1×.
+        applyStabilization()
+        applyInitialZoom()
+    }
+
+    // MARK: - Stabilization
+
+    /// Request the policy's mode on the MOVIE connection and `.previewOptimized` on the preview connection,
+    /// for the CURRENT device/format. Re-run after every input/format change (camera switch). The recorded
+    /// file and the preview are separate connections: neither setting affects the other.
+    private func applyStabilization() {
+        let movieConnection = movieOutput.connection(with: .video)
+        let requested = CaptureStabilization.applyRecording(to: movieConnection, device: videoDevice)
+        CaptureStabilization.applyPreview(to: previewLayer?.connection, device: videoDevice)
+        stabilizationObservation = movieConnection?.observe(\.activeVideoStabilizationMode, options: [.initial, .new]) { [weak self] c, _ in
+            let status = StabilizationStatus(requested: requested, active: c.activeVideoStabilizationMode)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.stabilizationStatus = status
+                CaptureStabilization.log.notice("stabilization recording active=\(CaptureStabilization.name(status.active), privacy: .public) requested=\(CaptureStabilization.name(status.requested), privacy: .public)")
+                self.delegate?.captureEvent(.stabilizationChanged(status))
+            }
+        }
+    }
+
+    // MARK: - Zoom (one conversion, one authoritative value)
+
+    /// Open at displayed 1× when reachable (raw 2.0 on an ultra-wide virtual device, raw 1.0 elsewhere). Without
+    /// this the virtual device opens at raw 1.0 — the ULTRA-WIDE — while the UI assumed 1×.
+    private func applyInitialZoom() {
+        let raw = CGFloat(zoomScale.initialRaw)
+        targetRawZoom = raw
+        let scale = zoomScale
+        configureDevice { [weak self] device in
+            let applied = Self.liveClamped(raw, device)
+            device.videoZoomFactor = applied
+            self?.reportZoom(raw: applied, scale: scale)
+        }
+        CaptureStabilization.log.notice("zoom open raw=\(Double(raw)) display=\(scale.display(fromRaw: Double(raw))) multiplier=\(scale.multiplier) range=\(scale.minRaw)...\(scale.maxRaw)")
     }
 
     /// Build the movie-file location metadata (ISO-6709) from a trustworthy fix, or [] when unknown.
@@ -239,50 +292,37 @@ final class ContinuousCameraController: UIViewController, AVCaptureFileOutputRec
         return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
     }
 
-    /// Zoom presets expressed in the UI's "×" scale relative to the 1× wide lens. Derived from the
-    /// device's real `virtualDeviceSwitchOverVideoZoomFactors` (ultra-wide gives 0.5×, each tele gives a
-    /// switch-over e.g. 2×/3×/5×). The optical switch-overs are ANCHORS; `CameraZoomFormat.ladder`
-    /// fills integer digital steps between them so the ramp is gradual (a [0.5,1,5] device becomes
-    /// [0.5,1,2,3,5]) instead of a jarring 1→5 jump. Everything is clamped to the real max.
-    private static func zoomPresets(for device: AVCaptureDevice) -> [Double] {
-        // On a virtual device the base zoom (1.0 of videoZoomFactor) is the WIDEST active lens.
-        // switchOver factors are videoZoomFactor thresholds where the lens changes.
-        let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { $0.doubleValue }
+    /// The device's zoom conversion: the system's `displayVideoZoomFactorMultiplier` (iOS 18+) when valid,
+    /// else the ultra-wide heuristic; and the device's available raw range.
+    static func zoomScale(for device: AVCaptureDevice) -> CameraZoomScale {
         let hasUltraWide = device.constituentDevices.contains { $0.deviceType == .builtInUltraWideCamera }
-        // Real optical anchors in USER-× terms. With ultra-wide, raw factor 1.0 == 0.5× (1× == 2.0).
-        var anchors: [Double] = []
-        if hasUltraWide {
-            anchors.append(0.5)
-            anchors.append(1.0)
-            for f in switchOvers where f > 2.0 { anchors.append((f / 2.0).rounded()) }
-        } else {
-            anchors.append(1.0)
-            for f in switchOvers where f > 1.0 { anchors.append(f.rounded()) }
-        }
-        let maxUserZoom = device.maxAvailableVideoZoomFactor / (hasUltraWide ? 2.0 : 1.0)
-        return CameraZoomFormat.ladder(anchors: anchors, maxUserZoom: maxUserZoom)
+        var system: Double?
+        if #available(iOS 18.0, *) { system = Double(device.displayVideoZoomFactorMultiplier) }
+        return CameraZoomScale(
+            multiplier: CameraZoomScale.resolvedMultiplier(system: system, hasUltraWide: hasUltraWide),
+            minRaw: Double(device.minAvailableVideoZoomFactor),
+            maxRaw: Double(device.maxAvailableVideoZoomFactor))
     }
 
-    /// Convert a user-facing "×" value into the device's raw `videoZoomFactor`.
-    /// On an ultra-wide virtual device, user 1× corresponds to raw factor 2.0 (0.5× == 1.0).
-    private func rawZoomFactor(forUserZoom userZoom: Double) -> CGFloat {
-        let hasUltraWide = videoDevice?.constituentDevices.contains {
-            $0.deviceType == .builtInUltraWideCamera } ?? false
-        return CGFloat(userZoom * (hasUltraWide ? 2.0 : 1.0))
+    /// Zoom presets in DISPLAY terms, derived from the device's real `virtualDeviceSwitchOverVideoZoomFactors`
+    /// through `CameraZoomScale` (ultra-wide gives 0.5×, each tele switch-over e.g. 5×). The optical anchors are
+    /// filled with integer digital steps by `CameraZoomFormat.ladder`, clamped to what the device can reach.
+    private static func zoomPresets(for device: AVCaptureDevice, scale: CameraZoomScale) -> [Double] {
+        let switchOvers = device.virtualDeviceSwitchOverVideoZoomFactors.map { $0.doubleValue }
+        let anchors = scale.opticalAnchors(switchOverRaw: switchOvers)
+        return CameraZoomFormat.ladder(anchors: anchors, maxUserZoom: scale.displayRange.upperBound)
     }
 
-    /// Inverse of `rawZoomFactor`: the device's raw `videoZoomFactor` expressed in user-× terms, so the
-    /// UI strip can show the live magnification (e.g. "2.7×") and highlight the nearest preset.
-    private func userZoom(forRawFactor raw: CGFloat) -> Double {
-        let hasUltraWide = videoDevice?.constituentDevices.contains {
-            $0.deviceType == .builtInUltraWideCamera } ?? false
-        return Double(raw) / (hasUltraWide ? 2.0 : 1.0)
+    /// Final guard at the device boundary: the AVAILABLE range can change while running (e.g. thermal limits),
+    /// and setting `videoZoomFactor` outside it raises. Called inside lockForConfiguration on `sessionQueue`.
+    private static func liveClamped(_ raw: CGFloat, _ device: AVCaptureDevice) -> CGFloat {
+        min(max(raw, device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
     }
 
-    /// Report the device's current zoom (user-×) to the owner on the main actor (drives the strip).
-    private func reportZoom() {
-        let user = userZoom(forRawFactor: videoDevice?.videoZoomFactor ?? 1.0)
-        DispatchQueue.main.async { [weak self] in self?.delegate?.captureEvent(.zoomChanged(user)) }
+    /// Report a zoom (DISPLAY terms) to the owner on the main actor (drives chips, readout and dial).
+    private func reportZoom(raw: CGFloat, scale: CameraZoomScale) {
+        let display = scale.display(fromRaw: Double(raw))
+        DispatchQueue.main.async { [weak self] in self?.delegate?.captureEvent(.zoomChanged(display)) }
     }
 
     // MARK: - Interruption / backgrounding guards
@@ -519,44 +559,37 @@ final class ContinuousCameraController: UIViewController, AVCaptureFileOutputRec
         }
     }
 
-    /// Set zoom by user-facing "×" value (from a preset button). Clamped to the device range.
-    func setUserZoom(_ userZoom: Double) {
-        configureDevice { [weak self] device in
-            guard let self else { return }
-            let raw = self.rawZoomFactor(forUserZoom: userZoom)
-            let clamped = max(device.minAvailableVideoZoomFactor,
-                              min(raw, device.maxAvailableVideoZoomFactor))
-            device.videoZoomFactor = clamped
-            self.reportZoom()
-        }
+    /// Set zoom by DISPLAYED value (chip tap or dial). Clamped to the device range. Main thread.
+    func setUserZoom(_ displayZoom: Double) {
+        setRawZoom(CGFloat(zoomScale.raw(fromDisplay: displayZoom)))
     }
 
-    /// Continuous pinch zoom. `scale` is the gesture's cumulative scale applied to the zoom factor
-    /// at gesture start (`base`), so the ramp feels natural. Works during recording (device-level,
-    /// no topology change). Clamped to the device's real min/max.
+    /// Continuous pinch zoom. `scale` is the gesture's cumulative scale applied to the raw zoom captured at
+    /// gesture start (`base`, read from `currentZoomFactor`). Works during recording (device-level, no
+    /// topology change). Clamped to the device's real min/max. Main thread.
     func applyPinchZoom(scale: CGFloat, base: CGFloat) {
+        setRawZoom(CGFloat(zoomScale.pinchRaw(base: Double(base), scale: Double(scale))))
+    }
+
+    /// The one writer of zoom: update the authoritative target now, apply it on the session queue.
+    private func setRawZoom(_ raw: CGFloat) {
+        targetRawZoom = raw
+        let scale = zoomScale
         configureDevice { [weak self] device in
-            let target = base * scale
-            let clamped = max(device.minAvailableVideoZoomFactor,
-                              min(target, device.maxAvailableVideoZoomFactor))
-            device.videoZoomFactor = clamped
-            self?.reportZoom()
+            let applied = Self.liveClamped(raw, device)
+            device.videoZoomFactor = applied
+            self?.reportZoom(raw: applied, scale: scale)
         }
     }
 
-    /// The device's current raw zoom factor (gesture start reads this as its base).
-    var currentZoomFactor: CGFloat { videoDevice?.videoZoomFactor ?? 1.0 }
+    /// The authoritative raw zoom (gesture start reads this as its base).
+    var currentZoomFactor: CGFloat { targetRawZoom }
 
-    /// The device's zoom range expressed in USER-× terms (for the continuous thumb-dial). On an
-    /// ultra-wide virtual device, raw 1.0 == user 0.5×, so user-min is raw-min / 2.
-    var userZoomRange: ClosedRange<Double> {
-        guard let d = videoDevice else { return 1...1 }
-        let hasUltraWide = d.constituentDevices.contains { $0.deviceType == .builtInUltraWideCamera }
-        let div = hasUltraWide ? 2.0 : 1.0
-        let lo = Double(d.minAvailableVideoZoomFactor) / div
-        let hi = Double(d.maxAvailableVideoZoomFactor) / div
-        return lo...max(lo, hi)
-    }
+    /// The authoritative zoom in DISPLAY terms (the dial snapshots this when a drag begins).
+    var currentDisplayZoom: Double { zoomScale.display(fromRaw: Double(targetRawZoom)) }
+
+    /// The displayed zoom range the active camera can reach (dial extents).
+    var userZoomRange: ClosedRange<Double> { zoomScale.displayRange }
 
     /// Tap-to-focus + expose at a preview point (0..1 device coords from the preview layer). A tap also
     /// CLEARS any AE/AF lock and resumes continuous tracking — the native behavior (tap to re-meter).
@@ -628,20 +661,27 @@ final class ContinuousCameraController: UIViewController, AVCaptureFileOutputRec
             }
             self.session.commitConfiguration()
 
-            // Re-derive presets for the new device, reset zoom to 1×, re-apply orientation.
-            let presets = Self.zoomPresets(for: newDevice)
-            self.zoomPresets = presets
+            // Re-derive the zoom conversion + presets for the NEW device and open it at displayed 1× (or the
+            // nearest reachable value), then re-apply orientation and stabilization: the new input has a new
+            // active format, so the old mode choice no longer applies.
+            let scale = Self.zoomScale(for: newDevice)
+            let presets = Self.zoomPresets(for: newDevice, scale: scale)
+            let raw = CGFloat(scale.initialRaw)
             try? newDevice.lockForConfiguration()
-            newDevice.videoZoomFactor = self.rawZoomFactor(forUserZoom: 1.0)
+            newDevice.videoZoomFactor = Self.liveClamped(raw, newDevice)
             newDevice.unlockForConfiguration()
             self.isAELocked = false
             let pos = self.cameraPosition
             DispatchQueue.main.async {
+                self.zoomScale = scale
+                self.zoomPresets = presets
+                self.targetRawZoom = raw
                 self.delegate?.captureEvent(.presetsReady(presets))
-                self.delegate?.captureEvent(.zoomChanged(1.0))
+                self.delegate?.captureEvent(.zoomChanged(scale.display(fromRaw: Double(raw))))
                 self.delegate?.captureEvent(.aeafLockChanged(false))
                 self.delegate?.captureEvent(.cameraPositionChanged(pos == .front))
                 self.applyRotationForCurrentAPI()
+                self.applyStabilization()
             }
         }
     }

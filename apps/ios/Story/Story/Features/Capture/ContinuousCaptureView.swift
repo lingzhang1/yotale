@@ -35,7 +35,6 @@ struct ContinuousCaptureView: View {
     @State private var focusReticle: CGPoint?
     @State private var reticleToken = 0
     @State private var zoomDialActive = false
-    @State private var dialStartFraction: Double = 0
     @State private var showLocationExplainer = false
     @Environment(AuthStore.self) private var auth
     @State private var cloudGate = CloudAuthGateModel()
@@ -112,6 +111,7 @@ struct ContinuousCaptureView: View {
         }
         .statusBarHidden(true)
         .onAppear {
+            model.screenAppeared()   // keep the display on while framing/recording (released on close)
             model.configure(context: context, captureContext: captureContext, seedOpportunity: seedOpportunity)
             model.seedGuideIdeaIfNeeded()
             // Location tagging (OPTIONAL): if the user has already allowed it, resume passive updates.
@@ -122,7 +122,10 @@ struct ContinuousCaptureView: View {
                 showLocationExplainer = true
             }
         }
-        .onDisappear { CaptureLocationService.shared.stop() }   // battery: stop updates when camera closes
+        .onDisappear {
+            CaptureLocationService.shared.stop()   // battery: stop updates when camera closes
+            model.screenDisappeared()               // release the screen-awake claims
+        }
         // Benefit-FIRST explainer (safeguard 1): explain WHY before the system When-In-Use prompt. Camera
         // startup + recording never wait on this — it's a non-blocking optional affordance.
         .alert("Tag your Moments with location?", isPresented: $showLocationExplainer) {
@@ -646,21 +649,21 @@ struct ContinuousCaptureView: View {
         // highPriorityGesture so a DRAG wins over the chip buttons — a plain tap (no movement past the
         // threshold) still falls through to the button, so tap-to-snap and drag-to-dial coexist.
         .highPriorityGesture(
-            DragGesture(minimumDistance: 10)
+            // GLOBAL coordinate space: the first drag update switches the strip to the dial, which grows it
+            // from 52 to 96 pt and moves its top edge up 44 pt. In the default LOCAL space that layout change
+            // shows up as +44 pt of downward finger travel (= zoom out), i.e. 44/220 of the dial: from 1× straight
+            // to ~0.5× (device recording, 2026-11-09). Global translation is pure finger movement.
+            DragGesture(minimumDistance: 10, coordinateSpace: .global)
                 .onChanged { g in
-                    if !zoomDialActive {
-                        zoomDialActive = true
-                        dialStartFraction = CameraZoomFormat.dialFraction(fromZoom: model.currentUserZoom, range: model.userZoomRange)
-                    }
-                    // Either axis drives the dial (horizontal OR vertical thumb movement). ~220pt of
-                    // travel spans the full range; right/up = zoom in, left/down = zoom out.
-                    let move = Double(g.translation.width - g.translation.height)
-                    let delta = move / 220.0
-                    let frac = dialStartFraction + delta
-                    let z = CameraZoomFormat.dialZoom(fromFraction: frac, range: model.userZoomRange)
-                    model.setDialZoom(z)
+                    if !zoomDialActive { zoomDialActive = true }
+                    // Either axis drives the dial (horizontal OR vertical thumb movement); right/up = zoom in.
+                    // The model snapshots the camera's ACTUAL zoom on the first update of each drag and applies
+                    // movement relative to it (ZoomDragSession), so the drag continues from the current zoom.
+                    model.dialDragChanged(move: ZoomDragSession.move(width: Double(g.translation.width),
+                                                                     height: Double(g.translation.height)))
                 }
                 .onEnded { _ in
+                    model.dialDragEnded()
                     withAnimation(.easeOut(duration: 0.18)) { zoomDialActive = false }
                 }
         )
