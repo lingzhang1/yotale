@@ -202,7 +202,10 @@ carries `editorial_type`; each Moment, local AND cloud-only, carries `useful_seg
 untrusted `evidence` string stripped), `events` and `sampled_frame_ms`. These are gated only by `EditorialTypeFlag` (default ON; an env "0" or a
 UserDefaults override can still strip them; removal belongs to P1-G0). Backend retention under 5.3: `apps/api/tests/test_edit_plan_v53.py`.
 
-**8. Cache hits never verified (fixed 2026-11-10, backend; NOT yet deployed).** `evidence_get` matched the verified media record with an
+**8. Cache hits never verified (fixed 2026-11-10; DEPLOYED to dev 2026-11-10 21:54 UTC, image `git-7a53910806b6`
+`sha256:84b2cf0a…`, local `cdk deploy` with the pipeline's context flags; service/worker env unchanged 33/16; runtime hit pending a
+device run).** Each lookup now logs one `evidence_lookup` line (`available`, `reason`, `frame_count`), because the access log shows 200 for
+a hit and a miss alike. `evidence_get` matched the verified media record with an
 exact string compare on `source_moment_id`. The device uploads that field as Swift's UPPERCASE `uuidString` but requests evidence lowercase,
 so every real lookup returned `200 {"available": false, "reason": "source_not_verified"}` and fell back to restore/extract. A `200` in the
 access log therefore never proved a hit (dev, 2026-11-10: 264/264 media rows uppercase, 19/19 evidence rows lowercase). The 2026-10-27 Gate 2B
