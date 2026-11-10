@@ -222,8 +222,12 @@ struct StoryCreatingView: View {
     /// Keep the app awake and alive during the long create pipeline. Disable auto-lock (the main cause of a
     /// suspended-mid-render failure) and open a background task so a manual lock gets a grace window instead of
     /// an instant kill. Best-effort — a failure here never blocks creation.
+    /// Screen-awake claim for this screen (shared ownership: releasing it never clears the camera's or the
+    /// coordinator's claim).
+    private static let awakeKey = "create.view"
+
     private func beginKeepAlive() {
-        UIApplication.shared.isIdleTimerDisabled = true
+        ScreenAwake.shared.hold(Self.awakeKey)
         if keepAliveTask == .invalid {
             keepAliveTask = UIApplication.shared.beginBackgroundTask(withName: "story-create") {
                 endKeepAlive()   // expiration handler — release cleanly if iOS reclaims the time
@@ -232,7 +236,7 @@ struct StoryCreatingView: View {
     }
 
     private func endKeepAlive() {
-        UIApplication.shared.isIdleTimerDisabled = false
+        ScreenAwake.shared.release(Self.awakeKey)
         if keepAliveTask != .invalid {
             UIApplication.shared.endBackgroundTask(keepAliveTask)
             keepAliveTask = .invalid
