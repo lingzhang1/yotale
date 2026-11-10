@@ -98,23 +98,6 @@ struct ContinuousCaptureView: View {
             .padding(.top, 8)
             .padding(.bottom, 24)
 
-            #if DEBUG
-            // DEBUG-only device-test readout: the ACTIVE stabilization mode on the recorded-video connection
-            // (from activeVideoStabilizationMode, never the request) and the live zoom.
-            if !model.stabilizationSummary.isEmpty {
-                VStack {
-                    Spacer()
-                    Text("\(model.stabilizationSummary) · \(CameraZoomFormat.liveLabel(model.currentUserZoom))")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.75))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(.black.opacity(0.45), in: Capsule())
-                        .padding(.bottom, 4)
-                }
-                .allowsHitTesting(false)
-            }
-            #endif
-
             // Subtle, non-blocking save feedback.
             if model.showSaved {
                 Text("Saved")

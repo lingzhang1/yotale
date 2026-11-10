@@ -228,8 +228,6 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     /// Any user action on the capture screen.
     func noteInteraction() { screenAwake.interaction() }
 
-    /// ACTIVE stabilization on the recorded-video connection (never the request), for the DEBUG readout.
-    @Published var stabilizationSummary: String = ""
     /// The controller's current raw zoom factor (gesture start reads this).
     var currentRawZoom: CGFloat { controller?.currentZoomFactor ?? 1.0 }
     /// Toggle the torch.
@@ -654,8 +652,8 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
             currentUserZoom = controller?.currentDisplayZoom ?? userZoom
         case .aeafLockChanged(let locked):
             isAEAFLocked = locked
-        case .stabilizationChanged(let status):
-            stabilizationSummary = status.summary
+        case .stabilizationChanged:
+            break   // the active mode is logged by the controller (category "camera"); no on-screen readout
         case .cameraPositionChanged(let front):
             isFrontCamera = front
             // A swap opens the new camera at displayed 1× (or its nearest reachable zoom); the controller
