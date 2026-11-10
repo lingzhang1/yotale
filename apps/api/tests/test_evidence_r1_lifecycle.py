@@ -360,3 +360,63 @@ def test_provisional_and_verified_durable_no_sweep(ctx):
     # verified package is durable across repeated reads (Create/Revise/Explore never consume/expire it)
     for _ in range(3):
         assert client.get(f"/v1/evidence/{MID}", headers=_auth("alice")).json()["available"] is True
+
+
+# ---- Moment-id CASE (pre-beta cache-miss bug) ------------------------------------------------------
+# The fixtures above use an all-digit id, where case can never differ. Real Moment ids carry hex letters,
+# and the device uploads source_moment_id as Swift's UPPERCASE uuidString but requests evidence lowercase.
+# An exact string compare made every real lookup miss as source_not_verified. One Moment is one identity.
+MIXED = "60880c64-85d6-4293-8c89-489544861f4c"
+
+
+def test_device_casing_upload_upper_get_lower_is_a_hit(ctx):
+    client, s3, media, evid = ctx
+    assert _au(client, "alice", moment_id=MIXED).status_code == 200          # AU meta: lowercase
+    _upload_verified(client, media, s3, "alice", moment_id=MIXED.upper())    # upload: UPPERCASE (device)
+    hit = client.get(f"/v1/evidence/{MIXED}", headers=_auth("alice")).json()  # GET: lowercase (device)
+    assert hit["available"] is True, hit
+    assert hit["manifest"]["frame_count"] == 24
+    assert hit["manifest"]["moment_id"] == MIXED
+
+
+def test_reverse_casing_upload_lower_get_upper_is_a_hit(ctx):
+    client, s3, media, evid = ctx
+    assert _au(client, "bob", moment_id=MIXED).status_code == 200
+    _upload_verified(client, media, s3, "bob", moment_id=MIXED)
+    hit = client.get(f"/v1/evidence/{MIXED.upper()}", headers=_auth("bob")).json()
+    assert hit["available"] is True, hit
+
+
+def test_uppercase_au_meta_is_stored_canonically(ctx):
+    client, s3, media, evid = ctx
+    assert _au(client, "carol", moment_id=MIXED.upper()).status_code == 200
+    _upload_verified(client, media, s3, "carol", moment_id=MIXED.upper())
+    assert evid.get_manifest(owner="story-carol", moment_id=MIXED) is not None
+    assert evid.get_manifest(owner="story-carol", moment_id=MIXED.upper()) is not None   # same row
+    hit = client.get(f"/v1/evidence/{MIXED}", headers=_auth("carol")).json()
+    assert hit["available"] is True and hit["manifest"]["moment_id"] == MIXED
+
+
+def test_delete_with_other_case_removes_the_package(ctx):
+    client, s3, media, evid = ctx
+    assert _au(client, "dave", moment_id=MIXED).status_code == 200
+    _upload_verified(client, media, s3, "dave", moment_id=MIXED.upper())
+    assert client.delete(f"/v1/evidence/{MIXED.upper()}", headers=_auth("dave")).status_code == 200
+    r = client.get(f"/v1/evidence/{MIXED}", headers=_auth("dave")).json()
+    assert r["available"] is False and r["reason"] == "no_package"
+    assert evid.get_manifest(owner="story-dave", moment_id=MIXED) is None
+
+
+def test_case_insensitivity_does_not_weaken_authority(ctx):
+    client, s3, media, evid = ctx
+    # A different account never sees the package, whatever case it asks in.
+    assert _au(client, "alice", moment_id=MIXED).status_code == 200
+    _upload_verified(client, media, s3, "alice", moment_id=MIXED.upper())
+    for mid in (MIXED, MIXED.upper()):
+        r = client.get(f"/v1/evidence/{mid}", headers=_auth("eve")).json()
+        assert r["available"] is False and r["reason"] == "no_package"
+    # A changed source still misses: the SHA check is unaffected by the id normalization.
+    assert _au(client, "frank", moment_id=MIXED, sha="a" * 64).status_code == 200
+    _upload_verified(client, media, s3, "frank", moment_id=MIXED.upper(), sha="b" * 64)
+    r = client.get(f"/v1/evidence/{MIXED}", headers=_auth("frank")).json()
+    assert r["available"] is False and r["reason"] == "sha_mismatch"

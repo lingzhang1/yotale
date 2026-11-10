@@ -858,8 +858,13 @@ def create_app() -> FastAPI:
         # matches the package's claimed source sha. This is what promotes a provisional claim to usable — a
         # client SHA alone never does (R1 §2). list_for_owner is a PK query (account-scoped; no cross-account).
         media_recs = _media_store().list_for_owner(owner)
+        # Moment ids are UUIDs, which are case-insensitive. The device uploads source_moment_id in Swift's
+        # UPPERCASE uuidString but requests evidence lowercase, so an exact string match never verified (every
+        # real lookup missed as source_not_verified). Compare canonically; ownership stays enforced by the
+        # account-scoped list_for_owner query and the SHA check below.
+        want_mid = _evidence.canonical_moment_id(moment_id)
         verified = next((r for r in media_recs
-                         if r.get("source_moment_id") == moment_id
+                         if _evidence.canonical_moment_id(r.get("source_moment_id") or "") == want_mid
                          and r.get("state") == _media.STATE_CLOUD_VERIFIED
                          and r.get("media_kind", "moment") == _media.MEDIA_KIND_MOMENT), None)
         if verified is None:
