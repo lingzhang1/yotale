@@ -420,3 +420,19 @@ def test_case_insensitivity_does_not_weaken_authority(ctx):
     _upload_verified(client, media, s3, "frank", moment_id=MIXED.upper(), sha="b" * 64)
     r = client.get(f"/v1/evidence/{MIXED}", headers=_auth("frank")).json()
     assert r["available"] is False and r["reason"] == "sha_mismatch"
+
+
+# ---- observability: a hit and a miss are distinguishable in the logs -------------------------------
+def test_evidence_lookup_logs_hit_and_miss_without_frame_content(ctx, caplog):
+    import logging
+    client, s3, media, evid = ctx
+    assert _au(client, "gina", moment_id=MIXED).status_code == 200
+    with caplog.at_level(logging.INFO):
+        client.get(f"/v1/evidence/{MIXED}", headers=_auth("gina"))            # miss: not verified yet
+        _upload_verified(client, media, s3, "gina", moment_id=MIXED.upper())
+        client.get(f"/v1/evidence/{MIXED.upper()}", headers=_auth("gina"))    # hit
+    recs = [r for r in caplog.records if r.getMessage() == "evidence_lookup"]
+    assert [(r.available, r.reason) for r in recs] == [(False, "source_not_verified"), (True, None)]
+    assert recs[1].frame_count == 24 and recs[1].moment_id == MIXED
+    for r in recs:
+        assert not hasattr(r, "download") and not hasattr(r, "manifest")   # never URLs or frame data

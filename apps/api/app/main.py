@@ -848,7 +848,18 @@ def create_app() -> FastAPI:
     @app.get("/v1/evidence/{moment_id}", status_code=200)
     def evidence_get(moment_id: str, frame_extraction_version: str = "au_extract/2",
                      principal: Principal = Depends(require_user)):
-        owner = principal.story_user_id
+        out = _evidence_lookup(moment_id, frame_extraction_version, principal.story_user_id)
+        # One privacy-safe line per lookup. The access log shows 200 for a hit AND a miss, so a cache hit was
+        # never observable; this records which it was and why. No frames, URLs or user content; the Moment id is
+        # the same opaque UUID already in the request path.
+        log.info("evidence_lookup", extra={
+            "operation": "evidence_lookup", "moment_id": _evidence.canonical_moment_id(moment_id),
+            "available": bool(out.get("available")), "reason": out.get("reason"),
+            "frame_count": (out.get("manifest") or {}).get("frame_count"),
+            "frame_extraction_version": frame_extraction_version})
+        return out
+
+    def _evidence_lookup(moment_id: str, frame_extraction_version: str, owner: str) -> dict:
         store = _evidence_store()
         manifest = store.get_manifest(owner=owner, moment_id=moment_id)
         if manifest is None:
