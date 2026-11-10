@@ -666,7 +666,11 @@ struct ContinuousCaptureView: View {
         // highPriorityGesture so a DRAG wins over the chip buttons — a plain tap (no movement past the
         // threshold) still falls through to the button, so tap-to-snap and drag-to-dial coexist.
         .highPriorityGesture(
-            DragGesture(minimumDistance: 10)
+            // GLOBAL coordinate space: the first drag update switches the strip to the dial, which grows it
+            // from 52 to 96 pt and moves its top edge up 44 pt. In the default LOCAL space that layout change
+            // shows up as +44 pt of downward finger travel (= zoom out), i.e. 44/220 of the dial: from 1× straight
+            // to ~0.5× (device recording, 2026-11-09). Global translation is pure finger movement.
+            DragGesture(minimumDistance: 10, coordinateSpace: .global)
                 .onChanged { g in
                     if !zoomDialActive { zoomDialActive = true }
                     // Either axis drives the dial (horizontal OR vertical thumb movement); right/up = zoom in.

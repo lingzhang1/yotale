@@ -318,6 +318,15 @@ final class ZoomDragSessionTests: XCTestCase {
         XCTAssertEqual(d.zoom(forMove: -500), 1, accuracy: 1e-9)
     }
 
+    func testLocalSpaceLayoutShiftExplainsTheDeviceJump() {
+        // Documents the device bug the GLOBAL drag coordinate space fixes: the strip grows 44 pt when the dial
+        // opens; in LOCAL coordinates that reads as +44 pt downward travel, which from 1× lands on ~0.5×.
+        let d = ZoomDragSession(startZoom: 1, startMove: firstMove, range: range)
+        let phantom = ZoomDragSession.move(width: firstMove, height: 44)
+        XCTAssertLessThan(d.zoom(forMove: phantom), 0.52)
+        XCTAssertEqual(d.zoom(forMove: ZoomDragSession.move(width: firstMove, height: 0)), 1, accuracy: 1e-9)
+    }
+
     func testMoveCombinesBothAxes() {
         XCTAssertEqual(ZoomDragSession.move(width: 30, height: -10), 40, "right and up both zoom in")
     }
