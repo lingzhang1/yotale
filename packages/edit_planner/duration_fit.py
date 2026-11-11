@@ -1,39 +1,47 @@
 """Deterministic DURATION FIT for a technically-valid EditPlan (no model call, no prompt change).
 
-Why: since the owner's 2026-10-25 decision duration never blocks a plan (good: a playable cut always ships), but
+Why: since the owner's 2026-10-25 decision duration never blocks a plan (a playable cut always ships), but
 nothing then pulled an over-long cut back toward the requested length. Runtime evidence (TMB Hiking, dev
-2026-11-10): rendered length == sum of segment output durations (transitions are dropped by the contract, so
-straight cuts), and the planner's totals ran +15% / +21% / +46% over target; offline replays +29..58%.
+2026-11-10): rendered length == sum of segment output durations (the EditPlan/2 contract drops transitions, so
+the device renders straight cuts), and the planner's totals ran +15% / +21% / +46% over target.
 
-What it does (only when the delivered total is more than FIT_TRIGGER over target, aiming AT the target):
-  A. drop a REDUNDANT re-cut: a second segment of a Moment already in the edit that holds no AU payoff peak;
-  B. trim slack proportionally from every trimmable segment, cutting lead-in/tail AWAY from the AU payoff
-     (visual-candidate peak), never below MIN_SEGMENT_OUT_S, never outside the original source range;
-  C. if still over the band, drop optional low-value segments (no AU payoff peak), lowest value first.
-Never touched: the opening and ending segments' presence, any segment of a directive-referenced Moment
-(opening / ending / must_include / ordering / adjacency) — those may only be trimmed, never dropped — and any
-segment with a music anchor (beat/downbeat/highlight). Speed, native_audio, order and asset ids are preserved;
-source ranges only shrink, so they stay within real footage and within the original useful range.
-Undershoot is never "fixed" here (we do not invent or extend footage); it is only reported.
+Runs only when the DELIVERED total (Σ output durations) is more than FIT_TRIGGER over target; aims AT the target.
+  A. drop a LITERAL repeat: a later segment whose source range is >= LITERAL_REPEAT_OVERLAP covered by an earlier
+     kept segment of the same Moment (the same footage twice). A separate action from the same Moment, or a
+     re-cut the planner labels as a deliberate callback/reprise, is NOT a literal repeat and stays;
+  B. trim slack proportionally, cutting lead-in / tail AWAY from the protected core of each shot;
+  C. if still over the band, drop optional shots with no AU payoff, least valuable first.
 
-The caller re-validates the fitted plan and adopts it only if it is still technically valid and does not lower
-creative-objective satisfaction; otherwise the original plan ships unchanged.
+Protected core of a shot (never trimmed into): the AU visual-candidate payoff peak ±PAYOFF_HALF_WINDOW_S, widened
+to the whole containing AU event for Full Story (complete actions) and for kept native audio; a kept-audio shot
+without a payoff keeps its main AU event. A trim never takes a shot below RETAIN_FRACTION of the length the
+planner chose for it. There is NO absolute minimum shot length: a short planner shot is never lengthened or
+rejected, and the validator is unchanged.
+
+Never changed: the opening and ending shots' presence; any segment of a directive-referenced Moment (trim only);
+music-anchored segments and everything BEFORE the last music anchor (their cut times stay on the beat grid);
+speed, native_audio, transition type, relative order, asset ids. Ranges only shrink (inside real footage and the
+original useful range). Undershoot is never "fixed" (no footage is invented or extended). The caller adopts the
+result only when it re-validates and creative-objective satisfaction does not drop; otherwise nothing changes.
 """
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
 
-FIT_TRIGGER = 0.10          # fit only when delivered total > target * (1 + FIT_TRIGGER)
-FIT_BAND = 0.10             # stage C stops dropping once total <= target * (1 + FIT_BAND)
-MIN_SEGMENT_OUT_S = 2.0     # never trim a segment's output below this (or below its original length)
-PAYOFF_HALF_WINDOW_S = 1.25 # protected source window around an AU visual-candidate peak
+FIT_TRIGGER = 0.10            # fit only when delivered total > target * (1 + FIT_TRIGGER)
+FIT_BAND = 0.10               # stage C stops dropping once total <= target * (1 + FIT_BAND)
+RETAIN_FRACTION = 0.5         # a trim keeps at least this fraction of the shot the planner chose
+PAYOFF_HALF_WINDOW_S = 1.25   # protected source window around an AU visual-candidate peak
+LITERAL_REPEAT_OVERLAP = 0.8  # a later same-Moment segment this much covered by earlier footage is a literal repeat
+_CALLBACK_RE = re.compile(r"\b(callback|reprise|echo|bookend|recap|motif|mirror|refrain|again)\b", re.I)
 _EPS = 1e-6
 
 
 def delivered_total_seconds(segs: list[dict]) -> float:
-    """What the device actually renders: transitions are dropped by the EditPlan/2 contract (_to_contract sets
-    transition=None) so the timeline is straight cuts — the plain sum of output durations, with no crossfade
+    """What the device renders for a planner plan: the EditPlan/2 contract drops transitions (_to_contract sets
+    transition=None), so the timeline is straight cuts — the plain sum of output durations, with NO crossfade
     overlap subtracted."""
     return round(sum(float(s.get("output_duration_seconds") or 0.0) for s in segs), 3)
 
@@ -51,8 +59,11 @@ def _anchored(s: dict) -> bool:
     return isinstance(ma, dict) and (ma.get("anchor") or "none") not in ("none", "")
 
 
+def _range(s: dict) -> tuple[float, float]:
+    return float(s["source_start_seconds"]), float(s["source_end_seconds"])
+
+
 def _peaks(moment: dict | None) -> list[tuple[float, float]]:
-    """(peak_time, confidence) of the Moment's AU visual candidates (advisory payoff hints)."""
     out: list[tuple[float, float]] = []
     ed = (moment or {}).get("editorial") or {}
     for vc in ed.get("visual_candidates") or []:
@@ -74,37 +85,28 @@ def _events(moment: dict | None) -> list[tuple[float, float]]:
 
 def _payoff(seg: dict, moment: dict | None) -> float | None:
     """The strongest AU payoff peak inside this segment's source range, if any."""
-    a, b = float(seg["source_start_seconds"]), float(seg["source_end_seconds"])
+    a, b = _range(seg)
     inside = [(p, c) for p, c in _peaks(moment) if a - _EPS <= p <= b + _EPS]
     return max(inside, key=lambda pc: (pc[1], -pc[0]))[0] if inside else None
 
 
-def _core(seg: dict, moment: dict | None, whole_event: bool = False) -> tuple[float, float]:
-    """Protected SOURCE window: around the payoff peak — widened to the whole containing AU event when the
-    segment keeps its native audio (a kept sound/action is not cut mid-event) or when `whole_event` (Full Story:
-    complete meaningful actions); else centered. At least MIN_SEGMENT_OUT_S of output, always inside the
-    segment's own range."""
-    a, b = float(seg["source_start_seconds"]), float(seg["source_end_seconds"])
-    sp = _speed(seg)
-    need = min(b - a, MIN_SEGMENT_OUT_S * sp)
+def _core(seg: dict, moment: dict | None, whole_event: bool) -> tuple[float, float] | None:
+    """Protected SOURCE window inside the segment, or None when nothing in it is protected."""
+    a, b = _range(seg)
+    keep_audio = (seg.get("native_audio") or "keep") == "keep"
     p = _payoff(seg, moment)
     if p is not None:
         lo, hi = p - PAYOFF_HALF_WINDOW_S, p + PAYOFF_HALF_WINDOW_S
-        if whole_event or (seg.get("native_audio") or "keep") == "keep":
+        if whole_event or keep_audio:
             for ea, eb in _events(moment):
                 if ea - _EPS <= p <= eb + _EPS:
                     lo, hi = min(lo, ea), max(hi, eb)
-    else:
-        mid = (a + b) / 2
-        lo, hi = mid - need / 2, mid + need / 2
-    lo, hi = max(a, lo), min(b, hi)
-    if hi - lo < need:  # expand symmetrically inside [a, b] to the floor
-        grow = need - (hi - lo)
-        lo = max(a, lo - grow / 2)
-        hi = min(b, hi + grow / 2)
-        if hi - lo < need:
-            lo, hi = (a, a + need) if lo == a else (b - need, b)
-    return lo, hi
+        return max(a, lo), min(b, hi)
+    if keep_audio:   # kept sound with no visual payoff: keep its main AU event intact
+        best = max(_events(moment), key=lambda e: min(b, e[1]) - max(a, e[0]), default=None)
+        if best is not None and min(b, best[1]) - max(a, best[0]) > _EPS:
+            return max(a, best[0]), min(b, best[1])
+    return None
 
 
 def _set_range(seg: dict, a: float, b: float) -> None:
@@ -123,7 +125,7 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
     segs_in = sorted(plan.get("segments") or [], key=lambda s: s.get("order", 0))
     before = delivered_total_seconds(segs_in)
     report: dict[str, Any] = {"applied": False, "target_s": target, "before_s": before, "after_s": before,
-                              "trimmed": 0, "dropped": [], "within_band": None}
+                              "trimmed": 0, "dropped": [], "changes": [], "within_band": None}
     if target <= 0 or not segs_in:
         report["reason"] = "no_target"
         return plan, report
@@ -134,89 +136,117 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
 
     moments = {str(m.get("id")).lower(): m for m in (inputs.moments or []) if isinstance(m, dict)}
     protected = {x.lower() for x in (protected_ids or set())}
-    segs = [copy.deepcopy(s) for s in segs_in]
-    aim, band = target, target * (1 + FIT_BAND)
-
     full_story = (getattr(inputs, "editorial_type", None) or "") == "full_story"
+    segs = [copy.deepcopy(s) for s in segs_in]
+    for k, s in enumerate(segs):
+        s["_orig"] = (k, *_range(s))
+    last_anchor = max((k for k, s in enumerate(segs) if _anchored(s)), default=-1)
+    aim, band = target, target * (1 + FIT_BAND)
 
     def mom(s):
         return moments.get(str(s.get("asset_id")).lower())
 
-    def core(s):
-        return _core(s, mom(s), whole_event=full_story)
+    def editable(s) -> bool:
+        # nothing at/before the last music anchor moves (that would shift the anchored cut off the beat grid)
+        return s["_orig"][0] > last_anchor and not _anchored(s)
 
     def droppable(i: int, s: dict) -> bool:
-        return (0 < i < len(segs) - 1 and len(segs) > 2 and not _anchored(s)
+        return (0 < i < len(segs) - 1 and len(segs) > 2 and editable(s)
                 and str(s.get("asset_id")).lower() not in protected)
 
     def drop(i: int, why: str) -> None:
         s = segs.pop(i)
-        report["dropped"].append({"asset_id": str(s.get("asset_id")).lower(), "why": why,
+        report["dropped"].append({"order": s["_orig"][0], "asset_id": str(s.get("asset_id")).lower(), "why": why,
+                                  "range": [s["_orig"][1], s["_orig"][2]],
+                                  "planned_out_s": round((s["_orig"][2] - s["_orig"][1]) / _speed(s), 3),
                                   "out_s": float(s.get("output_duration_seconds") or 0)})
 
-    # A. redundant re-cut of a Moment already in the edit: a later occurrence goes when it holds no payoff of its
-    # own, or when at least half of it REPEATS footage an earlier kept segment of that Moment already shows.
+    # A. literal repeats of the same footage (a later, mostly-covered re-cut that is not a labelled callback).
     kept_ranges: dict[str, list[tuple[float, float]]] = {}
     i = 0
     while i < len(segs) and delivered_total_seconds(segs) > aim + _EPS:
         s = segs[i]
         aid = str(s.get("asset_id")).lower()
-        a, b = float(s["source_start_seconds"]), float(s["source_end_seconds"])
-        if aid in kept_ranges and droppable(i, s):
-            rep = max((min(b, y) - max(a, x) for x, y in kept_ranges[aid]), default=0.0)
-            if rep >= 0.5 * (b - a):
-                drop(i, "repeats_footage")
-                continue
-            if _payoff(s, mom(s)) is None:
-                drop(i, "repeat_moment_no_payoff")
-                continue
+        a, b = _range(s)
+        covered = sum(max(0.0, min(b, y) - max(a, x)) for x, y in kept_ranges.get(aid, []))
+        if (aid in kept_ranges and droppable(i, s) and covered >= LITERAL_REPEAT_OVERLAP * (b - a)
+                and not _CALLBACK_RE.search(str(s.get("narrative_role") or ""))):
+            drop(i, "literal_repeat")
+            continue
         kept_ranges.setdefault(aid, []).append((a, b))
         i += 1
 
-    # B. proportional slack trim away from the payoff.
-    excess = delivered_total_seconds(segs) - aim
-    if excess > _EPS:
-        slack = []
+    # B. proportional slack trim away from each shot's protected core. Pass 1 trims only shots longer than the
+    # plan's median shot (long holds absorb the cut; short punchy shots stay exactly as the planner cut them);
+    # pass 2 shares any remaining excess across every trimmable shot.
+    limits: dict[int, tuple[float, float, float]] = {}   # id(seg) -> (min_out, core_lo, core_hi)
+    for s in segs:
+        if not editable(s):
+            continue
+        a, b = _range(s)
+        out = float(s["output_duration_seconds"])
+        core = _core(s, mom(s), whole_event=full_story)
+        min_out = max(RETAIN_FRACTION * out, ((core[1] - core[0]) / _speed(s)) if core else 0.0)
+        if out - min_out > _EPS:
+            lo, hi = core if core else ((a + b) / 2, (a + b) / 2)
+            limits[id(s)] = (min_out, lo, hi)
+    outs = sorted(float(s["output_duration_seconds"]) for s in segs)
+    n = len(outs)
+    median = outs[n // 2] if n % 2 else (outs[n // 2 - 1] + outs[n // 2]) / 2
+    trimmed_ids: set[int] = set()
+    for only_long in (True, False):
+        excess = delivered_total_seconds(segs) - aim
+        if excess <= _EPS:
+            break
+        pool = []
         for s in segs:
-            if _anchored(s):
-                slack.append(0.0)
+            lim = limits.get(id(s))
+            if not lim or (only_long and float(s["output_duration_seconds"]) <= median + _EPS):
                 continue
-            lo, hi = core(s)
-            slack.append(max(0.0, float(s["output_duration_seconds"]) - (hi - lo) / _speed(s)))
-        total_slack = sum(slack)
-        if total_slack > _EPS:
-            frac = min(1.0, excess / total_slack)
-            for s, sl in zip(segs, slack):
-                if sl <= _EPS:
-                    continue
-                cut_src = sl * frac * _speed(s)
-                a, b = float(s["source_start_seconds"]), float(s["source_end_seconds"])
-                lo, hi = core(s)
-                lead, tail = lo - a, b - hi
-                room = lead + tail
-                if room <= _EPS:
-                    continue
-                ca = min(lead, cut_src * lead / room)
-                cb = min(tail, cut_src - ca)
-                _set_range(s, a + ca, b - cb)
-                report["trimmed"] += 1
+            slack = float(s["output_duration_seconds"]) - lim[0]
+            if slack > _EPS:
+                pool.append((s, slack, lim))
+        total_slack = sum(x[1] for x in pool)
+        if total_slack <= _EPS:
+            continue
+        frac = min(1.0, excess / total_slack)
+        for s, slack, (_min_out, lo, hi) in pool:
+            a, b = _range(s)
+            cut_src = slack * frac * _speed(s)
+            lead, tail = max(0.0, lo - a), max(0.0, b - hi)
+            room = lead + tail
+            if room <= _EPS:
+                continue
+            ca = min(lead, cut_src * lead / room)
+            cb = min(tail, cut_src - ca)
+            _set_range(s, a + ca, b - cb)
+            trimmed_ids.add(id(s))
+    report["trimmed"] = len(trimmed_ids)
 
-    # C. still over the band: drop optional segments without an AU payoff, lowest value first.
+    # C. still over the band: drop optional shots with no AU payoff. Least valuable first: no visual-candidate
+    # overlap before candidate overlap, non-kept audio before kept audio, then the LONGEST (fewest shots removed).
+    def _cand_overlap(s):
+        ed = (mom(s) or {}).get("editorial") or {}
+        a, b = _range(s)
+        return any(isinstance(v, dict) and isinstance(v.get("start_time"), (int, float))
+                   and isinstance(v.get("end_time"), (int, float)) and v["start_time"] < b and v["end_time"] > a
+                   for v in ed.get("visual_candidates") or [])
+
     while delivered_total_seconds(segs) > band + _EPS:
-        cands = [(i, s) for i, s in enumerate(segs) if droppable(i, s) and _payoff(s, mom(s)) is None]
+        # Full Story keeps annotated context (any AU visual-candidate overlap); only unannotated filler may go.
+        cands = [(i, s) for i, s in enumerate(segs) if droppable(i, s) and _payoff(s, mom(s)) is None
+                 and not (full_story and _cand_overlap(s))]
         if not cands:
             break
-        # lowest value: no visual-candidate overlap first, then the shortest (least screen-time lost per drop).
-        def _cand_overlap(s):
-            ed = (mom(s) or {}).get("editorial") or {}
-            a, b = float(s["source_start_seconds"]), float(s["source_end_seconds"])
-            return any(isinstance(v, dict) and isinstance(v.get("start_time"), (int, float))
-                       and isinstance(v.get("end_time"), (int, float)) and v["start_time"] < b and v["end_time"] > a
-                       for v in ed.get("visual_candidates") or [])
-        i, _ = min(cands, key=lambda t: (_cand_overlap(t[1]), float(t[1]["output_duration_seconds"])))
+        i, _ = min(cands, key=lambda t: (_cand_overlap(t[1]), (t[1].get("native_audio") or "keep") == "keep",
+                                         -float(t[1]["output_duration_seconds"])))
         drop(i, "optional_no_payoff")
 
     for k, s in enumerate(segs):
+        o_order, oa, ob = s.pop("_orig")
+        if (round(oa, 3), round(ob, 3)) != (round(float(s["source_start_seconds"]), 3), round(float(s["source_end_seconds"]), 3)):
+            report["changes"].append({"order": o_order, "asset_id": str(s.get("asset_id")).lower(),
+                                      "from": [oa, ob], "to": [s["source_start_seconds"], s["source_end_seconds"]]})
         s["order"] = k
     after = delivered_total_seconds(segs)
     fitted = dict(plan)
