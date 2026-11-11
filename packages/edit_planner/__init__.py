@@ -951,7 +951,10 @@ def validate_plan(plan: dict, inputs: EditPlanInputs) -> list[str]:
             ma = s.get("music_alignment")
             if ma and ma.get("anchor") not in (None, "none"):
                 errs.append(f"seg{i}: music_alignment anchor '{ma.get('anchor')}' set without MusicAnalysis")
-    total_out = timeline_total_seconds(segs)  # shared arithmetic (accounts for crossfade overlap)
+    # Duration accounting uses the DELIVERED timeline: the EditPlan/2 contract drops transitions (_to_contract),
+    # so the device renders straight cuts and a model-proposed crossfade never shortens the video. (The shared
+    # timeline_total_seconds helper keeps its overlap arithmetic for iOS-authored dissolves the renderer does play.)
+    total_out = sum((s.get("output_duration_seconds") or 0.0) for s in segs)
     target = inputs.creative_intent["target_duration_seconds"]
     declared_infeasible = plan.get("feasible") is False
     # DURATION IS NEVER A BLOCKING CONSTRAINT (owner decision 2026-10-25). After the pipeline has produced a
@@ -2186,6 +2189,35 @@ class RealEditPlannerEngine:
                 diag["critique_applied"] = False
                 diag["critique_rejected_reason"] = f"provider_error:{type(e).__name__}"
 
+        # 6c: DETERMINISTIC DURATION FIT (no model call). The requested length is a strong objective but never a
+        # reason to reject a playable cut, so an over-long valid plan is pulled back toward the target by dropping
+        # redundant/low-value optional shots and trimming slack away from the AU payoff (duration_fit.py). Revise
+        # is exempt (it must preserve the user's base edit). The fit is ADOPTED only when the fitted plan is
+        # still technically valid and does not lower creative-objective satisfaction; otherwise the original
+        # valid plan ships unchanged. Recorded in diag["duration_fit"].
+        _dur_fit_unmet = False
+        if not _is_revise:
+            from .duration_fit import fit_plan_duration, FIT_BAND
+            _protected = _directive_authorized_ids((rc or {}).get("directives"))
+            fitted, frep = fit_plan_duration(plan, inputs, protected_ids=_protected)
+            if frep.get("applied"):
+                f_errs = validate_plan(fitted, inputs)
+                sat_before = assess_creative_intent(plan, inputs)["satisfaction"] if _objective_directives_on() else 1.0
+                sat_after = assess_creative_intent(fitted, inputs)["satisfaction"] if _objective_directives_on() else 1.0
+                if not f_errs and sat_after >= sat_before - 1e-9:
+                    plan = fitted
+                    frep["adopted"] = True
+                else:
+                    # Report what ACTUALLY shipped: the original plan, unchanged. The proposal is kept apart.
+                    frep["adopted"] = False
+                    frep["rejected_reason"] = "invalid_after_fit" if f_errs else "satisfaction_drop"
+                    frep["proposed"] = {"after_s": frep["after_s"], "trimmed": frep["trimmed"],
+                                        "dropped": frep["dropped"], "changes": frep["changes"]}
+                    frep.update(after_s=frep["before_s"], trimmed=0, dropped=[], changes=[],
+                                within_band=frep["before_s"] <= frep["target_s"] * (1 + FIT_BAND) + 1e-6)
+            diag["duration_fit"] = frep
+            _dur_fit_unmet = frep.get("within_band") is False
+
         # v2 PARTIAL-SUCCESS DISCLOSURE (owner §9). The plan is technically valid and shippable. Score the
         # creative objectives (deterministic, no model) and record Complete vs Partial + the material unmet
         # instructions, so the device renders a SUCCESS (with a concise disclosure) rather than an "Adjust
@@ -2193,14 +2225,25 @@ class RealEditPlannerEngine:
         # objective unmet. The result is ALWAYS a playable plan either way.
         if _objective_directives_on():
             cre = assess_creative_intent(plan, inputs)
+            if _dur_fit_unmet:
+                # Honest reporting: the cut still runs materially long after the deterministic fit (only
+                # payoff / directive / music-anchored shots remain). The video ships; the miss is disclosed.
+                fr = diag["duration_fit"]
+                cre = dict(cre, material_unmet=list(cre["material_unmet"]) + [{
+                    "code": "approx_duration",
+                    "detail": f"plan {fr['after_s']:.1f}s vs target {fr['target_s']:.1f}s"}])
             diag["creative_satisfaction"] = cre["satisfaction"]
             diag["creative_objective_count"] = cre["objective_count"]
             if cre["material_unmet"]:
                 diag["material_unmet"] = cre["material_unmet"]
                 diag["final"] = "executable"
                 diag["completion"] = "partial"
-                _parts = ["Your video is ready. A few of your creative requests couldn't all be applied: "
-                          + "; ".join(sorted({m["code"] for m in cre["material_unmet"]})) + "."]
+                _codes = sorted({m["code"] for m in cre["material_unmet"]} - {"approx_duration"})
+                _parts = ["Your video is ready."]
+                if _codes:
+                    _parts.append("A few of your creative requests couldn't all be applied: " + "; ".join(_codes) + ".")
+                if _dur_fit_unmet:
+                    _parts.append(_duration_disclosure(diag["duration_fit"]))
                 if _continuity_disclosure:
                     _parts.append(_continuity_disclosure)
                 diag["partial_disclosure"] = " ".join(_parts)
@@ -2222,10 +2265,20 @@ class RealEditPlannerEngine:
         if _continuity_disclosure:
             diag["completion"] = "partial"
             diag["partial_disclosure"] = _continuity_disclosure
+        if _dur_fit_unmet:   # legacy path: same honest, non-blocking duration note
+            diag["completion"] = "partial"
+            diag["partial_disclosure"] = " ".join(
+                p for p in ("Your video is ready.", _duration_disclosure(diag["duration_fit"]), _continuity_disclosure) if p)
         diag["final"] = "executable"
         diag["used_fallback"] = bool(getattr(self._gw, "last_fallback", False))
         self.last_diagnostics = diag
         return _to_contract(plan, inputs)
+
+
+def _duration_disclosure(fit: dict) -> str:
+    """Plain-language, non-blocking note for a cut that still runs materially long after the duration fit."""
+    return (f"It runs about {fit['after_s']:.0f}s instead of the requested {fit['target_s']:.0f}s — "
+            "shortening it further would cut key moments.")
 
 
 class MockEditPlannerEngine:

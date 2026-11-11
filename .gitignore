@@ -107,3 +107,6 @@ scripts/.yotale_beta_allowlist
 
 # Live-eval dataset — raw personal footage (faces/children/homes/travel), LOCAL ONLY, never committed.
 evals/dataset/
+
+# build-time code revision stamp (written into the API image / worker asset only)
+/BUILD_SHA

@@ -82,6 +82,12 @@ from understanding_store import music_favorites as _music_favorites  # P1-E: sav
 import evidence_store as _evidence  # P1-F: reusable AU visual-evidence packages (provisional at AU, verified at retrieval)
 
 
+def _api_build_sha() -> str:
+    """Code revision baked into this API image at build time (Dockerfile BUILD_SHA arg); "unknown" if none."""
+    from observability import build_sha
+    return build_sha()
+
+
 def _edit_planner_prompt_version() -> str:
     """The edit-plan prompt version actually in effect (reflects STORY_EDIT_PLAN_VERSION). Logged on each
     plan so a device render can PROVE which prompt (edit_plan/4 vs the v5 candidate) produced it."""
@@ -1988,6 +1994,8 @@ def create_app() -> FastAPI:
         body_envelope = _j2.dumps({"body": body, "sheet_order": order, "creative_brief": creative_brief,
                                     "critique_revision": bool(critique_revision), "approach": approach,
                                     "evidence_accounting": _evidence, "build_provenance": _provenance,
+                                    # API code revision that accepted the job (worker copies it to diagnostics)
+                                    "api_build_sha": _api_build_sha(),
                                     "_test_delay_s": int(test_delay_s or 0)})
         prefix = store.stage_request(jid, body_envelope, staged)
         try:
