@@ -214,6 +214,28 @@ access log therefore never proved a hit (dev, 2026-11-10: 264/264 media rows upp
 row is already lowercase, so nothing is orphaned. Regression tests use a letter-bearing id (the old fixtures used an all-digit id, where
 case can never differ).
 
+**9. Frame selection replaced by one shared policy (`evidence_select/2`, 2026-11-10; NOT deployed, NOT device-accepted).**
+The v1 mapper (§4 above) represented 8/14 AU events and 7/11 visual candidates on the six real Moments of job
+`0d4e959c` and spent slots on near-identical frames. v2 gives both Highlights and Full Story a frame for the opening,
+the closing, every AU event interval and every visual candidate, with the editorial type only deciding priority under
+budget pressure, and an adaptive 4–9 frame budget. Result on the same Moments: 14/14 events, 11/11 visual candidates.
+Spec, numbers and limitations: `evidence-frame-selection-v2.md`. Swift/Python parity is pinned by
+`packages/evidence_mapper/fixtures/parity_v2.json`. iOS-only behaviour change (the backend has no caller of the
+Python mapper); no prompt, model, schema or renderer change.
+
+**10. Evidence lookup uses its own fail-fast network session (2026-11-10).** The lookup previously shared the AU
+`backgroundSession` (2 connections per host, `waitsForConnectivity`, 180 s timeouts), so on a fresh Story it could
+queue behind in-flight AU uploads and stall a Create. It now uses `StoryBackend.evidenceSession` (8 s idle timeout,
+60 s resource cap, no connectivity wait); any failure is still just a miss.
+
+**Test-isolation finding (pre-existing, not fixed here).** `StoryCreationFailureTests` and similar suites build the
+coordinator without a fake job client, so they post REAL edit-plan jobs to the dev backend (~135 model calls, ~$0.95
+during this milestone's runs). They reach `.failed` only when the dev API returns 401 because the test host's
+`AuthStore` has not yet published the simulator's saved dev token. Whether a given test passes therefore depends on
+timing: on master the ones that submit after the token appears already fail; on this branch the 0.3 s evidence lookup
+moves four more past that point. Recommended follow-up: inject `FakeJobClient` (and a nil evidence fetch) in those
+tests so they are hermetic, free, and test what their names say.
+
 **Known limitations.**
 - Cache lookups are sequential. With cloud-only Moments now included, a 35-Moment Story makes ~35 manifest+blob round trips before planning
   (device test E measures this); bounded concurrency is a follow-up if it is slow.

@@ -28,23 +28,35 @@ final class EvidenceMissPathTests: XCTestCase {
         XCTAssertEqual(ms(out), ms(MomentContactSheetBuilder.evenlySubsample(f, count: 8)))
     }
 
-    func test_miss_with_guidance_but_no_candidates_is_uniform_coverage() {
+    func test_miss_with_empty_guidance_is_uniform_coverage() {
         let f = extracted()
-        // Highlights uses visual candidates only: narrative-only guidance carries no signal for this type.
-        let g = EditorialFrameGuidance(videoType: .highlights, visual: [],
-                                       narrative: [EvidenceCandidate(start: 5, end: 9, peak: nil, confidence: 0.5)],
-                                       eventTimesS: [3])
+        let g = EditorialFrameGuidance(videoType: .highlights, visual: [], narrative: [], eventTimesS: [])
         XCTAssertFalse(g.hasCandidates)
         let out = EvidenceFrameMapper.selectExtracted(f, guidance: g, count: 8)
         XCTAssertEqual(ms(out), ms(MomentContactSheetBuilder.evenlySubsample(f, count: 8)))
     }
 
-    func test_hasCandidates_follows_the_video_type() {
+    // Policy v2: Highlights is no longer blind to events, and Full Story is no longer blind to visual payoffs.
+    func test_any_au_evidence_counts_for_both_types() {
         let v = [EvidenceCandidate(start: 1, end: 2, peak: nil, confidence: nil)]
-        XCTAssertTrue(EditorialFrameGuidance(videoType: .highlights, visual: v, narrative: [], eventTimesS: []).hasCandidates)
-        XCTAssertFalse(EditorialFrameGuidance(videoType: .fullStory, visual: v, narrative: [], eventTimesS: []).hasCandidates)
-        XCTAssertTrue(EditorialFrameGuidance(videoType: .fullStory, visual: [], narrative: [], eventTimesS: [4]).hasCandidates)
-        XCTAssertTrue(EditorialFrameGuidance(videoType: .fullStory, visual: [], narrative: v, eventTimesS: []).hasCandidates)
+        for vt in [EvidenceVideoType.highlights, .fullStory] {
+            XCTAssertTrue(EditorialFrameGuidance(videoType: vt, visual: v, narrative: [], eventTimesS: []).hasCandidates)
+            XCTAssertTrue(EditorialFrameGuidance(videoType: vt, visual: [], narrative: v, eventTimesS: []).hasCandidates)
+            XCTAssertTrue(EditorialFrameGuidance(videoType: vt, visual: [], narrative: [], eventTimesS: [4]).hasCandidates)
+            XCTAssertFalse(EditorialFrameGuidance(videoType: vt, visual: [], narrative: [], eventTimesS: []).hasCandidates)
+        }
+    }
+
+    func test_highlights_now_gives_au_events_a_frame() {
+        let f = extracted(24, dur: 10)
+        let events = [EvidenceCandidate(start: 0, end: 2.6, peak: nil, confidence: nil),
+                      EvidenceCandidate(start: 2.6, end: 6.5, peak: nil, confidence: nil),
+                      EvidenceCandidate(start: 6.5, end: 10, peak: nil, confidence: nil)]
+        let g = EditorialFrameGuidance(videoType: .highlights, visual: [], narrative: [], events: events)
+        let picked = ms(EvidenceFrameMapper.selectExtracted(f, guidance: g))
+        let cov = EvidenceFrameMapper.coverage(selectedMs: picked, durationSeconds: 10, events: events,
+                                               visual: [], narrative: [])
+        XCTAssertEqual(cov.eventsCovered, 3, "\(picked)")
     }
 
     // MARK: - candidate-aligned selection on a miss (Test B) + IMG_9091 regression (Test D)

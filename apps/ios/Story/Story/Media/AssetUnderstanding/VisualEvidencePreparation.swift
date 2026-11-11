@@ -11,7 +11,7 @@ import Foundation
 //                (restoring ONLY cache misses, never a cache hit), then extract frames.
 //   C. NONE    — the source genuinely cannot be obtained: the Moment gets no sheet (truthful diagnostics, listed
 //                in `restoreUnavailableIds`), exactly as before. Nothing is fabricated.
-// Both A and B select frames with the same editorial mapper (EditorialFrameGuidance), and every resulting sheet
+// Both A and B select frames with the same shared ranking (EditorialFrameGuidance), and every resulting sheet
 // goes through ONE `MultimodalVisualBudget` pass: same tier ladder, same per-sheet and total ceilings, same
 // degradation, same miss-reason accounting. There is no cache-specific exemption.
 //
@@ -43,6 +43,8 @@ struct EvidencePreparationResult {
     let uniformCount: Int
     /// What the attached sheets cost on the wire (raw JPEG + multipart framing), i.e. the number the ceiling used.
     let wireBytes: Int
+    /// AU events / candidates represented by a submitted frame (diagnostic proxy, not semantic proof).
+    let coverage: EvidenceCoverage
 }
 
 enum VisualEvidencePreparation {
@@ -57,11 +59,13 @@ enum VisualEvidencePreparation {
     ) async -> EvidencePreparationResult {
 
         // A. cache lookup for EVERY eligible Moment, local or not.
-        var cached: [UUID: [AUExtractedFrame]] = [:]
+        // A hit is ranked immediately, so only the frames a sheet can use stay in memory (not all 24).
+        var cached: [UUID: RankedFrames] = [:]
         var misses: [EvidenceMomentRef] = []
         for m in moments {
-            if let frames = await fetchCachedFrames(m), !frames.isEmpty { cached[m.momentId] = frames }
-            else { misses.append(m) }
+            if let frames = await fetchCachedFrames(m), !frames.isEmpty {
+                cached[m.momentId] = EvidenceFrameMapper.rank(frames, guidance: m.guidance)
+            } else { misses.append(m) }
         }
 
         // B. misses: local source if present, otherwise restore (misses only).
@@ -80,15 +84,15 @@ enum VisualEvidencePreparation {
         // One input per Moment that has frames or a source, in the caller's (stable) order.
         var inputs: [VisualBudgetInput] = []
         for m in moments {
-            if let frames = cached[m.momentId] {
+            if let r = cached[m.momentId] {
                 inputs.append(VisualBudgetInput(
                     momentId: m.momentId, url: nil, durationSeconds: m.durationSeconds,
-                    usefulSegmentCount: m.usefulSegmentCount, eventCount: m.guidance.eventTimesS.count,
-                    guidance: m.guidance, cachedFrames: frames))
+                    usefulSegmentCount: m.usefulSegmentCount, eventCount: m.guidance.events.count,
+                    guidance: m.guidance, ranked: r))
             } else if let url = sourceURL[m.momentId] {
                 inputs.append(VisualBudgetInput(
                     momentId: m.momentId, url: url, durationSeconds: m.durationSeconds,
-                    usefulSegmentCount: m.usefulSegmentCount, eventCount: m.guidance.eventTimesS.count,
+                    usefulSegmentCount: m.usefulSegmentCount, eventCount: m.guidance.events.count,
                     guidance: m.guidance))
             }
         }
@@ -97,6 +101,19 @@ enum VisualEvidencePreparation {
         let budget = await MultimodalVisualBudget.build(inputs, limits: limits)
 
         let guided = moments.filter { $0.guidance.hasCandidates }.count
+        // Diagnostic coverage of what was actually submitted: AU events / visual candidates with a frame in their
+        // zone, summed over eligible Moments (a Moment without a sheet contributes 0 covered). Counts only.
+        var cov = EvidenceCoverage()
+        let sheetById = Dictionary(budget.sheets.map { ($0.momentId, $0) }) { a, _ in a }
+        for m in moments {
+            let ms = sheetById[m.momentId]?.frameMs ?? []
+            let c = EvidenceFrameMapper.coverage(
+                selectedMs: ms, durationSeconds: m.durationSeconds, events: m.guidance.events,
+                visual: m.guidance.visual, narrative: m.guidance.narrative)
+            cov.eventsCovered += c.eventsCovered; cov.eventsTotal += c.eventsTotal
+            cov.visualCovered += c.visualCovered; cov.visualTotal += c.visualTotal
+            cov.narrativeCovered += c.narrativeCovered; cov.narrativeTotal += c.narrativeTotal
+        }
         return EvidencePreparationResult(
             sheets: budget.sheets,
             sheetMissReasons: budget.sheetMissReasons,
@@ -108,6 +125,7 @@ enum VisualEvidencePreparation {
             restoredCount: needRestore.count - unavailable.count,
             guidedCount: guided,
             uniformCount: moments.count - guided,
-            wireBytes: MultimodalVisualBudget.wireBytes(budget.sheets, limits: limits))
+            wireBytes: MultimodalVisualBudget.wireBytes(budget.sheets, limits: limits),
+            coverage: cov)
     }
 }

@@ -681,7 +681,7 @@ final class StoryCreationCoordinator {
                         durationSeconds: MomentResolver.plannerDuration(for: m),
                         usefulSegmentCount: build.auUsefulRanges[m.id.uuidString.lowercased()]?.count ?? 0,
                         guidance: EditorialFrameGuidance(videoType: evVideoType, visual: cand.visual,
-                                                         narrative: cand.narrative, eventTimesS: cand.events))
+                                                         narrative: cand.narrative, events: cand.events))
                 }
                 let localMediaById = Dictionary(build.includedMedia.map { ($0.momentId, $0) }) { a, _ in a }
                 let prepared = await VisualEvidencePreparation.prepare(
@@ -693,9 +693,7 @@ final class StoryCreationCoordinator {
                     },
                     fetchCachedFrames: { ref in
                         if let f = self.evidenceFetchOverride { return await f(ref) }
-                        return await AUEvidenceCacheHit.fetchSelectedFrames(
-                            momentId: ref.momentId, guidance: ref.guidance,
-                            budget: ContactSheetBudget.tier1(forDuration: ref.durationSeconds))
+                        return await AUEvidenceCacheHit.fetchFrames(momentId: ref.momentId)
                     },
                     restoreSources: { ids in
                         if let r = self.sourceRestoreOverride { return await r(ids) }
@@ -720,7 +718,10 @@ final class StoryCreationCoordinator {
                     + "cacheMiss=\(prepared.cacheMissCount) restored=\(prepared.restoredCount) "
                     + "unavailable=\(prepared.restoreUnavailableIds.count) sheets=\(prepared.sheets.count) "
                     + "guided=\(prepared.guidedCount) uniform=\(prepared.uniformCount) "
-                    + "tier=\(prepared.budget.selectedTier) wireBytes=\(prepared.wireBytes)")
+                    + "tier=\(prepared.budget.selectedTier) wireBytes=\(prepared.wireBytes) "
+                    + "eventsCovered=\(prepared.coverage.eventsCovered)/\(prepared.coverage.eventsTotal) "
+                    + "visualCovered=\(prepared.coverage.visualCovered)/\(prepared.coverage.visualTotal) "
+                    + "policy=\(EvidenceFrameMapper.policyVersion)")
             }
             // operation_id = idempotency key. Persist BEFORE submit so a crash/restart/retry/dup-tap reuses the
             // SAME job (no duplicate inference). Reuse the Story's existing id on recovery; mint one otherwise.
@@ -1082,11 +1083,11 @@ final class StoryCreationCoordinator {
     /// total feasible vs the summed source material; transitions in {cut,fade,dissolve}; native_audio in
     /// P1-F (Option 8-i): parse the editorial candidates + event times for a Moment from its LOCAL
     /// MomentUnderstanding JSON, for the EvidenceFrameMapper. Reads visual_candidates / narrative_candidates
-    /// (start/end/peak/confidence) + observed.events (start) — all ADVISORY, as persisted. Returns empty
+    /// (start/end/peak/confidence) + observed.events (start/end) — all ADVISORY, as persisted. Returns empty
     /// lists for an absent/older record (the mapper then uses its uniform-overview fallback). Never parses the
     /// untrusted model `evidence` string.
     static func editorialCandidates(for momentId: UUID, context: ModelContext)
-        -> (visual: [EvidenceCandidate], narrative: [EvidenceCandidate], events: [Double]) {
+        -> (visual: [EvidenceCandidate], narrative: [EvidenceCandidate], events: [EvidenceCandidate]) {
         guard let mu = (try? context.fetch(FetchDescriptor<MomentUnderstandingModel>(
             predicate: #Predicate { $0.momentId == momentId })))?.first,
             let data = mu.understandingJSON.data(using: .utf8),
@@ -1108,10 +1109,14 @@ final class StoryCreationCoordinator {
         if let ed = root["editorial"] as? [String: Any] {
             visual = cands(ed["visual_candidates"]); narrative = cands(ed["narrative_candidates"])
         }
-        var events: [Double] = []
+        var events: [EvidenceCandidate] = []
         if let observed = root["observed"] as? [String: Any],
            let evs = observed["events"] as? [[String: Any]] {
-            for ev in evs { if let s = (ev["start_time"] as? NSNumber)?.doubleValue { events.append(s) } }
+            for ev in evs {
+                guard let s = (ev["start_time"] as? NSNumber)?.doubleValue else { continue }
+                let e = (ev["end_time"] as? NSNumber)?.doubleValue ?? s     // end_time optional -> point event
+                events.append(EvidenceCandidate(start: s, end: e, peak: nil, confidence: nil))
+            }
         }
         return (visual, narrative, events)
     }

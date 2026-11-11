@@ -44,13 +44,15 @@ struct VisualBudgetInput {
     let durationSeconds: Double
     let usefulSegmentCount: Int     // from AU observed.useful_segments (richness signal)
     let eventCount: Int             // from AU observed.events (richness signal)
-    /// Optional AU editorial guidance for FRAME SELECTION on this (cache-miss) Moment. nil => uniform coverage.
-    /// Selection only — it never changes the frame budget, tier ladder, or which Moments get a sheet.
+    /// AU guidance for FRAME SELECTION (events + candidates + this attempt's type). nil => uniform coverage.
+    /// The same guidance ranks cached and extracted frames, and decides the Moment's adaptive frame count.
     var guidance: EditorialFrameGuidance? = nil
-    /// Frames already in hand from a valid cached AU evidence package (ascending `tMs`, already editorially
-    /// selected at the Tier-1 frame count). When set, the sheet is built from these — no video, no extraction —
-    /// but still goes through the SAME tier ladder and byte budget as an extracted sheet (no cache exemption).
+    /// Every frame of a valid cached AU evidence package (time order). When set, the sheet is built from these —
+    /// no video, no extraction — under the SAME ranking, tier ladder and byte budget (no cache exemption).
     var cachedFrames: [AUExtractedFrame]? = nil
+    /// Frames already ranked (e.g. a cache hit ranked as soon as it arrived, so only the frames a sheet can use
+    /// are held). Takes precedence over `cachedFrames` and `url`.
+    var ranked: RankedFrames? = nil
 }
 
 /// What the preflight decided and produced, plus diagnostics (never includes image bytes/content).
@@ -83,7 +85,7 @@ enum MultimodalVisualBudget {
         }
 
         // Tier knobs we will walk through (steps 1-4). Each tuple = (cell, quality, frameScale, label).
-        // frameScale multiplies the Tier-1 duration-scaled frame count (then clamped to minFramesPerMoment).
+        // frameScale multiplies each Moment's adaptive frame count (then clamped to minFramesPerMoment).
         let tiers: [(cell: CGFloat, q: CGFloat, fscale: Double, label: String)] = [
             (320, 0.70, 1.00, "tier1"),
             (300, 0.65, 1.00, "tier1-resized"),
@@ -92,9 +94,13 @@ enum MultimodalVisualBudget {
             (limits.minCellSide, limits.minJpegQuality, 0.0, "tier1-min"),   // fscale 0 => minFramesPerMoment
         ]
 
+        // Produce and rank every Moment's frames ONCE (cached frames as-is, local video extracted once); every
+        // tier below selects from that same ranking, so cached and extracted frames follow one rule.
+        let (frameSets, prepMisses) = await rankedFrames(for: ranked)
+
         // Try each tier at FULL coverage; if even the smallest tier overflows, reduce coverage (step 5).
         for (ti, tier) in tiers.enumerated() {
-            let (sheets, misses) = await buildSheets(ranked, tier: tier, limits: limits)
+            let (sheets, misses) = buildSheets(ranked, frameSets, prepMisses, tier: tier, limits: limits)
             let total = wireBytes(sheets, limits: limits)
             if ti >= 1 && !applied.contains("resize") { applied.append("resize") }
             if ti >= 2 && !applied.contains("compress") { applied.append("compress") }
@@ -112,7 +118,7 @@ enum MultimodalVisualBudget {
         // byte budget is hit; the rest plan text-only. A1 text still covers every Moment (caller's job).
         applied.append("reduce-coverage")
         let smallest = tiers.last!
-        let (allSheets, smallestMisses) = await buildSheets(ranked, tier: smallest, limits: limits)
+        let (allSheets, smallestMisses) = buildSheets(ranked, frameSets, prepMisses, tier: smallest, limits: limits)
         var kept: [MomentContactSheet] = []
         var running = 0
         var misses = smallestMisses
@@ -137,44 +143,60 @@ enum MultimodalVisualBudget {
         sheets.reduce(0) { $0 + $1.jpeg.count + limits.perSheetOverheadBytes }
     }
 
-    /// Build one sheet per input at the given tier, skipping any sheet that still exceeds the per-sheet cap
-    /// after this tier's compression (that Moment degrades to text-only rather than busting the per-sheet
-    /// limit). Never throws — a Moment whose frames can't be extracted is simply text-only. Returns the sheets
-    /// AND a per-Moment miss-reason map (lowercased id -> reason) for the Moments that did NOT get a sheet at
-    /// this tier (oversize or extraction failure), so the caller can account for every lost sheet precisely.
-    private static func buildSheets(_ inputs: [VisualBudgetInput],
-                                    tier: (cell: CGFloat, q: CGFloat, fscale: Double, label: String),
-                                    limits: VisualBudgetLimits)
-        async -> (sheets: [MomentContactSheet], misses: [String: SheetMissReason]) {
-        var out: [MomentContactSheet] = []
+    /// Rank each input's frames once. A Moment whose frames cannot be obtained gets a miss reason instead (it is
+    /// still planned from its AU text; nothing is fabricated).
+    private static func rankedFrames(for inputs: [VisualBudgetInput])
+        async -> ([UUID: RankedFrames], [String: SheetMissReason]) {
+        var out: [UUID: RankedFrames] = [:]
         var misses: [String: SheetMissReason] = [:]
         for inp in inputs {
             let key = inp.momentId.uuidString.lowercased()
-            let base = ContactSheetBudget.tier1(forDuration: inp.durationSeconds).framesPerMoment
-            let frames = tier.fscale <= 0
-                ? limits.minFramesPerMoment
-                : max(limits.minFramesPerMoment, Int((Double(base) * tier.fscale).rounded()))
-            var budget = ContactSheetBudget(framesPerMoment: frames)
+            if let r = inp.ranked, !r.ordered.isEmpty { out[inp.momentId] = r; continue }
+            if let cached = inp.cachedFrames, !cached.isEmpty {
+                out[inp.momentId] = EvidenceFrameMapper.rank(cached, guidance: inp.guidance); continue
+            }
+            guard let url = inp.url else { misses[key] = .extractionError; continue }   // no frames, no source
+            do {
+                let all = try await MomentFrameExtractor.extract(from: url)
+                if all.isEmpty { misses[key] = .extractionEmpty; continue }
+                out[inp.momentId] = EvidenceFrameMapper.rank(all, guidance: inp.guidance)
+            } catch let e as MomentFrameExtractorError {
+                misses[key] = (e == .noFrames) ? .extractionEmpty : .extractionError
+            } catch {
+                misses[key] = .extractionError
+            }
+        }
+        return (out, misses)
+    }
+
+    /// Frames for one Moment at a tier: its adaptive count scaled by the tier, never below the floor.
+    static func framesAtTier(preferred: Int, fscale: Double, limits: VisualBudgetLimits) -> Int {
+        fscale <= 0 ? limits.minFramesPerMoment
+                    : max(limits.minFramesPerMoment, Int((Double(preferred) * fscale).rounded()))
+    }
+
+    /// Build one sheet per ranked input at the given tier, skipping any sheet that still exceeds the per-sheet
+    /// cap after this tier's compression (that Moment degrades to text-only rather than busting the per-sheet
+    /// limit). Returns the sheets AND a per-Moment miss-reason map (lowercased id -> reason) for every input
+    /// that did NOT get a sheet, so the caller can account for every lost sheet precisely.
+    private static func buildSheets(_ inputs: [VisualBudgetInput], _ frameSets: [UUID: RankedFrames],
+                                    _ prepMisses: [String: SheetMissReason],
+                                    tier: (cell: CGFloat, q: CGFloat, fscale: Double, label: String),
+                                    limits: VisualBudgetLimits)
+        -> (sheets: [MomentContactSheet], misses: [String: SheetMissReason]) {
+        var out: [MomentContactSheet] = []
+        var misses = prepMisses
+        for inp in inputs {
+            let key = inp.momentId.uuidString.lowercased()
+            guard let r = frameSets[inp.momentId] else { continue }   // miss reason already recorded
+            let count = framesAtTier(preferred: r.preferred, fscale: tier.fscale, limits: limits)
+            let picked = r.frames(count: count)
+            var budget = ContactSheetBudget(framesPerMoment: max(1, picked.count))
             budget.cellLongestSide = tier.cell
             budget.jpegQuality = tier.q
             do {
-                let sheet: MomentContactSheet
-                if let cached = inp.cachedFrames, !cached.isEmpty {
-                    // Cache-hit frames: re-select within the held subset for this tier's frame count, then tile.
-                    // Same mapper, same tier knobs, same byte checks below as the extraction path.
-                    let picked = EvidenceFrameMapper.selectExtracted(
-                        cached, guidance: inp.guidance, count: max(1, min(budget.framesPerMoment, cached.count)))
-                    sheet = try MomentContactSheetBuilder.buildFromFrames(
-                        momentId: inp.momentId, frames: picked,
-                        durationSeconds: inp.durationSeconds, budget: budget)
-                } else if let url = inp.url {
-                    sheet = try await MomentContactSheetBuilder.build(
-                        momentId: inp.momentId, url: url,
-                        durationSeconds: inp.durationSeconds, budget: budget, guidance: inp.guidance)
-                } else {
-                    misses[key] = .extractionError   // no frames and no source: nothing to build from (never fabricate)
-                    continue
-                }
+                let sheet = try MomentContactSheetBuilder.buildFromFrames(
+                    momentId: inp.momentId, frames: picked, durationSeconds: inp.durationSeconds, budget: budget)
                 if sheet.jpeg.count <= limits.maxSheetBytes {
                     out.append(sheet)
                     misses.removeValue(forKey: key)
@@ -182,8 +204,6 @@ enum MultimodalVisualBudget {
                     misses[key] = .oversizeDropped   // too big even at this tier -> text-only for this Moment
                 }
             } catch let e as ContactSheetError {
-                misses[key] = (e == .noFrames) ? .extractionEmpty : .extractionError
-            } catch let e as MomentFrameExtractorError {
                 misses[key] = (e == .noFrames) ? .extractionEmpty : .extractionError
             } catch {
                 misses[key] = .extractionError   // any other failure -> text-only (never fabricate)

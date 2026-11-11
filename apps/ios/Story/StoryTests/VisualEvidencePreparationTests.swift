@@ -174,8 +174,8 @@ final class VisualEvidencePreparationTests: XCTestCase {
     /// SAME cached frames under it without dropping a Moment.
     private func assertLargeCachedStoryIsDegradedNotDropped(count: Int, ceiling: Int,
                                                             file: StaticString = #file, line: UInt = #line) async {
-        let frames = (0..<9).map { AUExtractedFrame(jpeg: SyntheticMedia.noiseJPEG(seed: UInt64($0 + 1)), tMs: $0 * 4_000) }
-        let refs = (0..<count).map { _ in ref(dur: 72) }   // Tier-1 = 9 frames per Moment
+        let frames = (0..<9).map { AUExtractedFrame(jpeg: SyntheticMedia.noiseJPEG(seed: UInt64($0 + 1)), tMs: $0 * 9_000) }
+        let refs = (0..<count).map { _ in ref(dur: 72) }   // 72 s, no AU evidence -> uniform 9 frames per Moment
 
         var huge = VisualBudgetLimits()
         huge.maxTotalImageBytes = Int.max / 2; huge.maxSheetBytes = Int.max / 2
@@ -250,5 +250,29 @@ final class VisualEvidencePreparationTests: XCTestCase {
             fetchCachedFrames: { _ in self.tinyFrames() }, restoreSources: { _ in ([:], []) }, limits: capped)
         XCTAssertEqual(ids(r.sheets), [eventRich.momentId])
         XCTAssertEqual(r.sheetMissReasons[eventPoor.momentId.uuidString.lowercased()], .budgetCoverageDropped)
+    }
+
+    // Policy v2 payload safety: ~35 evidence-RICH Moments (adaptive budgets above the old 4) through the shared
+    // ladder. Whatever the adaptive counts add, the submitted payload stays under the 16 MB ceiling and every
+    // Moment is either sheeted or carries a recorded reason.
+    func test_35_evidence_rich_moments_respect_the_16MB_ceiling_with_adaptive_budgets() async {
+        let frames = (0..<24).map { AUExtractedFrame(jpeg: SyntheticMedia.noiseJPEG(seed: UInt64($0 + 11)),
+                                                     tMs: Int((Double($0) * 10_000 / 23).rounded())) }
+        let rich = (0..<35).map { _ in
+            ref(dur: 10, useful: 2, events: [0, 2.6, 6.5],
+                visual: [EvidenceCandidate(start: 0, end: 2.6, peak: 1.3, confidence: 0.8),
+                         EvidenceCandidate(start: 5.7, end: 10, peak: 9.2, confidence: 0.8)])
+        }
+        let r = await VisualEvidencePreparation.prepare(
+            moments: rich, localURL: { _ in nil }, fetchCachedFrames: { _ in frames },
+            restoreSources: { _ in ([:], []) })
+        XCTAssertLessThanOrEqual(r.wireBytes, VisualBudgetLimits().maxTotalImageBytes, "wire \(r.wireBytes)")
+        let reasoned = Set(r.sheetMissReasons.keys.compactMap { UUID(uuidString: $0) })
+        XCTAssertEqual(ids(r.sheets).union(reasoned), Set(rich.map { $0.momentId }))
+        let first = EvidenceFrameMapper.rank(frames, guidance: rich[0].guidance)
+        XCTAssertGreaterThan(first.preferred, 4, "evidence-rich Moments get more than the old 4 frames")
+        XCTAssertLessThanOrEqual(first.preferred, EvidenceFrameMapper.maxFrames)
+        print("P1F_PAYLOAD rich35 sheets=\(r.sheets.count) wireBytes=\(r.wireBytes) tier=\(r.budget.selectedTier) "
+              + "preferred=\(first.preferred) eventsCovered=\(r.coverage.eventsCovered)/\(r.coverage.eventsTotal)")
     }
 }
