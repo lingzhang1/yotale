@@ -2186,6 +2186,32 @@ class RealEditPlannerEngine:
                 diag["critique_applied"] = False
                 diag["critique_rejected_reason"] = f"provider_error:{type(e).__name__}"
 
+        # 6c: DETERMINISTIC DURATION FIT (no model call). The requested length is a strong objective but never a
+        # reason to reject a playable cut, so an over-long valid plan is pulled back toward the target by dropping
+        # redundant/low-value optional shots and trimming slack away from the AU payoff (duration_fit.py). Revise
+        # is exempt (it must preserve the user's base edit). The fit is ADOPTED only when the fitted plan is
+        # still technically valid and does not lower creative-objective satisfaction; otherwise the original
+        # valid plan ships unchanged. Recorded in diag["duration_fit"].
+        _dur_fit_unmet = False
+        if not _is_revise:
+            from .duration_fit import fit_plan_duration, FIT_BAND
+            _protected = _directive_authorized_ids((rc or {}).get("directives"))
+            fitted, frep = fit_plan_duration(plan, inputs, protected_ids=_protected)
+            if frep.get("applied"):
+                f_errs = validate_plan(fitted, inputs)
+                sat_before = assess_creative_intent(plan, inputs)["satisfaction"] if _objective_directives_on() else 1.0
+                sat_after = assess_creative_intent(fitted, inputs)["satisfaction"] if _objective_directives_on() else 1.0
+                if not f_errs and sat_after >= sat_before - 1e-9:
+                    plan = fitted
+                    frep["adopted"] = True
+                else:
+                    frep["adopted"] = False
+                    frep["rejected_reason"] = "invalid_after_fit" if f_errs else "satisfaction_drop"
+                    frep["after_s"] = frep["before_s"]
+                    frep["within_band"] = frep["before_s"] <= frep["target_s"] * (1 + FIT_BAND) + 1e-6
+            diag["duration_fit"] = frep
+            _dur_fit_unmet = frep.get("within_band") is False
+
         # v2 PARTIAL-SUCCESS DISCLOSURE (owner §9). The plan is technically valid and shippable. Score the
         # creative objectives (deterministic, no model) and record Complete vs Partial + the material unmet
         # instructions, so the device renders a SUCCESS (with a concise disclosure) rather than an "Adjust
@@ -2193,6 +2219,13 @@ class RealEditPlannerEngine:
         # objective unmet. The result is ALWAYS a playable plan either way.
         if _objective_directives_on():
             cre = assess_creative_intent(plan, inputs)
+            if _dur_fit_unmet:
+                # Honest reporting: the cut still runs materially long after the deterministic fit (only
+                # payoff / directive / music-anchored shots remain). The video ships; the miss is disclosed.
+                fr = diag["duration_fit"]
+                cre = dict(cre, material_unmet=list(cre["material_unmet"]) + [{
+                    "code": "approx_duration",
+                    "detail": f"plan {fr['after_s']:.1f}s vs target {fr['target_s']:.1f}s"}])
             diag["creative_satisfaction"] = cre["satisfaction"]
             diag["creative_objective_count"] = cre["objective_count"]
             if cre["material_unmet"]:
