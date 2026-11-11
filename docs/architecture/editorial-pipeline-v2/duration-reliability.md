@@ -47,8 +47,11 @@ plans are returned unchanged (undershoot is reported, never extended).
    bookend/recap/motif/mirror/refrain/again are kept.
 2. **B — slack trim, two passes**: shots longer than the plan's median absorb the cut first; shorter shots only if
    still needed. Each trim cuts lead-in/tail away from the protected core and keeps at least half of the planned
-   shot. Core = AU payoff peak ±1.25 s, widened to the whole containing AU event for Full Story and for kept native
-   audio; a kept-audio shot without a payoff keeps its main AU event.
+   shot. Core = every AU payoff peak in the shot (first to last peak ±1.25 s — not only the strongest), widened
+   to the whole containing AU events for Full Story and for kept native audio; a kept-audio shot without a
+   payoff keeps its main AU event. Kept-audio trim edges that would land inside an AU event move to the nearest
+   clean event boundary (inside no event), else the original edge (dev device acceptance 2026-11-11: the old
+   rule lost 3 secondary payoffs and cut kept audio mid-event 8 times across 4 real plans; now 0 and 0).
 3. **C — optional drops** (only if still > +10%): shots with no AU payoff, least valuable first (no visual-candidate
    overlap → non-kept audio → longest first). Full Story drops only unannotated filler (no visual-candidate overlap).
 

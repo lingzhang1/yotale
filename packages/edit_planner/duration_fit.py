@@ -12,9 +12,11 @@ Runs only when the DELIVERED total (Σ output durations) is more than FIT_TRIGGE
   B. trim slack proportionally, cutting lead-in / tail AWAY from the protected core of each shot;
   C. if still over the band, drop optional shots with no AU payoff, least valuable first.
 
-Protected core of a shot (never trimmed into): the AU visual-candidate payoff peak ±PAYOFF_HALF_WINDOW_S, widened
-to the whole containing AU event for Full Story (complete actions) and for kept native audio; a kept-audio shot
-without a payoff keeps its main AU event. A trim never takes a shot below RETAIN_FRACTION of the length the
+Protected core of a shot (never trimmed into): from the first to the last AU visual-candidate payoff peak inside
+it (±PAYOFF_HALF_WINDOW_S) — every payoff, not only the strongest — widened to the whole containing AU events for
+Full Story (complete actions) and for kept native audio; a kept-audio shot without a payoff keeps its main AU
+event. A kept-audio shot's trimmed edges are also snapped to AU event boundaries, so its sound never starts or
+stops mid-event. A trim never takes a shot below RETAIN_FRACTION of the length the
 planner chose for it. There is NO absolute minimum shot length: a short planner shot is never lengthened or
 rejected, and the validator is unchanged.
 
@@ -91,15 +93,20 @@ def _payoff(seg: dict, moment: dict | None) -> float | None:
 
 
 def _core(seg: dict, moment: dict | None, whole_event: bool) -> tuple[float, float] | None:
-    """Protected SOURCE window inside the segment, or None when nothing in it is protected."""
+    """Protected SOURCE window inside the segment, or None when nothing in it is protected.
+
+    EVERY AU visual-candidate payoff peak inside the segment is protected, not only the strongest: a shot the
+    planner chose that holds two payoffs (raise the poles, then turn to camera) keeps both, so the window spans
+    from the first peak to the last (±PAYOFF_HALF_WINDOW_S). For Full Story and kept native audio it widens to
+    the whole AU events containing those peaks."""
     a, b = _range(seg)
     keep_audio = (seg.get("native_audio") or "keep") == "keep"
-    p = _payoff(seg, moment)
-    if p is not None:
-        lo, hi = p - PAYOFF_HALF_WINDOW_S, p + PAYOFF_HALF_WINDOW_S
+    inside = [p for p, _c in _peaks(moment) if a - _EPS <= p <= b + _EPS]
+    if inside:
+        lo, hi = min(inside) - PAYOFF_HALF_WINDOW_S, max(inside) + PAYOFF_HALF_WINDOW_S
         if whole_event or keep_audio:
             for ea, eb in _events(moment):
-                if ea - _EPS <= p <= eb + _EPS:
+                if any(ea - _EPS <= p <= eb + _EPS for p in inside):
                     lo, hi = min(lo, ea), max(hi, eb)
         return max(a, lo), min(b, hi)
     if keep_audio:   # kept sound with no visual payoff: keep its main AU event intact
@@ -107,6 +114,29 @@ def _core(seg: dict, moment: dict | None, whole_event: bool) -> tuple[float, flo
         if best is not None and min(b, best[1]) - max(a, best[0]) > _EPS:
             return max(a, best[0]), min(b, best[1])
     return None
+
+
+def _snap_to_events(new_a: float, new_b: float, a: float, b: float, lo: float, hi: float,
+                    events: list[tuple[float, float]], min_src: float) -> tuple[float, float]:
+    """Kept native audio: an edge that would fall INSIDE an AU event moves to the nearest event boundary, so the
+    shot never starts or ends in the middle of a sound/action. Edges outside every event (or a Moment with no AU
+    events) are left as trimmed. Candidate starts are the original start and every event boundary up to the
+    protected core; candidate ends the original end and every boundary from the core on. The untrimmed original
+    edge is always a candidate, so the shot never drops below `min_src` of source."""
+    def inside(x: float) -> bool:
+        return any(ea + _EPS < x < eb - _EPS for ea, eb in events)
+
+    bounds = sorted({x for e in events for x in e})
+    # Prefer CLEAN cut points (inside no event at all — AU events can overlap); the original edges always qualify.
+    clean = [x for x in bounds if not inside(x)]
+    sa, sb = new_a, new_b
+    if inside(new_a):
+        starts = [a] + [x for x in clean if a + _EPS < x <= lo + _EPS]
+        sa = min((x for x in starts if sb - x >= min_src - _EPS), key=lambda x: abs(x - new_a), default=a)
+    if inside(new_b):
+        ends = [b] + [x for x in clean if hi - _EPS <= x < b - _EPS]
+        sb = min((x for x in ends if x - sa >= min_src - _EPS), key=lambda x: abs(x - new_b), default=b)
+    return sa, sb
 
 
 def _set_range(seg: dict, a: float, b: float) -> None:
@@ -210,7 +240,7 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
         if total_slack <= _EPS:
             continue
         frac = min(1.0, excess / total_slack)
-        for s, slack, (_min_out, lo, hi) in pool:
+        for s, slack, (min_out, lo, hi) in pool:
             a, b = _range(s)
             cut_src = slack * frac * _speed(s)
             lead, tail = max(0.0, lo - a), max(0.0, b - hi)
@@ -219,7 +249,12 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
                 continue
             ca = min(lead, cut_src * lead / room)
             cb = min(tail, cut_src - ca)
-            _set_range(s, a + ca, b - cb)
+            na, nb = a + ca, b - cb
+            if (s.get("native_audio") or "keep") == "keep":
+                na, nb = _snap_to_events(na, nb, a, b, lo, hi, _events(mom(s)), min_out * _speed(s))
+            if (na, nb) == (a, b):
+                continue
+            _set_range(s, na, nb)
             trimmed_ids.add(id(s))
     report["trimmed"] = len(trimmed_ids)
 
