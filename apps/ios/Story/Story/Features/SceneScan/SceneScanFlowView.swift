@@ -536,6 +536,8 @@ struct SceneScanFlowView: View {
             )
             pendingCaptureContext = nil
             Task { await auQueue.drain() }   // opportunistic; failures leave the job PENDING
+            // Auto Backup: back up this new Moment when the account has it ON (fire-and-forget; no-op otherwise).
+            MediaUploadQueue.sharedAutoEnroll(moment)
             // Milestone D §13: also save a user-owned COPY to Apple Photos (add-only),
             // fire-and-forget. The Moment is ALREADY persisted above; this never blocks
             // or fails Moment creation, and Photos denial/failure degrades silently.

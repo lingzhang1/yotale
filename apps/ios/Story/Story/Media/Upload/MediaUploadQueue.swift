@@ -104,6 +104,25 @@ final class MediaUploadQueue {
         return enroll(moment: moment)
     }
 
+    /// Enroll EVERY Moment on this device that is not yet backed up and that the active account may back up:
+    /// not cloud-verified, original present on disk, and either unowned (local-only, shared) or already this
+    /// account's (e.g. an earlier job failed). `enroll` keeps its guards (idempotent per live job; never claims a
+    /// Moment reserved by another account). Used when Auto Backup is turned ON, so existing Moments are
+    /// included, and by the library's "back up existing" action. Returns how many Moments now have a live job.
+    @discardableResult
+    func enrollAllNotBackedUp() -> Int {
+        guard let owner = activeOwner() else { return 0 }
+        let all = (try? context.fetch(FetchDescriptor<MomentModel>())) ?? []
+        var n = 0
+        for m in all {
+            guard m.cloudStateRaw != "cloud_verified" else { continue }          // already backed up
+            guard m.ownerAccountId == nil || m.ownerAccountId == owner else { continue }
+            guard let rel = m.asset?.relativePath, MediaStore.shared.fileExists(relativePath: rel) else { continue }
+            if enroll(moment: m) != nil { n += 1 }
+        }
+        return n
+    }
+
     // MARK: - Launch recovery
 
     /// Reset orphaned RUNNING jobs (app killed mid-upload) back to PENDING. The original media is untouched.

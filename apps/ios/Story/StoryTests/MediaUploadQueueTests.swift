@@ -231,6 +231,49 @@ final class MediaUploadQueueTests: XCTestCase {
         XCTAssertEqual(m.ownerAccountId, "B")
     }
 
+    // MARK: - Turning Auto Backup on backs up existing Moments not yet backed up
+
+    func testEnrollAllNotBackedUp_coversUnownedAndOwnUnverified_skipsOthers() throws {
+        let unowned = try makeLocalMoment()                         // new import: no owner, local-only
+        let mineFailed = try makeLocalMoment()                      // reserved to A by an earlier failed job
+        mineFailed.ownerAccountId = "A"; mineFailed.asset?.ownerAccountId = "A"
+        let backedUp = try makeLocalMoment()                        // already cloud-verified
+        backedUp.ownerAccountId = "A"; backedUp.cloudStateRaw = "cloud_verified"
+        let otherAccount = try makeLocalMoment()                    // reserved to B
+        otherAccount.ownerAccountId = "B"
+        let missingFile = try makeLocalMoment()                     // original no longer on disk
+        try FileManager.default.removeItem(at: MediaStore.shared.absoluteURL(for: missingFile.asset!.relativePath))
+        try ctx.save()
+
+        let q = queue(active: { "A" }, service: FakeService())
+        XCTAssertEqual(q.enrollAllNotBackedUp(), 2)
+        let jobs = try ctx.fetch(FetchDescriptor<MediaUploadJobModel>())
+        XCTAssertEqual(Set(jobs.map { $0.momentId }), [unowned.id, mineFailed.id])
+        XCTAssertTrue(jobs.allSatisfy { $0.ownerAccountId == "A" })
+        XCTAssertEqual(unowned.ownerAccountId, "A", "an unowned Moment is reserved to the enrolling account")
+        XCTAssertEqual(otherAccount.ownerAccountId, "B", "never claims another account's Moment")
+        XCTAssertEqual(backedUp.cloudStateRaw, "cloud_verified")
+    }
+
+    func testEnrollAllNotBackedUp_isIdempotent_andSignedOutIsANoOp() throws {
+        _ = try makeLocalMoment(); _ = try makeLocalMoment()
+        XCTAssertEqual(queue(active: { nil }, service: FakeService()).enrollAllNotBackedUp(), 0)
+        XCTAssertEqual(try ctx.fetch(FetchDescriptor<MediaUploadJobModel>()).count, 0)
+        let q = queue(active: { "A" }, service: FakeService())
+        XCTAssertEqual(q.enrollAllNotBackedUp(), 2)
+        XCTAssertEqual(q.enrollAllNotBackedUp(), 2, "re-running reuses the live jobs")
+        XCTAssertEqual(try ctx.fetch(FetchDescriptor<MediaUploadJobModel>()).count, 2, "no duplicate jobs")
+    }
+
+    func testEnrollAllNotBackedUp_thenDrain_backsThemUp() async throws {
+        let a = try makeLocalMoment(), b = try makeLocalMoment()
+        let q = queue(active: { "A" }, service: FakeService())
+        q.enrollAllNotBackedUp()
+        await q.drain()
+        XCTAssertEqual(a.cloudStateRaw, "cloud_verified")
+        XCTAssertEqual(b.cloudStateRaw, "cloud_verified")
+    }
+
     // MARK: - R4-B multipart
 
     func testLargeFile_takesMultipartPath_andVerifies() async throws {

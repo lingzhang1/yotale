@@ -98,6 +98,8 @@ struct MomentsManageView: View {
                 let auQueue = AssetUnderstandingQueue(context: context)
                 auQueue.enqueueImportedVideos(created)
                 AUContinuedProcessing.startAfterImport(queue: auQueue, context: context, momentIds: Set(created.map(\.id)))
+                // Auto Backup: back up each imported Moment when the account has it ON (no-op otherwise).
+                for m in created { MediaUploadQueue.sharedAutoEnroll(m) }
             }
         }
         .confirmationDialog("Remove this moment?",
