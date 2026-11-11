@@ -232,6 +232,17 @@ def _emit_ai_metrics(diag: dict, *, op_type: str, stage: str = "edit_plan", stor
         pass
 
 
+def _build_sha() -> str:
+    """Deployed code revision (short git sha) from STORY_BUILD_SHA, set by CDK from the deploy workflow's commit;
+    "unknown" when not provided (e.g. a deploy that predates the context value)."""
+    return (os.environ.get("STORY_BUILD_SHA") or "").strip() or "unknown"
+
+
+def _effective_prompt_version() -> str:
+    import edit_planner as _ep
+    return getattr(_ep, "PROMPT_VERSION", "edit_plan/?")
+
+
 def _build_engine():
     """Mirror apps/api/app/deps.get_edit_planner_engine so the worker runs the IDENTICAL model path
     (direct OpenAI/Gemini in STORY_MODEL_PROVIDER=direct, else Opus primary -> Sonnet fallback)."""
@@ -532,7 +543,9 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                                              "completion", "partial_disclosure", "material_unmet",
                                              "creative_satisfaction", "creative_objective_count",
                                              "shipped_retained_candidate", "best_valid_from_attempt",
-                                             "structural_repair", "repair_budget")}
+                                             "structural_repair", "repair_budget",
+                                             # deterministic duration fit: before/after/target, what changed
+                                             "duration_fit")}
         diag_out["planning_mode"] = "multimodal" if images else "text_only"
         diag_out["sheet_count"] = len(images)
         # P0 EVIDENCE ACCOUNTING (Editorial Pipeline v2). Persist the device's reconciling funnel census (stages
@@ -549,6 +562,12 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
         diag_out["input_tokens"] = int(diag.get("input_tokens") or 0)
         diag_out["output_tokens"] = int(diag.get("output_tokens") or 0)
         diag_out["model_id"] = _served_model_id(diag)
+        # PROVENANCE: the prompt version this worker actually ran and the deployed code revisions (API revision
+        # stamped into the envelope at submit). Version strings only — no media, no user content.
+        diag_out["prompt_version"] = _effective_prompt_version()
+        diag_out["worker_build_sha"] = _build_sha()
+        if isinstance(env.get("api_build_sha"), str) and env["api_build_sha"]:
+            diag_out["api_build_sha"] = env["api_build_sha"]
         # DIRECTIVE visibility: what revision_context the worker ACTUALLY received, the resolved opening id,
         # and whether the produced plan's first segment honored it. This is the only way to tell apart "the app
         # sent no/stale directive" from "the directive was sent but not enforced" from "Moment N resolved to an

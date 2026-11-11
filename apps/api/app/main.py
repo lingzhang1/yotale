@@ -1988,6 +1988,8 @@ def create_app() -> FastAPI:
         body_envelope = _j2.dumps({"body": body, "sheet_order": order, "creative_brief": creative_brief,
                                     "critique_revision": bool(critique_revision), "approach": approach,
                                     "evidence_accounting": _evidence, "build_provenance": _provenance,
+                                    # API code revision that accepted the job (worker copies it to diagnostics)
+                                    "api_build_sha": (os.environ.get("STORY_BUILD_SHA") or "").strip() or "unknown",
                                     "_test_delay_s": int(test_delay_s or 0)})
         prefix = store.stage_request(jid, body_envelope, staged)
         try:

@@ -763,7 +763,7 @@ final class StoryCreationCoordinator {
             MediaEngineV1.beacon("evidence-accounting reconciles=\(evidenceAccounting.reconciles) "
                 + "linked=\(evidenceAccounting.linkedCount) eligible=\(evidenceAccounting.eligibleCount) "
                 + "sheeted=\(evidenceAccounting.sheetedCount) missing=\(evidenceAccounting.missingSheetCount) "
-                + "sha=\(provenance.commitSHA) extract=\(provenance.extractionPolicy)")
+                + "sha=\(provenance.commitSHA) extract=\(provenance.extractionPolicy) select=\(provenance.selectionPolicy)")
             let evidenceDict = evidenceAccounting.asRequestDictionary()
             let provenanceDict = provenance.asRequestDictionary()
 

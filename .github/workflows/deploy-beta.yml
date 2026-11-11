@@ -120,6 +120,7 @@ jobs:
           #    (=false) — the account-level $100 beta budget is owned by B0's org-foundation, not duplicated here.
           npx cdk deploy -c environment=beta --require-approval never \
             -c imageDigest="${{ steps.image.outputs.digest }}" \
+            -c buildSha="${GITHUB_SHA::12}" \
             -c cognitoUserPoolId="${{ vars.BETA_COGNITO_USER_POOL_ID }}" \
             -c cognitoAppClientId="${{ vars.BETA_COGNITO_APP_CLIENT_ID }}" \
             -c observability=true \

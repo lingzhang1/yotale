@@ -303,6 +303,9 @@ export class StoryApiStack extends cdk.Stack {
         // env=development even though they live in the beta account — so dashboards/alarms/cost filtered on
         // env=beta miss them. Must match the API service's STORY_ENVIRONMENT above.
         STORY_ENVIRONMENT: environment,
+        // Deployed code revision (short git sha) for job diagnostics provenance; the deploy workflows pass
+        // `-c buildSha=<sha>`. "unknown" when absent — never blocks a deploy.
+        STORY_BUILD_SHA: (this.node.tryGetContext("buildSha") as string) || "unknown",
         STORY_JOBS_TABLE: jobsTable.tableName,
         STORY_JOBS_QUEUE_URL: jobsQueue.queueUrl,
         STORY_STAGING_BUCKET: stagingBucket.bucketName,
@@ -576,6 +579,8 @@ export class StoryApiStack extends cdk.Stack {
               // tables. These are non-secret resource identifiers (NOT credentials), read from context so prod
               // supplies its own; dev defaults match the provisioned story-development-auth stack.
               { name: "STORY_ENVIRONMENT", value: environment },
+              // Deployed code revision for job provenance (same context value as the worker's STORY_BUILD_SHA).
+              { name: "STORY_BUILD_SHA", value: (this.node.tryGetContext("buildSha") as string) || "unknown" },
               // Auth posture: DEVELOPMENT (and the unit-test synth env) stay in optional-auth
               // (STORY_REQUIRE_AUTH=0) so existing iOS builds keep working during local iteration. EVERY
               // REAL deploy environment (beta/gamma/production) is FAIL-CLOSED (=1): unauthenticated writes

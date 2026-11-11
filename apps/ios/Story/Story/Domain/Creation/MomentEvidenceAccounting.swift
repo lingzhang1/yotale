@@ -126,8 +126,11 @@ struct BuildProvenance: Codable, Equatable {
     let appVersion: String          // CFBundleShortVersionString
     let buildNumber: String         // CFBundleVersion
     let commitSHA: String           // short git sha baked at build time (or "unknown")
-    let framePolicy: String         // au_frames/1
+    let framePolicy: String         // au_frames/1 — the AU frame EXTRACTION policy (24 frames per Moment)
     let extractionPolicy: String    // frame-extraction reliability policy version (this milestone bumps it)
+    /// The planning-time contact-sheet SELECTION policy (which of the AU frames a sheet shows) — distinct from
+    /// `framePolicy`, which only describes how the AU frames were extracted. e.g. "evidence_select/2".
+    let selectionPolicy: String
     let requestedApproach: String   // storytelling | visual_first
     let multimodalEnabled: Bool
 
@@ -138,6 +141,7 @@ struct BuildProvenance: Codable, Equatable {
             "commit_sha": commitSHA,
             "frame_policy": framePolicy,
             "extraction_policy": extractionPolicy,
+            "selection_policy": selectionPolicy,
             "requested_approach": requestedApproach,
             "multimodal_enabled": multimodalEnabled,
         ]
@@ -149,7 +153,8 @@ struct BuildProvenance: Codable, Equatable {
     /// variable token like "$(GIT_COMMIT_SHA)" — so a build without the SHA-populating Run Script reports
     /// "unknown" rather than a meaningless token, and never crashes.
     static func current(requestedApproach: String, multimodalEnabled: Bool,
-                        extractionPolicy: String) -> BuildProvenance {
+                        extractionPolicy: String,
+                        selectionPolicy: String = EvidenceFrameMapper.policyVersion) -> BuildProvenance {
         let info = Bundle.main.infoDictionary ?? [:]
         let app = (info["CFBundleShortVersionString"] as? String) ?? "unknown"
         let build = (info["CFBundleVersion"] as? String) ?? "unknown"
@@ -160,6 +165,7 @@ struct BuildProvenance: Codable, Equatable {
             commitSHA: resolved,
             framePolicy: MomentFrameExtractor.framePolicy,
             extractionPolicy: extractionPolicy,
+            selectionPolicy: selectionPolicy,
             requestedApproach: requestedApproach,
             multimodalEnabled: multimodalEnabled)
     }

@@ -87,6 +87,7 @@ jobs:
           npx cdk deploy -c environment=development --require-approval never \
             -c imageDigest="${{ steps.image.outputs.digest }}" \
             -c editplanV2=true \
+            -c buildSha="${GITHUB_SHA::12}" \
             --role-arn "${{ vars.CFN_EXEC_ROLE_ARN }}"
 
       - name: Upload release manifest artifact
