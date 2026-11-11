@@ -44,6 +44,43 @@ final class CreateUXP1DTests: XCTestCase {
         XCTAssertEqual(V.seedDurationChoice(editorialMode: nil, explicitTarget: nil), .recommended)
     }
 
+    // MARK: - "always 50s" regression (dev device test 2026-11-11, TMB Hiking, 25 Moments)
+
+    func testPriorRecommendedTargetReopensAsRecommended() {
+        // A previous Recommended pick persisted 50s (= the Highlights point). Reopening must stay Recommended so
+        // choosing Full Story submits its own point (90s) instead of the stale 50s Custom value.
+        XCTAssertEqual(V.seedDurationChoice(editorialMode: "highlights", explicitTarget: 50,
+                                            recommendedPoints: [50, 90]), .recommended)
+        XCTAssertEqual(V.seedDurationChoice(editorialMode: "full", explicitTarget: 90,
+                                            recommendedPoints: [50, 90]), .recommended)
+        XCTAssertEqual(V.seedDurationChoice(editorialMode: "full", explicitTarget: 90.4,
+                                            recommendedPoints: [50, 89.6]), .recommended)   // ±1s rounding
+    }
+
+    func testPriorTypedTargetStillReopensAsCustom() {
+        XCTAssertEqual(V.seedDurationChoice(editorialMode: "highlights", explicitTarget: 32,
+                                            recommendedPoints: [50, 90]), .custom)
+        XCTAssertEqual(V.seedDurationChoice(editorialMode: "custom", explicitTarget: 50,
+                                            recommendedPoints: [50, 90]), .custom)        // historical custom wins
+    }
+
+    func testCustomFloorIsNotTiedToMomentCount() {
+        // The duration planner's band floor is 2s per Moment (25 Moments -> 50s). 16s and 32s must be accepted.
+        XCTAssertEqual(V.customFloor(bandFloor: 50), V.minCustomSeconds)
+        XCTAssertLessThanOrEqual(V.customFloor(bandFloor: 50), 16)
+        XCTAssertEqual(V.customFloor(bandFloor: 4), 4)          // very little footage -> its own floor
+        XCTAssertEqual(V.customFloor(bandFloor: 1), 3)          // never below 3s
+        XCTAssertEqual(V.customFloor(bandFloor: nil), V.minCustomSeconds)
+    }
+
+    func testCustomSecondsTextParsesEveryKeystroke() {
+        XCTAssertEqual(V.parseSeconds("16"), 16)
+        XCTAssertEqual(V.parseSeconds("3"), 3)
+        XCTAssertEqual(V.parseSeconds(" 32s"), 32)
+        XCTAssertNil(V.parseSeconds(""))
+        XCTAssertNil(V.parseSeconds("abc"))
+    }
+
     func testVideoTypeWireValuesMatchContract() {
         XCTAssertEqual(V.VideoType.highlights.wire, "highlights")
         XCTAssertEqual(V.VideoType.full.wire, "full")
