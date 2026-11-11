@@ -138,11 +138,12 @@ def test_submit_stages_evidence_accounting_and_build_provenance():
     env = _staged_envelope(s)
     assert env["evidence_accounting"] == evidence, "evidence funnel must round-trip into the staged envelope"
     assert env["build_provenance"] == prov, "build provenance must round-trip into the staged envelope"
-    assert env["api_build_sha"] == "unknown", "API revision is stamped (unknown without STORY_BUILD_SHA)"
+    assert env["api_build_sha"] == "unknown", "API revision is stamped (unknown without an image BUILD_SHA)"
 
 
 def test_submit_stamps_api_build_sha_and_keeps_selection_policy(monkeypatch):
-    monkeypatch.setenv("STORY_BUILD_SHA", "0123456789ab")
+    import observability
+    monkeypatch.setattr(observability, "build_sha", lambda: "0123456789ab")   # image-baked stamp
     s = FakeStore(); c = _client(s)
     prov = {"commit_sha": "19f9640", "frame_policy": "au_frames/1", "selection_policy": "evidence_select/2"}
     r = c.post("/v1/edit-plan-jobs", data={

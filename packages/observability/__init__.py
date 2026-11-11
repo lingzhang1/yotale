@@ -246,3 +246,21 @@ def scrub_log_fields(fields: dict[str, object]) -> dict[str, object]:
         else:
             out[k] = v
     return out
+
+
+def build_sha() -> str:
+    """The code revision baked into THIS artifact (API image or worker zip): the contents of a `BUILD_SHA` file
+    written at build time at the artifact root (/app/BUILD_SHA in the API image, /var/task/BUILD_SHA in the worker
+    zip — both two levels above this package). "unknown" when the artifact carries none (e.g. a local run). It
+    identifies the code actually executing, not a deploy-time label."""
+    from pathlib import Path
+    here = Path(__file__).resolve()
+    for root in (here.parent.parent.parent, here.parent.parent):
+        f = root / "BUILD_SHA"
+        try:
+            v = f.read_text().strip()
+        except OSError:
+            continue
+        if v:
+            return v[:40]
+    return "unknown"

@@ -46,6 +46,10 @@ COPY apps/api/ /app/apps/api/
 # Versioned engine prompts (creative_intent/v1/system.md, ...). The engine
 # resolves these at <repo>/prompts/..., so they must be in the image.
 COPY prompts/ /app/prompts/
+# Code revision of THIS image (deploy workflows pass --build-arg BUILD_SHA=<git sha>); "unknown" otherwise.
+# Read at runtime by observability.build_sha() for job provenance.
+ARG BUILD_SHA=unknown
+RUN printf '%s' "$BUILD_SHA" > /app/BUILD_SHA
 
 EXPOSE 8080
 

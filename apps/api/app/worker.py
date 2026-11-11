@@ -233,9 +233,10 @@ def _emit_ai_metrics(diag: dict, *, op_type: str, stage: str = "edit_plan", stor
 
 
 def _build_sha() -> str:
-    """Deployed code revision (short git sha) from STORY_BUILD_SHA, set by CDK from the deploy workflow's commit;
-    "unknown" when not provided (e.g. a deploy that predates the context value)."""
-    return (os.environ.get("STORY_BUILD_SHA") or "").strip() or "unknown"
+    """Code revision baked into this worker zip at build time (scripts/build_worker_asset.sh writes BUILD_SHA);
+    "unknown" when the artifact carries none."""
+    from observability import build_sha
+    return build_sha()
 
 
 def _effective_prompt_version() -> str:

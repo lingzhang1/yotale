@@ -13,6 +13,14 @@ cp -R "$REPO/apps/api/app/." "$OUT/app/"
 cp -R "$REPO/packages/." "$OUT/packages/"
 cp -R "$REPO/contracts/." "$OUT/contracts/"
 cp -R "$REPO/prompts" "$OUT/prompts"
+# Code revision of THIS asset for job provenance (read by observability.build_sha()). "-dirty" when the backend
+# sources packaged here differ from the commit; "unknown" when git is unavailable. Never fails the build.
+if SHA=$(git -C "$REPO" rev-parse --short=12 HEAD 2>/dev/null); then
+  git -C "$REPO" diff --quiet HEAD -- apps/api/app packages contracts prompts 2>/dev/null || SHA="$SHA-dirty"
+else
+  SHA=unknown
+fi
+printf '%s' "$SHA" > "$OUT/BUILD_SHA"
 
 # 2. deps: Linux cp312 manylinux wheels for pydantic (compiled pydantic-core) — boto3 is in the runtime.
 WHEELS="$(mktemp -d /tmp/lw.XXXXXX)"

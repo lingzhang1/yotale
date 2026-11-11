@@ -83,8 +83,27 @@ def _setup(monkeypatch, envelope_extra=None):
     return FakeStore(job, env)
 
 
-def test_worker_persists_fitted_plan_and_provenance(monkeypatch):
-    monkeypatch.setenv("STORY_BUILD_SHA", "deadbeef1234")
+def _bake(monkeypatch, tmp_path, sha):
+    """Simulate the artifact layout: <root>/BUILD_SHA beside <root>/packages/observability/__init__.py."""
+    import observability
+    pkg = tmp_path / "packages" / "observability"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    if sha is not None:
+        (tmp_path / "BUILD_SHA").write_text(sha + "\n")
+    monkeypatch.setattr(observability, "__file__", str(pkg / "__init__.py"))
+
+
+def test_build_sha_reads_the_artifact_stamp_or_reports_unknown(monkeypatch, tmp_path):
+    import observability
+    _bake(monkeypatch, tmp_path, "0123456789ab-dirty")
+    assert observability.build_sha() == "0123456789ab-dirty"
+    (tmp_path / "BUILD_SHA").unlink()
+    assert observability.build_sha() == "unknown"
+
+
+def test_worker_persists_fitted_plan_and_provenance(monkeypatch, tmp_path):
+    _bake(monkeypatch, tmp_path, "deadbeef1234")
     s = _setup(monkeypatch, {"api_build_sha": "cafe00001234"})
     assert worker._run_one(s, "J1") == "completed", s.failed
     plan, diag = s.completed
@@ -97,8 +116,8 @@ def test_worker_persists_fitted_plan_and_provenance(monkeypatch):
     assert diag["build_provenance"]["selection_policy"] == "evidence_select/2"   # device key passes through
 
 
-def test_worker_provenance_defaults_to_unknown_for_old_envelopes(monkeypatch):
-    monkeypatch.delenv("STORY_BUILD_SHA", raising=False)
+def test_worker_provenance_defaults_to_unknown_for_old_envelopes(monkeypatch, tmp_path):
+    _bake(monkeypatch, tmp_path, None)                                # artifact without a stamp
     s = _setup(monkeypatch)                                           # pre-change envelope: no api_build_sha
     assert worker._run_one(s, "J1") == "completed", s.failed
     _plan, diag = s.completed
