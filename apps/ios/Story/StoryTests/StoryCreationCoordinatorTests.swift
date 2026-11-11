@@ -51,6 +51,7 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         private(set) var submitCount = 0
         private(set) var pollCount = 0
         private(set) var lastRequest: EditPlanRequestDTO?
+        private(set) var lastSheets: [MomentContactSheet] = []
         private(set) var lastEvidenceAccounting: [String: Any]?
         private(set) var lastBuildProvenance: [String: Any]?
         init(_ b: Behavior) { behavior = b }
@@ -61,6 +62,7 @@ final class StoryCreationCoordinatorTests: XCTestCase {
                     buildProvenance: [String: Any]?) async throws -> String {
             submitCount += 1
             lastRequest = request
+            lastSheets = sheets
             lastEvidenceAccounting = evidenceAccounting
             lastBuildProvenance = buildProvenance
             return "fake-job-\(operationId)-\(submitCount)"
@@ -710,5 +712,179 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         guard case .failed = coord.state else { return XCTFail("expected .failed, got \(coord.state)") }
         let rows = try ctx.fetch(FetchDescriptor<PendingOperationModel>()).filter { $0.storyId == s.id }
         XCTAssertEqual(rows.first?.failureCategory, "material_infeasible")
+    }
+
+    // MARK: - P1-F pre-beta: cloud-only Moments get planning-time visual evidence (real coordinator wiring)
+
+    /// A local Moment backed by a REAL (synthetic) video at its MediaStore path, so extraction genuinely runs.
+    private func realLocalMoment(_ story: StoryModel, video: URL, tag: String) throws -> MomentModel {
+        let rel = "media/p1f-\(tag)-\(UUID().uuidString).mov"
+        let abs = MediaStore.shared.absoluteURL(for: rel)
+        try FileManager.default.createDirectory(at: abs.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: video, to: abs)
+        let m = MomentModel(source: .directed, asset: AssetModel(relativePath: rel, durationSeconds: 8, source: .directed))
+        ctx.insert(m); if let l = story.attach(m) { ctx.insert(l) }
+        completeAU(m, useful: [(0, 5)])
+        return m
+    }
+
+    /// A cloud-only Moment: original evicted (no file), backed up and verified, AU done, duration from metadata.
+    private func cloudOnlyMoment(_ story: StoryModel, tag: String) -> MomentModel {
+        let shell = AssetModel(relativePath: "media/p1f-cloud-\(tag)-\(UUID().uuidString).mov", durationSeconds: 8, source: .directed)
+        shell.localAvailability = .evicted
+        let m = MomentModel(source: .directed, asset: shell)
+        m.cloudMediaId = "cm-\(tag)"; m.cloudStateRaw = "cloud_verified"
+        ctx.insert(shell); ctx.insert(m); if let l = story.attach(m) { ctx.insert(l) }
+        completeAU(m, useful: [(0, 5)])
+        return m
+    }
+
+    private func cachedFrames() -> [AUExtractedFrame] {
+        (0..<6).map { AUExtractedFrame(jpeg: SyntheticMedia.tinyJPEG(gray: CGFloat($0) / 6), tMs: $0 * 1_000) }
+    }
+
+    func test_p1f_cloudOnlyMoments_getEvidence_hitNeedsNoRestore_missIsRestored_unrestorableIsAccounted() async throws {
+        let video = try await SyntheticMedia.makeVideo(seconds: 8)
+        defer { try? FileManager.default.removeItem(at: video) }
+        let s = newStory()
+        let local = try realLocalMoment(s, video: video, tag: "local")
+        let hit = cloudOnlyMoment(s, tag: "hit")        // cached package, original evicted
+        let miss = cloudOnlyMoment(s, tag: "miss")      // no package, original evicted but restorable
+        let gone = cloudOnlyMoment(s, tag: "gone")      // no package, original not restorable
+        try ctx.save()
+
+        var restoreAsked: [UUID] = []
+        var fetchAsked: [UUID] = []
+        let plan = validPlan([local])
+        let fake = FakeJobClient(.ok(plan))
+        let coord = StoryCreationCoordinator(
+            planner: FakePlanner(behavior: .ok(plan)), renderer: FakeRenderer(.ok(okResult())),
+            context: ctx, jobClient: fake,
+            evidenceFetch: { ref in fetchAsked.append(ref.momentId); return ref.momentId == hit.id ? self.cachedFrames() : nil },
+            sourceRestore: { ids in restoreAsked = ids; return ([miss.id: video], [gone.id]) })
+        coord.create(for: s)
+        await awaitSettled(coord)
+
+        // The cloud-only Moments are in the eligible set, so EVERY eligible Moment was offered the cache.
+        XCTAssertEqual(Set(fetchAsked), [local.id, hit.id, miss.id, gone.id])
+        // R6 restore only for cache MISSES that are not local: never the cache hit, never the local Moment.
+        XCTAssertEqual(Set(restoreAsked), [miss.id, gone.id])
+        // Sheets reached the planner for the local Moment, the cache-hit cloud-only Moment, and the restored one.
+        XCTAssertEqual(Set(fake.lastSheets.map { $0.momentId }), [local.id, hit.id, miss.id])
+        XCTAssertLessThanOrEqual(MultimodalVisualBudget.wireBytes(fake.lastSheets), VisualBudgetLimits().maxTotalImageBytes)
+        // Truthful accounting: 4 eligible, 3 sheeted, the unrestorable one reported (not claimed analyzed).
+        let acct = try XCTUnwrap(fake.lastEvidenceAccounting)
+        XCTAssertEqual(acct["eligible"] as? Int, 4)
+        XCTAssertEqual(acct["sheeted"] as? Int, 3)
+        XCTAssertEqual(acct["missing_sheet"] as? Int, 1)
+        XCTAssertEqual(acct["eligible_without_sheet_ids"] as? [String], [gone.id.uuidString.lowercased()])
+        XCTAssertEqual((acct["sheet_miss_by_reason"] as? [String: Int])?["unrestorable"], 1)
+        XCTAssertEqual(acct["reconciles"] as? Bool, true)
+        guard case .completed = coord.state else { return XCTFail("expected .completed, got \(coord.state)") }
+    }
+
+    func test_p1f_originalCreate_usesTheAttemptsEditorialType_notTheStoryLegacySeed() async throws {
+        let video = try await SyntheticMedia.makeVideo(seconds: 8)
+        defer { try? FileManager.default.removeItem(at: video) }
+        for (legacyMode, expected) in [("full", EvidenceVideoType.fullStory), ("highlights", .highlights)] {
+            let s = newStory(); s.editorialMode = legacyMode
+            let m = try realLocalMoment(s, video: video, tag: "type"); try ctx.save()
+            var seen: [EvidenceVideoType] = []
+            let plan = validPlan([m])
+            let coord = StoryCreationCoordinator(
+                planner: FakePlanner(behavior: .ok(plan)), renderer: FakeRenderer(.ok(okResult())),
+                context: ctx, jobClient: FakeJobClient(.ok(plan)),
+                evidenceFetch: { ref in seen.append(ref.guidance.videoType); return nil },
+                sourceRestore: { _ in ([:], []) })
+            coord.create(for: s)
+            await awaitSettled(coord)
+            XCTAssertEqual(seen, [expected], "legacy seed \(legacyMode)")
+        }
+    }
+
+    func test_p1f_exploreTypeSwitch_followsTheRequestedType_notTheStorySeed() async throws {
+        let video = try await SyntheticMedia.makeVideo(seconds: 8)
+        defer { try? FileManager.default.removeItem(at: video) }
+        let s = newStory(); s.editorialMode = "highlights"
+        let m = try realLocalMoment(s, video: video, tag: "explore")
+        let parent = GeneratedOutputModel(title: "p", durationSeconds: 8, momentIds: [m.id],
+                                          editorialTypeRaw: EditorialType.highlights.rawValue)
+        parent.story = s; ctx.insert(parent); s.generatedOutputs.append(parent); try ctx.save()
+        var seen: [EvidenceVideoType] = []
+        let plan = validPlan([m])
+        let coord = StoryCreationCoordinator(
+            planner: FakePlanner(behavior: .ok(plan)), renderer: FakeRenderer(.ok(okResult())),
+            context: ctx, jobClient: FakeJobClient(.ok(plan)),
+            evidenceFetch: { ref in seen.append(ref.guidance.videoType); return nil },
+            sourceRestore: { _ in ([:], []) })
+        coord.createAnotherVersion(for: s, from: parent, requestedEditorialType: .fullStory)
+        await awaitSettled(coord)
+        XCTAssertEqual(seen, [.fullStory], "Highlights -> Full Story Explore must select frames for Full Story")
+    }
+
+    /// Rich AU v2 (editorial candidates incl. an UNTRUSTED model `evidence` string, timestamped events, the
+    /// server-minted sampled_frame_ms) persisted as a MomentUnderstanding, exactly as the app stores it.
+    private func completeRichAU(_ moment: MomentModel) {
+        let json = """
+        {"moment_id":"\(moment.id.uuidString)","schema_version":"moment_understanding/2",
+         "sampled_frame_ms":[0,1000,2000,3000,4000,5000,6000,7000],
+         "editorial":{"visual_candidates":[{"start_time":1.0,"end_time":3.0,"peak_time":2.0,"confidence":0.9,
+                                            "evidence":"UNTRUSTED model-invented timing text"}],
+                      "narrative_candidates":[{"start_time":0.0,"end_time":6.0,"confidence":0.7}]},
+         "observed":{"summary":"a moment","subjects":[],"temporal_order_note":"",
+                     "events":[{"start_time":1.5,"description":"reveal"}],
+                     "useful_segments":[{"start_time":0,"end_time":5,"why_useful":"x"}]}}
+        """
+        ctx.insert(MomentUnderstandingModel(
+            momentId: moment.id, schemaVersion: "moment_understanding/2",
+            framePolicy: "p", promptVersion: "au/3", modelId: "x", nFrames: 24, understandingJSON: json))
+    }
+
+    // §7: through the REAL request-building path (SwiftData -> EditPlanRequestBuilder -> coordinator -> job client),
+    // not a DTO unit test: v5.3 must carry request-level editorial_type and, per Moment (local AND cloud-only),
+    // the editorial candidates, events and sampled_frame_ms, with the untrusted `evidence` string stripped.
+    func test_p1f_v53Request_carriesEditorialTypeAndRichAUFields_forLocalAndCloudOnlyMoments() async throws {
+        EditorialTypeFlag.setOverride(nil)   // a leaked override from another test must not decide this one
+        let video = try await SyntheticMedia.makeVideo(seconds: 8)
+        defer { try? FileManager.default.removeItem(at: video) }
+        let s = newStory()
+        let local = try realLocalMoment(s, video: video, tag: "v53")
+        let cloud = cloudOnlyMoment(s, tag: "v53")
+        for m in [local, cloud] {   // replace the plain AU with rich AU v2
+            let id = m.id
+            if let old = try ctx.fetch(FetchDescriptor<MomentUnderstandingModel>(predicate: #Predicate { $0.momentId == id })).first {
+                ctx.delete(old)
+            }
+            completeRichAU(m)
+        }
+        try ctx.save()
+        let plan = validPlan([local])
+        let fake = FakeJobClient(.ok(plan))
+        let coord = StoryCreationCoordinator(
+            planner: FakePlanner(behavior: .ok(plan)), renderer: FakeRenderer(.ok(okResult())),
+            context: ctx, jobClient: fake,
+            evidenceFetch: { _ in nil }, sourceRestore: { ids in ([:], ids) })
+        coord.create(for: s)
+        await awaitSettled(coord)
+
+        let req = try XCTUnwrap(fake.lastRequest)
+        XCTAssertEqual(req.editorialType, EditorialType.highlights.rawValue, "request-level editorial_type")
+        XCTAssertEqual(req.moments.count, 2, "both the local and the cloud-only Moment are sent")
+        for mo in req.moments {
+            guard case let .object(o) = mo else { return XCTFail("moment is not an object") }
+            XCTAssertNotNil(o["id"]); XCTAssertNotNil(o["duration_seconds"])
+            XCTAssertNotNil(o["useful_segments"]); XCTAssertNotNil(o["summary"])
+            guard case let .array(stamps)? = o["sampled_frame_ms"] else { return XCTFail("sampled_frame_ms missing") }
+            XCTAssertEqual(stamps.count, 8)
+            guard case let .array(events)? = o["events"] else { return XCTFail("events missing") }
+            XCTAssertEqual(events.count, 1)
+            guard case let .object(ed)? = o["editorial"],
+                  case let .array(vcs)? = ed["visual_candidates"],
+                  case let .object(vc)? = vcs.first else { return XCTFail("editorial.visual_candidates missing") }
+            XCTAssertEqual(vc["peak_time"], .number(2.0))
+            XCTAssertNil(vc["evidence"], "the untrusted model evidence string must not reach the planner")
+            XCTAssertNotNil(ed["narrative_candidates"])
+        }
+        XCTAssertTrue(EditorialTypeFlag.enabled, "premise: the accepted default (flag ON) is what sends these fields")
     }
 }

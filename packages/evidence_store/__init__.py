@@ -96,13 +96,22 @@ def evidence_object_key(owner: str, blob_cmid: str) -> str:
     return f"evidence/{owner}/{blob_cmid}/frames.pack"
 
 
+def canonical_moment_id(moment_id: str) -> str:
+    """Moment ids are UUIDs, and UUIDs are case-insensitive, but clients send them in different cases (Swift's
+    `uuidString` is UPPERCASE; the AU path writes Python's lowercase `str(UUID)`; the device requests evidence
+    lowercase). Every evidence key and every moment-id comparison goes through this, so one Moment is one
+    identity regardless of case. Lowercase matches every evidence row already written (AU uses str(UUID))."""
+    return (moment_id or "").strip().lower()
+
+
 def evidence_sort_key(moment_id: str) -> str:
     """The manifest row's DynamoDB RANGE key. We reuse the SHARED media table, whose key schema is
     (story_user_id HASH, cloud_media_id RANGE) — so the manifest MUST be keyed on the `cloud_media_id`
     attribute, NOT a separate `evidence_id` (writing a foreign sort-key attribute raises ValidationException,
     the ClientError observed on dev). The `evidence#` prefix namespaces the row so it never collides with a
-    real media record's cloud_media_id (a bare uuid5), and media_kind=au_evidence tags it for readers."""
-    return f"evidence#{moment_id}"
+    real media record's cloud_media_id (a bare uuid5), and media_kind=au_evidence tags it for readers.
+    The id is canonicalized (lowercase) so put / get / delete agree whatever case the caller used."""
+    return f"evidence#{canonical_moment_id(moment_id)}"
 
 
 def pack_frames(frames: list[tuple[int, bytes]]) -> tuple[bytes, list[dict]]:
@@ -177,7 +186,7 @@ class EvidenceStore:
         now = _now()
         manifest = {
             "schema_version": EVIDENCE_PACKAGE_VERSION,
-            "moment_id": moment_id, "owner": owner,
+            "moment_id": canonical_moment_id(moment_id), "owner": owner,
             "content_sha256": content_sha256,
             "frame_extraction_version": frame_extraction_version,
             "frame_count": len(frames), "frame_encoding": "jpeg",

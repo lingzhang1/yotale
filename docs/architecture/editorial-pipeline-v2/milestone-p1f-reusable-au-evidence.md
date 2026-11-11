@@ -150,3 +150,129 @@ No change to `au_frames/1`, `moment_understanding/2`, `au_prompt/3`, `edit_plan/
 - P1-F.3 device 8-i retrieval + cache-hit skip — **done, parse-clean; device ⌘U pending.**
 - P1-F.4 worker-side tiling (8-ii) — **deferred** (format compatible).
 - P1-F.5 deletion — Moment delete **done**; account delete **unwired**; sweep **primitive only**.
+
+
+---
+
+## 16. Pre-beta completion addendum (2026-11-10) — default reuse, cloud-only evidence, one payload budget
+
+Supersedes the activation statements above ("`STORY_REUSABLE_EVIDENCE` OFF by default", "persistence dev-only / OFF for beta").
+State at this addendum: backend `STORY_EVIDENCE_PERSIST_ENABLED=1` in BOTH dev and beta (beta promoted 2026-10-27, see the CDK note).
+`STORY_EVIDENCE_PERSIST_ENABLED` is unchanged and remains the server-side privacy kill-switch. **Status: implemented and offline-tested;
+NOT device-accepted.**
+
+**Root cause of default-OFF.** `StoryReusableEvidence._enabledDefault = false` ("OFF until device-accepted"). Gates 1/2 ran with the scheme env
+`STORY_REUSABLE_EVIDENCE=1`, which exists only on an attached ⌘R launch. P1-D flipped the default for `EditorialTypeFlag` but not this flag, and the
+scheme variable was later removed, so a normal/detached/TestFlight build persisted frames on the server and never reused them.
+
+**1. Reuse is standard behavior.** The flag, its env/UserDefaults resolution and its file were deleted. A stale UserDefaults value cannot disable
+reuse because nothing reads it. No emergency toggle was kept: a cache failure is just a miss. `GET /v1/evidence` is not gated by the persist flag,
+so existing packages stay retrievable; with no package it is a miss.
+
+**2. Eligibility is cloud-aware at planning time (the P0 fix).** Planning-time visual evidence now covers every ELIGIBLE Moment
+(`build.eligibility.eligibleIds`: completed AU + positive duration + renderable local-or-cloud source), not `build.includedMedia`, which is the
+LOCAL set. Commit `19f9640` had intended to restore cloud-only Moments before building sheets, but it iterated `includedMedia`, so its restore step
+was a no-op and an evicted Moment was planned text-only. Per eligible Moment (`VisualEvidencePreparation`):
+- **A. cache**: fetch the authorized package; use the ORIGINAL accepted AU frames; needs NO source video, so it works while the original is
+  cloud-only, and a hit never triggers a restore.
+- **B. miss**: local source if present; otherwise restore through the existing R6 resolver (misses only), then extract.
+- **C. none**: source genuinely unobtainable: no sheet, listed as `unrestorable`; nothing fabricated.
+Render-time restoration is a separate step and is unchanged.
+
+**3. One shared payload budget.** Cache-hit frames are no longer turned into a sheet by the cache code; they join `MultimodalVisualBudget` like
+extracted frames, so the same tier ladder, per-sheet cap (900 KB device / 1 MB server), total ceiling (16 MB device / 20 MB server) and
+coverage-reduction step apply, with no cache exemption. The ceiling is enforced on wire bytes: raw JPEG + 512 B multipart framing per sheet
+(`VisualBudgetLimits.perSheetOverheadBytes`). The server sums raw sheet bytes only, so the 4 MB gap between 16 and 20 MB is headroom for the JSON
+request part. A Moment cut by the budget is recorded as `oversizeDropped` / `budgetCoverageDropped`; evidence accounting still reconciles.
+
+**4. Cache-miss frames use the editorial mapper.** A miss no longer ignores AU: `EvidenceFrameMapper.selectExtracted` runs the existing mapper
+over the ACTUAL extracted timestamps with the Moment's candidates/events (Highlights = visual candidates; Full Story = narrative + events); no
+candidates keeps the uniform subsample. Candidate peaks stay advisory and the model `evidence` string is never consulted.
+
+**5. The attempt's editorial type picks the rule** (`EvidenceVideoType.forAttempt`): Original = Story selection/default, Revise = base output's type,
+Explore = requested or parent type. The Story's legacy `editorialMode` is only a fallback for an unstamped attempt.
+
+**6. `eventCount` audit.** The budget ranking (`richness = useful*2 + events + min(duration/30, 3)`) previously always received `eventCount: 0`, so
+it never recognized known AU events. It now receives the Moment's real `observed.events` count (same formula, no new heuristic). Effect is limited
+to (a) the order sheets are listed (the request carries an explicit `image_moment_order`) and (b) which Moments keep a sheet when coverage must be
+reduced. It does not change frame counts or tiers.
+
+**7. v5.3 request integrity.** Verified through the real path (SwiftData → `EditPlanRequestBuilder` → coordinator → job client): the request
+carries `editorial_type`; each Moment, local AND cloud-only, carries `useful_segments`, `summary`, `editorial` (visual + narrative candidates, the
+untrusted `evidence` string stripped), `events` and `sampled_frame_ms`. These are gated only by `EditorialTypeFlag` (default ON; an env "0" or a
+UserDefaults override can still strip them; removal belongs to P1-G0). Backend retention under 5.3: `apps/api/tests/test_edit_plan_v53.py`.
+
+**8. Cache hits never verified (fixed 2026-11-10; DEPLOYED to dev 2026-11-10 21:54 UTC, image `git-7a53910806b6`
+`sha256:84b2cf0a…`, local `cdk deploy` with the pipeline's context flags; service/worker env unchanged 33/16; runtime hit pending a
+device run).** Each lookup now logs one `evidence_lookup` line (`available`, `reason`, `frame_count`), because the access log shows 200 for
+a hit and a miss alike. `evidence_get` matched the verified media record with an
+exact string compare on `source_moment_id`. The device uploads that field as Swift's UPPERCASE `uuidString` but requests evidence lowercase,
+so every real lookup returned `200 {"available": false, "reason": "source_not_verified"}` and fell back to restore/extract. A `200` in the
+access log therefore never proved a hit (dev, 2026-11-10: 264/264 media rows uppercase, 19/19 evidence rows lowercase). The 2026-10-27 Gate 2B
+"3 cache hits" was inferred from `200` + `sheet_count`, not from the response body, so it cannot be relied on. Fix: `canonical_moment_id`
+(lowercase) for the evidence row key and for the verified-media comparison. Ownership and SHA checks are unchanged. Every existing evidence
+row is already lowercase, so nothing is orphaned. Regression tests use a letter-bearing id (the old fixtures used an all-digit id, where
+case can never differ).
+
+**9. Frame selection replaced by one shared policy (`evidence_select/2`, 2026-11-10; NOT deployed, NOT device-accepted).**
+The v1 mapper (§4 above) represented 8/14 AU events and 7/11 visual candidates on the six real Moments of job
+`0d4e959c` and spent slots on near-identical frames. v2 gives both Highlights and Full Story a frame for the opening,
+the closing, every AU event interval and every visual candidate, with the editorial type only deciding priority under
+budget pressure, and an adaptive 4–9 frame budget. Result on the same Moments: 14/14 events, 11/11 visual candidates.
+Spec, numbers and limitations: `evidence-frame-selection-v2.md`. Swift/Python parity is pinned by
+`packages/evidence_mapper/fixtures/parity_v2.json`. iOS-only behaviour change (the backend has no caller of the
+Python mapper); no prompt, model, schema or renderer change.
+
+**10. Evidence lookup uses its own fail-fast network session (2026-11-10).** The lookup previously shared the AU
+`backgroundSession` (2 connections per host, `waitsForConnectivity`, 180 s timeouts), so on a fresh Story it could
+queue behind in-flight AU uploads and stall a Create. It now uses `StoryBackend.evidenceSession` (8 s idle timeout,
+60 s resource cap, no connectivity wait); any failure is still just a miss.
+
+**Test-isolation finding (pre-existing, not fixed here).** `StoryCreationFailureTests` and similar suites build the
+coordinator without a fake job client, so they post REAL edit-plan jobs to the dev backend (~135 model calls, ~$0.95
+during this milestone's runs). They reach `.failed` only when the dev API returns 401 because the test host's
+`AuthStore` has not yet published the simulator's saved dev token. Whether a given test passes therefore depends on
+timing: on master the ones that submit after the token appears already fail; on this branch the 0.3 s evidence lookup
+moves four more past that point. Recommended follow-up: inject `FakeJobClient` (and a nil evidence fetch) in those
+tests so they are hermetic, free, and test what their names say.
+
+**Known limitations.**
+- Cache lookups are sequential. With cloud-only Moments now included, a 35-Moment Story makes ~35 manifest+blob round trips before planning
+  (device test E measures this); bounded concurrency is a follow-up if it is slow.
+- A cloud-only cache MISS is restored at planning time (a full original download per such Moment). That is the requested behavior; render-time
+  restore then finds it already local.
+- Miss-path pixels come from a fresh extraction and can differ from the JPEGs AU saw.
+- The wire-overhead constant is an estimate; the server enforces raw sheet bytes only.
+- Evidence accounting records sheeted/missing and miss reasons, not cache hit vs miss (that would be a new backend diagnostic field). Cache
+  hit/miss/restored counts are in the device beacon `evidence prep: …` only, which prints only with `STORY_DIAG_BEACONS=1`.
+
+**Offline verification (run 2026-11-10).**
+- Backend: `python3 -m pytest apps/api/tests/test_edit_plan_v53.py apps/api/tests/test_evidence_r1_lifecycle.py packages/evidence_mapper -q` → 35 passed.
+- iOS, real app target on the iOS simulator: `xcodebuild build-for-testing` → TEST BUILD SUCCEEDED, then `test-without-building -only-testing:StoryTests`
+  (793 tests). New/changed suites all pass: `VisualEvidencePreparationTests` (13), `EvidenceMissPathTests` (13), `EditPlanV53RequestFieldsTests` (2),
+  `EvidenceReuseTests` (8, unchanged) and 4 new coordinator integration tests in `StoryCreationCoordinatorTests`. A mutation check (restoring the old
+  `includedMedia` eligibility) turns the cloud-only coordinator test red.
+- **Pre-existing failures:** the same suite on unmodified `master` (`e10ebaf`) in this environment already has ~47 failing tests (e.g.
+  `StoryCreationCoordinatorTests` happy-path cases whose fixtures write a 1-byte "video", AU-queue timing tests, UUID-case assertions, a stale
+  `EditorialTypeSemanticsTests.test_flag_defaults_off`). The branch adds no failures versus master; the one test that differs between full runs
+  (`AuthGatingTests.test_au_resumes_when_authed`) fails identically on master in isolation. Whether these fail on the owner's machine is not known.
+- Building in the agent sandbox needs `OTHER_SWIFT_FLAGS='$(inherited) -Xfrontend -disable-sandbox'` (the compiler's macro sandbox cannot nest inside the
+  agent's own sandbox). It is not needed on a normal Mac.
+
+**Owner build/test commands** (normal Mac, from `apps/ios/Story`; any installed simulator):
+`xcodebuild build-for-testing -project Story.xcodeproj -scheme Story -destination 'platform=iOS Simulator,name=iPhone 16e'`, then
+`xcodebuild test-without-building -project Story.xcodeproj -scheme Story -destination 'platform=iOS Simulator,name=iPhone 16e' -only-testing:StoryTests/VisualEvidencePreparationTests -only-testing:StoryTests/EvidenceMissPathTests -only-testing:StoryTests/StoryCreationCoordinatorTests`
+(or ⌘U in Xcode). Compare any failure against `master` before attributing it to this branch.
+
+**Owner device gate: NOT yet performed.** No Xcode environment variables are needed; do not set `STORY_REUSABLE_EVIDENCE`. Check this branch out in
+the MAIN worktree, Clean Build Folder, run once, stop, then launch from the home screen. Do not evict or delete irreplaceable media; use a test
+account and disposable Moments. Evidence: backend access log (`GET /v1/evidence/<id>` status per Moment), job diagnostics `sheet_count` and the
+evidence-accounting fields; beacons need `STORY_DIAG_BEACONS=1` and their absence proves nothing.
+- **A. Hit, local source:** AU done and upload verified. Expect `GET /v1/evidence … 200`, sheet reaches the planner, no re-extraction, MP4 plays.
+- **B. Hit, cloud-only source:** evict a disposable, cloud-verified Moment via the app's own storage optimizer. Expect `GET /v1/evidence … 200`,
+  NO full-original download before planning, `sheet_count` includes it, MP4 plays (the original is restored only if rendering needs it).
+- **C. Miss, cloud-only source:** a cloud-verified, evicted Moment with no package (e.g. `DELETE /v1/evidence/<id>`). Expect a download before
+  planning, a sheet whose chosen frames track the AU candidates (`t=…s` labels), MP4 plays.
+- **D. Mixed Story:** some hits, some misses, some local. `eligible = sheeted + missing`; one payload; selected editorial type honored; MP4 plays.
+- **E. Large Story (~35):** record time to reach planning, submitted `sheet_count`, no oversized request, no lost eligible Moment; run Original,
+  Revise, and Explore (including a Highlights↔Full Story switch).

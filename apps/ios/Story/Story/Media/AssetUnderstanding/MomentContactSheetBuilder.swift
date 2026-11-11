@@ -18,6 +18,8 @@ struct MomentContactSheet {
     let momentId: UUID
     let jpeg: Data
     let frameCount: Int
+    /// Source timestamps (ms) of the tiled frames, in order. Diagnostics only (coverage counts); never sent.
+    var frameMs: [Int] = []
 }
 
 enum ContactSheetError: Error, LocalizedError {
@@ -52,15 +54,18 @@ struct MomentContactSheetBuilder {
     /// Build one tiled contact-sheet JPEG for a Moment video. Reuses MomentFrameExtractor's ordered,
     /// timestamped frames, then evenly subsamples to `budget.framesPerMoment` and tiles them.
     static func build(momentId: UUID, url: URL, durationSeconds: Double,
-                      budget: ContactSheetBudget) async throws -> MomentContactSheet {
-        // Reuse the frozen 24-frame extractor, then pick an evenly-spaced subset (never MORE than extracted).
+                      budget: ContactSheetBudget,
+                      guidance: EditorialFrameGuidance? = nil) async throws -> MomentContactSheet {
+        // Reuse the frozen 24-frame extractor, then pick the subset (never MORE than extracted) with the shared
+        // evidence ranking — the same rule as cached AU frames. Without guidance it is the uniform overview.
         let all = try await MomentFrameExtractor.extract(from: url)
         guard !all.isEmpty else { throw ContactSheetError.noFrames }
         let want = max(1, min(budget.framesPerMoment, all.count))
-        let picked = evenlySubsample(all, count: want)
+        let picked = EvidenceFrameMapper.selectExtracted(all, guidance: guidance, count: want)
         guard let jpeg = tile(frames: picked, momentId: momentId, durationSeconds: durationSeconds,
                               budget: budget) else { throw ContactSheetError.encodeFailed }
-        return MomentContactSheet(momentId: momentId, jpeg: jpeg, frameCount: picked.count)
+        return MomentContactSheet(momentId: momentId, jpeg: jpeg, frameCount: picked.count,
+                                  frameMs: picked.map { $0.tMs })
     }
 
     /// P1-F (Option 8-i): build the SAME-shape contact sheet from frames ALREADY in hand (decoded from a
@@ -76,7 +81,8 @@ struct MomentContactSheetBuilder {
             ? frames : evenlySubsample(frames, count: budget.framesPerMoment)
         guard let jpeg = tile(frames: picked, momentId: momentId, durationSeconds: durationSeconds,
                               budget: budget) else { throw ContactSheetError.encodeFailed }
-        return MomentContactSheet(momentId: momentId, jpeg: jpeg, frameCount: picked.count)
+        return MomentContactSheet(momentId: momentId, jpeg: jpeg, frameCount: picked.count,
+                                  frameMs: picked.map { $0.tMs })
     }
 
     /// Pick `count` evenly-spaced frames from an ordered list (keeps first and last).

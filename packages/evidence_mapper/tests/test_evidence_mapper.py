@@ -105,15 +105,25 @@ def test_full_story_uses_narrative_and_events():
     assert near(10.0) or near(20.0)        # at least one event progression beat covered
 
 
-def test_highlights_vs_full_story_differ():
+def test_highlights_vs_full_story_differ_only_under_budget_pressure():
+    """Policy v2: both types share core coverage, so with room for everything they may pick the SAME
+    frames; when the budget cannot hold all evidence, the type priority decides what survives."""
     s = _sampled()
     vis = [_c(3, 6, 4.5, 0.9)]
     nar = [_c(28, 33, None, 0.6)]
-    h = mp.select_frames(video_type=mp.HIGHLIGHTS, sampled_frame_ms=s,
-                         visual_candidates=vis, narrative_candidates=nar, event_times_s=[], budget=6)
-    f = mp.select_frames(video_type=mp.FULL_STORY, sampled_frame_ms=s,
-                         visual_candidates=vis, narrative_candidates=nar, event_times_s=[], budget=6)
-    assert h != f    # type-specific selection genuinely differs
+    def pick(vt, k):
+        return mp.select_frames(video_type=vt, sampled_frame_ms=s, visual_candidates=vis,
+                                narrative_candidates=nar, event_times_s=[], budget=k)
+    in_vis = lambda out: any(3000 <= s[i] <= 6000 for i in out)
+    in_nar = lambda out: any(28000 <= s[i] <= 33000 for i in out)
+    # Room for everything: both types represent BOTH the visual payoff and the narrative beat.
+    for vt in (mp.HIGHLIGHTS, mp.FULL_STORY):
+        assert in_vis(pick(vt, 6)) and in_nar(pick(vt, 6))
+    # Only one slot beyond opening/closing: Highlights keeps the visual candidate, Full Story the narrative.
+    h3, f3 = pick(mp.HIGHLIGHTS, 3), pick(mp.FULL_STORY, 3)
+    assert h3 != f3
+    assert in_vis(h3) and not in_nar(h3)
+    assert in_nar(f3) and not in_vis(f3)
 
 
 # ---- uncertain peak (None) handled ---------------------------------------------------------------

@@ -186,13 +186,12 @@ struct MomentsLibraryView: View {
         Task { await queue.drain(); reload() }
     }
 
-    /// R4-A.1 Part 3: back up ALL existing local-only Moments visible to the active account (the explicit
-    /// "back up existing too" choice). enroll() skips any Moment already owned by another account, so this
-    /// never claims content it shouldn't. Non-blocking; originals preserved.
+    /// Back up every Moment on this phone that is not yet backed up and that this account may back up (Auto
+    /// Backup turned ON, or the explicit "back up existing" action). `enrollAllNotBackedUp` skips anything
+    /// already cloud-verified or reserved by another account. Non-blocking; originals preserved.
     private func backUpAllExistingLocalOnly() {
         let queue = makeQueue()
-        let localOnly = moments.filter { $0.isLocalOnly }
-        for m in localOnly { queue.enroll(moment: m) }
+        queue.enrollAllNotBackedUp()
         Task { await queue.drain(); reload() }
     }
 

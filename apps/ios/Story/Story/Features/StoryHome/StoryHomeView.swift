@@ -351,6 +351,8 @@ struct StoryHomeView: View {
                 auQueue.enqueueImportedVideos(created)
                 // Foreground drain now; on iOS 26+ also asks the system to keep going if the user leaves.
                 AUContinuedProcessing.startAfterImport(queue: auQueue, context: context, momentIds: Set(created.map(\.id)))
+                // Auto Backup: back up each imported Moment when the account has it ON (no-op otherwise).
+                for m in created { MediaUploadQueue.sharedAutoEnroll(m) }
                 Task { await refreshAfterCapture() }  // reuse the capture poll: AU lands -> Coverage/Idea update
             }
         }

@@ -34,7 +34,7 @@ struct AutoBackupSettingsView: View {
                         }))
                     .tint(StoryTheme.gold)
                 } footer: {
-                    Text("When on, new Moments you capture while signed in are automatically backed up to your YoTale account. Your originals always stay on this iPhone — nothing is deleted.")
+                    Text("When on, your Moments on this phone — the ones you already have and new ones you add while signed in — are backed up to your YoTale account. Your originals always stay on this iPhone — nothing is deleted.")
                 }
 
                 if enabled {
@@ -50,10 +50,10 @@ struct AutoBackupSettingsView: View {
                     }
 
                     Section {
-                        Button("Back Up Existing Moments Too…") { showExistingChoice = true }
+                        Button("Back Up Moments Not Yet Backed Up…") { showExistingChoice = true }
                             .foregroundStyle(StoryTheme.gold)
                     } footer: {
-                        Text("By default only NEW Moments are backed up. You can also back up the Moments already on this phone.")
+                        Text("Turning Auto Backup on already does this. Use it again if some Moments still aren't backed up.")
                     }
                 }
             }
@@ -61,25 +61,27 @@ struct AutoBackupSettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .onAppear(perform: load)
-            // One-time opt-in disclosure.
+            // One-time opt-in disclosure. Turning Auto Backup ON also backs up the Moments already on this phone
+            // that are not backed up yet (owner decision 2026-11-11), so the warning covers both.
             .confirmationDialog("Turn on Auto Backup?", isPresented: $showEnableDisclosure, titleVisibility: .visible) {
-                Button("Turn On") { setEnabled(true) }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("New Moments you capture while signed in will be uploaded privately to your YoTale account so they're safe if you lose this phone. Originals stay on this device — nothing is deleted. Wi-Fi only unless you enable cellular. Only you can access your backups.")
-            }
-            // Part 3: the existing-Moments choice (explicit association warning).
-            .confirmationDialog("Back up existing Moments?", isPresented: $showExistingChoice, titleVisibility: .visible) {
-                Button("Back Up All Existing Moments") {
+                Button("Turn On") {
+                    setEnabled(true)
                     store.markExistingChoiceMade(for: account ?? "")
                     onBackUpExisting()
                 }
-                Button("Only Back Up New Moments") {
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Your Moments on this phone that aren't backed up yet, and new Moments you add while signed in, will be uploaded privately to your YoTale account so they're safe if you lose this phone. Backing up a Moment associates it with this account. Originals stay on this device — nothing is deleted. Wi-Fi only unless you enable cellular. Only you can access your backups.")
+            }
+            // Re-run for Moments that are still not backed up (e.g. Auto Backup was already on, or an upload failed).
+            .confirmationDialog("Back up Moments not yet backed up?", isPresented: $showExistingChoice, titleVisibility: .visible) {
+                Button("Back Up Now") {
                     store.markExistingChoiceMade(for: account ?? "")
+                    onBackUpExisting()
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("Backing up an existing Moment associates it with THIS account and removes it from other accounts' Moments libraries on this phone. New Moments are always backed up going forward.")
+                Text("Backing up an existing Moment associates it with THIS account and removes it from other accounts' Moments libraries on this phone.")
             }
         }
     }

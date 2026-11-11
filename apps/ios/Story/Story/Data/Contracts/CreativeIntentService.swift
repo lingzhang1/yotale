@@ -49,6 +49,20 @@ enum StoryBackend {
         return URLSession(configuration: cfg)
     }()
 
+    /// A SEPARATE, FAIL-FAST session for the P1-F evidence-cache lookup (manifest GET + packed-frame download).
+    /// The lookup is an optional shortcut: any failure is a cache miss and planning falls back to restore +
+    /// extract. It must therefore never queue behind in-flight AU uploads on `backgroundSession` (2 connections
+    /// per host) and never wait for connectivity. An 8 s idle timeout fails a stalled request fast; the 60 s
+    /// resource cap still lets a slow connection finish one ~2-3 MB frame package (giving up would fall back to
+    /// downloading the far larger original video).
+    static let evidenceSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 8
+        cfg.timeoutIntervalForResource = 60
+        cfg.waitsForConnectivity = false      // offline -> immediate miss, not a stall
+        return URLSession(configuration: cfg)
+    }()
+
     /// Coverage/2 recompute is a SINGLE long Opus Mapper+Judge pass whose COLD first call over a large moment
     /// set (26-50 rich understandings, 8192 output tokens) was measured at ~191s on the dev backend — longer
     /// than longSession's 180s request timeout. With the shorter cap the device timed out, discarded the
