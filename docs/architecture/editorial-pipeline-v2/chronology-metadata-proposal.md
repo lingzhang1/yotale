@@ -1,6 +1,13 @@
 # Moment capture chronology — audit + minimal compatible proposal
 
-**Status: PROPOSAL for owner review. Not implemented. No schema, request-contract or prompt change has been made.**
+**Status: PROPOSAL — approved conceptually by the owner (2026-11-11); NOT implemented. Follow-up after duration
+acceptance, in its own PR. No schema, request-contract or prompt change has been made.**
+
+**Owner decisions (2026-11-11):** send a relative capture RANK only — never absolute timestamps to the planner; do
+NOT reorder `moments[]` in this milestone; explicit storyboard order / directives take precedence; unknown capture
+time stays unknown; never use import, upload or restore time as capture time; include a relative DAY only when the
+original day grouping is trustworthy (e.g. a known capture tz offset); chronology is optional and advisory; no new
+permanent feature flag for an accepted improvement (version-scope it like other planner evidence instead).
 Owner decisions needed are listed at the end. Explicit storyboard order and directives always outrank chronology;
 import order is never capture order; unknown chronology stays unknown.
 
