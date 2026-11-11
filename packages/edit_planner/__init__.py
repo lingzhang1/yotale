@@ -87,6 +87,18 @@ def _v53_active() -> bool:
     except (TypeError, ValueError):
         return False
 
+
+def _v54_active() -> bool:
+    """True when the SELECTED edit-plan version is >= 5.4 (P1-F editorial-alignment EXPERIMENT). v5.4 changes
+    ONLY user-message wording: how to read the AU-aligned timestamped contact sheets, cross-Moment distinctness,
+    and per-type use of AU events. The system body, output schema, validator and model routing are unchanged,
+    and every v5.3 behavior stays on (5.4 >= 5.3). With 5.3 configured, the user message is byte-identical to
+    before, so v5.3 remains the control. Defaults to False on anything unparseable."""
+    try:
+        return float(_EDIT_PLAN_VERSION) >= 5.4
+    except (TypeError, ValueError):
+        return False
+
 TRANSITION = ["cut", "crossfade", "fade_in", "fade_out", "dip_to_black"]
 NATIVE = ["keep", "duck", "mute"]
 ANCHOR = ["beat", "downbeat", "highlight", "none"]
@@ -1402,12 +1414,8 @@ def _build_user(inputs: EditPlanInputs) -> str:
     image_block = ""
     if inputs.images and inputs.image_moment_order:
         order = "; ".join(inputs.image_moment_order)
-        image_block = (
-            f"\n(Contact-sheet images, one tiled JPEG per Moment, in this order: {order})\n"
-            "VISUAL EVIDENCE: in addition to the text, you receive timestamped contact-sheet frames for each "
-            "Moment, labeled with Moment id and source timestamp. Use them to judge visual distinctness, "
-            "composition, expressiveness and precise source ranges. Frames are evidence for the SAME Moments "
-            "in the JSON — never invent footage not present.\n")
+        image_block = (f"\n(Contact-sheet images, one tiled JPEG per Moment, in this order: {order})\n"
+                       + (_VISUAL_EVIDENCE_V54 if _v54_active() else _VISUAL_EVIDENCE_V53))
     return ("Plan the EditPlan for THIS Story from the material below. Use only the given Moment ids and their "
             "real/useful ranges. Plan to the Story target duration. Respect native audio.\n"
             + brief_block
@@ -1416,6 +1424,7 @@ def _build_user(inputs: EditPlanInputs) -> str:
             + _edit_sound_pref_directive(inputs.sound_preference)
             + _edit_mode_directive(inputs.editorial_mode)
             + _editorial_type_directive(inputs.editorial_type if _v53_active() else None)
+            + _editorial_type_v54_addendum(inputs.editorial_type if _v54_active() else None)
             + "\nINPUT:\n"
             + json.dumps(payload, indent=2) + "\n\nReturn ONLY the EditPlan via the tool.")
 
@@ -1586,6 +1595,51 @@ def _editorial_type_directive(etype: str | None) -> str:
             "NOT extend footage merely to reach a longer duration and do NOT require every Moment. Speech content "
             "is NOT understood — treat visible interactions as visual narrative evidence; never invent dialogue."
         )
+    return ""
+
+
+# MVP multimodal VISUAL EVIDENCE block (v5.3 and earlier) — byte-identical to the shipped wording; the control.
+_VISUAL_EVIDENCE_V53 = (
+    "VISUAL EVIDENCE: in addition to the text, you receive timestamped contact-sheet frames for each "
+    "Moment, labeled with Moment id and source timestamp. Use them to judge visual distinctness, "
+    "composition, expressiveness and precise source ranges. Frames are evidence for the SAME Moments "
+    "in the JSON — never invent footage not present.\n")
+
+# EditPlan v5.4 EXPERIMENT (P1-F editorial alignment). The contact sheets are now chosen by the shared AU-aligned
+# frame policy (evidence_select/2): sparse frames near each Moment's opening/closing, AU events and editorial
+# candidates. v5.3 told the model the sheets give "precise source ranges", which sparse samples cannot establish.
+_VISUAL_EVIDENCE_V54 = (
+    "VISUAL EVIDENCE: in addition to the text, you receive one contact sheet per Moment, labeled with the "
+    "Moment id; each frame is labeled with its source timestamp (t=…s) inside that Moment. The frames are "
+    "SPARSE samples — a handful per Moment — taken near the Moment's opening and closing and near its AU "
+    "events and editorial candidates when it has them. Read a frame's timestamp as an EVIDENCE ANCHOR: line it "
+    "up with the event and candidate times in the JSON to see what is on screen at that point. It is NOT an "
+    "exact action or cut boundary — you have not seen the footage between samples — so take source ranges "
+    "from useful_segments and the event/candidate times, and use the frames to confirm them. Do not infer "
+    "motion, speech or sound that neither the text nor the frames support.\n"
+    "Use the frames to judge subject, composition, expression and visual quality, and COMPARE MOMENTS WITH "
+    "EACH OTHER: when several Moments show the same subject doing the same pose or gesture, or a near-identical "
+    "composition or view, keep only the strongest of them unless each one adds real progression (a new place, "
+    "stage of the journey, action or emotion). Avoid source stretches the text or frames show as problematic "
+    "(camera rotation, shake, blur, obstruction). When the text and the frames disagree, take the cautious "
+    "reading: trust the frames for what is visible, the text for timing, and do not build a cut on a claim "
+    "neither supports. Frames are evidence for the SAME Moments in the JSON — never invent footage not "
+    "present.\n")
+
+
+def _editorial_type_v54_addendum(etype: str | None) -> str:
+    """EditPlan v5.4 EXPERIMENT: one sentence per editorial type on using the AU events. Advisory USER-message
+    context appended after the v5.3 type directive; empty unless v5.4 is active and the type is known."""
+    if etype == "highlights":
+        return (
+            "\nUse each Moment's AU events together with its visual candidates to see how the action builds and "
+            "where the visual payoff lands, and cut around that payoff. You do not need every event or "
+            "candidate.")
+    if etype == "full_story":
+        return (
+            "\nBuild the progression from evidence: the event order inside each Moment and, across Moments, only "
+            "explicit cues (place, time of day, stage of the journey, the Guide and Coverage). Do NOT assume the "
+            "order of the Moments in the input is the order in which things happened.")
     return ""
 
 
