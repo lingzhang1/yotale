@@ -80,10 +80,37 @@ struct CustomizeYourStoryView: View {
     static func seedVideoType(editorialMode: String?) -> VideoType { .highlights }
 
     /// PURE seed for the duration control: a historical explicit `custom` length, or a prior explicit target
-    /// that differs from the type's recommended point, opens as Custom; otherwise Recommended.
-    static func seedDurationChoice(editorialMode: String?, explicitTarget: Double?) -> DurationChoice {
+    /// that differs from every recommended point, opens as Custom; otherwise Recommended.
+    ///
+    /// Every create persists its length as the Story's explicit target — a Recommended pick included — so
+    /// "has a target" alone does NOT mean the user typed one. Treating it that way reopened every later sheet
+    /// on Custom with the previous length (hidden under the collapsed More options), so choosing Full Story
+    /// (card: "About 90s") still submitted the old 50s. A target equal to a recommended point (±1s) was a
+    /// Recommended pick and reopens as Recommended, which then follows the chosen Video Type.
+    static func seedDurationChoice(editorialMode: String?, explicitTarget: Double?,
+                                   recommendedPoints: [Double] = []) -> DurationChoice {
         if (editorialMode ?? "").lowercased() == "custom" { return .custom }
-        return explicitTarget != nil ? .custom : .recommended
+        guard let t = explicitTarget else { return .recommended }
+        return recommendedPoints.contains(where: { abs($0.rounded() - t.rounded()) <= 1 }) ? .recommended : .custom
+    }
+
+    /// Shortest length the Custom field accepts. Deliberately NOT the duration planner's feasible-band floor:
+    /// that floor is "every Moment appears ~2s" (25 Moments -> 50s), which wrongly blocked a 16s or 32s
+    /// Highlights cut. A shorter video simply uses fewer Moments. Bounded by the material when there is less
+    /// usable footage than this.
+    static let minCustomSeconds: Double = 5
+
+    /// PURE lower bound for the Custom field: `minCustomSeconds`, or the band floor when the footage itself is
+    /// shorter (never below 3s).
+    static func customFloor(bandFloor: Double?) -> Double {
+        max(3, min(bandFloor ?? minCustomSeconds, minCustomSeconds))
+    }
+
+    /// PURE parse of the Custom seconds text field (digits only). nil when empty or non-numeric.
+    static func parseSeconds(_ text: String) -> Double? {
+        let digits = text.filter(\.isNumber)
+        guard !digits.isEmpty, let v = Double(digits) else { return nil }
+        return v
     }
 
     /// PURE: render the active persisted directives as human-readable lines using the STABLE numbering, so the
@@ -116,6 +143,8 @@ struct CustomizeYourStoryView: View {
     @State private var sound: SoundPreference
     @State private var approach: EditingApproach
     @State private var customSeconds: Double
+    /// Text shown in the Custom seconds field; kept in sync with `customSeconds` on every keystroke / step.
+    @State private var customText: String
     /// OPTIONAL style presets (Phase B). Multi-select, OFF by default; applied per-output only (folded into
     /// soft_direction + music seed in performInterpretation), never written to durable Story CreativeIntent.
     @State private var selectedPresets: Set<StylePreset> = []
@@ -168,7 +197,8 @@ struct CustomizeYourStoryView: View {
         // P1-D: PRIMARY Video Type (Highlights default; historical custom ≠ Full Story) + independent duration.
         _videoType = State(initialValue: Self.seedVideoType(editorialMode: initialEditorialMode))
         _durationChoice = State(initialValue: Self.seedDurationChoice(
-            editorialMode: initialEditorialMode, explicitTarget: initialExplicitTargetSeconds))
+            editorialMode: initialEditorialMode, explicitTarget: initialExplicitTargetSeconds,
+            recommendedPoints: [rec.highlightsPointSeconds, rec.recommendedPointSeconds].compactMap { $0 }))
         // Default sound: the user's explicit choice if any, else the inferred recommendation, else balanced.
         _sound = State(initialValue: initialExplicitSound ?? inferredSound ?? .balanced)
         // Default approach: the Story's current approach (defaults to .storytelling). If Visual-first is not
@@ -179,6 +209,9 @@ struct CustomizeYourStoryView: View {
         _customSeconds = State(initialValue: Self.seedCustomSeconds(
             explicitTarget: initialExplicitTargetSeconds, recommendedPoint: rec.recommendedPointSeconds,
             bandLo: rec.evidence.feasibleBandSeconds.first, bandHi: rec.evidence.feasibleBandSeconds.last))
+        _customText = State(initialValue: String(Int(Self.seedCustomSeconds(
+            explicitTarget: initialExplicitTargetSeconds, recommendedPoint: rec.recommendedPointSeconds,
+            bandLo: rec.evidence.feasibleBandSeconds.first, bandHi: rec.evidence.feasibleBandSeconds.last))))
         // Seed Creative Direction draft (survives navigation / failed generation). Chips re-derive their display
         // number from the current numbering snapshot; an id no longer present is dropped (surfaced on Create).
         // The saved draft text is the planner's FULL soft direction, which includes sentences WE generated
@@ -237,7 +270,7 @@ struct CustomizeYourStoryView: View {
     }
 
     private var ceiling: Double { max(rec.recommendation?.feasibleCeilingSeconds ?? 60, rec.evidence.feasibleBandSeconds.last ?? 60) }
-    private var floor: Double { max(3, rec.evidence.feasibleBandSeconds.first ?? 5) }
+    private var floor: Double { Self.customFloor(bandFloor: rec.evidence.feasibleBandSeconds.first) }
     private var fullSeconds: Double? { rec.recommendedPointSeconds }
     private var highlightsSeconds: Double? { rec.highlightsPointSeconds }
     private var clampedCustom: Double { min(max(customSeconds.rounded(), floor), ceiling) }
@@ -883,7 +916,16 @@ struct CustomizeYourStoryView: View {
                 detail: "Set a specific length", trailing: "Your choice") { durationChoice = .custom }
             if durationChoice == .custom {
                 HStack(spacing: 12) {
-                    TextField("seconds", value: $customSeconds, format: .number)
+                    // String-backed so every keystroke updates `customSeconds`. A `value:format:` field only
+                    // commits on Return / focus loss, and the number pad has no Return key, so a typed length
+                    // could be ignored when the user tapped Create straight away.
+                    TextField("seconds", text: $customText)
+                        .onChange(of: customText) { _, t in
+                            if let v = Self.parseSeconds(t), v != customSeconds { customSeconds = v }
+                        }
+                        .onChange(of: customSeconds) { _, v in
+                            if Self.parseSeconds(customText) != v { customText = String(Int(v.rounded())) }
+                        }
                         .keyboardType(.numberPad)
                         .font(StoryTheme.display(20)).foregroundStyle(StoryTheme.cream)
                         .frame(width: 90).padding(.horizontal, 12).padding(.vertical, 8)
