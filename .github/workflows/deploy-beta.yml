@@ -93,6 +93,17 @@ jobs:
       - name: Write release manifest
         run: bash scripts/release-manifest.sh "$ENVIRONMENT" "${{ steps.image.outputs.digest }}" worker.zip
 
+      - name: Pre-deploy release configuration gate (synth + validate; any violation blocks the deploy)
+        run: |
+          # Same CDK context as the deploy step below (written once, to CDK_CTX). Synthesizes ONLY; no AWS writes.
+          CTX='-c imageDigest=${{ steps.image.outputs.digest }} -c cognitoUserPoolId=${{ vars.BETA_COGNITO_USER_POOL_ID }} -c cognitoAppClientId=${{ vars.BETA_COGNITO_APP_CLIENT_ID }} -c observability=true -c alarmDestination=alerts@yotale.ai'
+          echo "CDK_CTX=$CTX" >> "$GITHUB_ENV"
+          ( cd infrastructure/cdk && npm ci || npm install )
+          ( cd infrastructure/cdk && npx cdk synth -q -c environment=beta $CTX --output "$RUNNER_TEMP/cdk-pre" )
+          python3 scripts/release_config_gate.py pre --environment beta \
+            --template "$RUNNER_TEMP/cdk-pre/story-beta-api.template.json" \
+            --worker-asset infrastructure/cdk/.worker-asset --require-clean-asset
+
       - name: CDK deploy (beta) by digest, through the SCOPED cfn-exec role
         working-directory: infrastructure/cdk
         run: |
@@ -108,13 +119,16 @@ jobs:
           #  - observability + alarmDestination: deploy the single authoritative monitoring stack (owned by
           #    the observability thread) into beta, alarming to alerts@yotale.ai. createBudget is left UNSET
           #    (=false) — the account-level $100 beta budget is owned by B0's org-foundation, not duplicated here.
-          npx cdk deploy -c environment=beta --require-approval never \
-            -c imageDigest="${{ steps.image.outputs.digest }}" \
-            -c cognitoUserPoolId="${{ vars.BETA_COGNITO_USER_POOL_ID }}" \
-            -c cognitoAppClientId="${{ vars.BETA_COGNITO_APP_CLIENT_ID }}" \
-            -c observability=true \
-            -c alarmDestination=alerts@yotale.ai \
+          npx cdk deploy -c environment=beta --require-approval never $CDK_CTX \
             --role-arn "${{ vars.CFN_EXEC_ROLE_ARN }}"
+
+      - name: Post-deploy verification (effective running configuration must equal the intended release)
+        run: |
+          # Read-only AWS inspection: running API digest + image build tag, deployed worker zip BUILD_SHA and
+          # bundled prompts, live env vars judged by the SAME rules as the pre-deploy gate. No AI inference.
+          # An unreadable deployment is a FAILURE (promotion blocked), never a pass.
+          python3 scripts/release_config_gate.py post --environment beta \
+            --expected-sha "${GITHUB_SHA::12}" --expected-digest "${{ steps.image.outputs.digest }}"
 
       - name: Upload release manifest artifact
         uses: actions/upload-artifact@v4

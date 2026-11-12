@@ -40,6 +40,9 @@ jobs:
           role-to-assume: ${{ vars.DEV_DEPLOY_ROLE_ARN }}   # Environment VARIABLE (not a secret — an ARN is not sensitive); set in the `development` Environment after Inc B provisioning
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Verify required secrets present (fail-closed; never deploy with missing keys)
+        run: bash scripts/verify-required-secrets.sh "$ENVIRONMENT"
+
       - name: Login to ECR
         id: ecr
         run: |
@@ -78,15 +81,33 @@ jobs:
       - name: Write release manifest
         run: bash scripts/release-manifest.sh "$ENVIRONMENT" "${{ steps.image.outputs.digest }}" worker.zip
 
+      - name: Pre-deploy release configuration gate (synth + validate; any violation blocks the deploy)
+        run: |
+          # Same CDK context as the deploy step below (written once, to CDK_CTX). Synthesizes ONLY; no AWS writes.
+          CTX='-c imageDigest=${{ steps.image.outputs.digest }}'
+          echo "CDK_CTX=$CTX" >> "$GITHUB_ENV"
+          ( cd infrastructure/cdk && npm ci || npm install )
+          ( cd infrastructure/cdk && npx cdk synth -q -c environment=development $CTX --output "$RUNNER_TEMP/cdk-pre" )
+          python3 scripts/release_config_gate.py pre --environment development \
+            --template "$RUNNER_TEMP/cdk-pre/story-development-api.template.json" \
+            --worker-asset infrastructure/cdk/.worker-asset --require-clean-asset
+
       - name: CDK deploy (dev) by digest, through the SCOPED cfn-exec role
         working-directory: infrastructure/cdk
         run: |
           npm ci || npm install
           # Drive CloudFormation through Story's dedicated scoped exec role, NOT the admin bootstrap role.
           # CFN_EXEC_ROLE_ARN is set in the development Environment (the CfnExecRoleArn stack output).
-          npx cdk deploy -c environment=development --require-approval never \
-            -c imageDigest="${{ steps.image.outputs.digest }}" \
+          npx cdk deploy -c environment=development --require-approval never $CDK_CTX \
             --role-arn "${{ vars.CFN_EXEC_ROLE_ARN }}"
+
+      - name: Post-deploy verification (effective running configuration must equal the intended release)
+        run: |
+          # Read-only AWS inspection: running API digest + image build tag, deployed worker zip BUILD_SHA and
+          # bundled prompts, live env vars judged by the SAME rules as the pre-deploy gate. No AI inference.
+          # An unreadable deployment is a FAILURE (promotion blocked), never a pass.
+          python3 scripts/release_config_gate.py post --environment development \
+            --expected-sha "${GITHUB_SHA::12}" --expected-digest "${{ steps.image.outputs.digest }}"
 
       - name: Upload release manifest artifact
         uses: actions/upload-artifact@v4

@@ -110,7 +110,7 @@ class ModelGateway(Protocol):
 # hardcoded through the app; switch to a Claude inference-profile id (e.g.
 # "us.anthropic.claude-haiku-4-5-20251001-v1:0") once the account's Anthropic
 # use-case form is approved. ONE provider for now.
-DEFAULT_BEDROCK_MODEL = os.environ.get("STORY_BEDROCK_MODEL", "amazon.nova-lite-v1:0")
+DEFAULT_BEDROCK_MODEL = "amazon.nova-lite-v1:0"   # fixed constant; never configured in any environment
 DEFAULT_AWS_REGION = os.environ.get("STORY_AWS_REGION", "us-east-1")
 _TOOL_NAME = "emit_structured"
 
