@@ -63,6 +63,19 @@ enum StoryBackend {
         return URLSession(configuration: cfg)
     }()
 
+    /// Async EditPlan JOB calls (submit + status poll). The job API answers immediately (the worker does the
+    /// slow part), so a call that goes quiet is a LOST REPLY, not a slow server: fail fast so the caller's
+    /// same-operation_id retry (idempotent server-side: same deterministic job, never a second inference) runs
+    /// within seconds. The longSession's 180s/300s + waitsForConnectivity turned one dropped 202 into a 5-minute
+    /// spinner (dev 2026-11-12). The 120s resource ceiling still allows a ~3 MB sheet upload on a slow link.
+    static let jobSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 30
+        cfg.timeoutIntervalForResource = 120
+        cfg.waitsForConnectivity = false
+        return URLSession(configuration: cfg)
+    }()
+
     /// Coverage/2 recompute is a SINGLE long Opus Mapper+Judge pass whose COLD first call over a large moment
     /// set (26-50 rich understandings, 8192 output tokens) was measured at ~191s on the dev backend — longer
     /// than longSession's 180s request timeout. With the shorter cap the device timed out, discarded the

@@ -188,8 +188,13 @@ struct StoryCreatingView: View {
                         // This Create-Another-Version came through the Customize sheet, so any Creative
                         // Direction the user typed is for THIS operation — fold it in (the operation stays
                         // mode=explore; the directives ride along as strong objectives).
+                        // The Video Type the user picked in this Customize sheet (persisted as story.editorialMode
+                        // by acceptCustomize) is THIS attempt's type. Without it Explore kept the PARENT's type, so
+                        // choosing Full Story still planned a Highlights cut (dev 2026-11-12). nil (legacy/custom
+                        // mode) keeps the parent's type, as before.
                         coord.createAnotherVersion(for: story, from: parent, music: preresolvedMusic,
-                                                   directedByCustomize: true)
+                                                   directedByCustomize: true,
+                                                   requestedEditorialType: ResolvedEditorial.fromLegacy(story.editorialMode).type)
                     } else {
                         coord.createWithMusic(for: story, music: preresolvedMusic)
                     }

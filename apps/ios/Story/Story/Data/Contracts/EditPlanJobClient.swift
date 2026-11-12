@@ -86,9 +86,34 @@ protocol EditPlanJobClienting {
                            shouldCancel: @MainActor () -> Bool,
                            onState: @MainActor (EditPlanJobState) -> Void) async throws -> EditPlanJobState
     func cancel(jobId: String) async
+    // Lost-reply recovery seam (requirements so the real client's implementation is dispatched; the extension
+    // below supplies inert defaults for test fakes).
+    func prepareSubmit(_ request: EditPlanRequestDTO, operationId: String, owner: String,
+                       approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
+                       critiqueRevision: Bool, evidenceAccounting: [String: Any]?,
+                       buildProvenance: [String: Any]?) -> PreparedJobSubmit?
+    func submitPrepared(_ prepared: PreparedJobSubmit) async throws -> String
+}
+
+/// The exact multipart bytes of one job submit. Re-sending THESE bytes with the same operation_id is what makes a
+/// lost-reply recovery safe: the server's payload fingerprint matches, so it returns the SAME job (or creates it if
+/// the first attempt never arrived) — never a second inference and never a 409.
+struct PreparedJobSubmit {
+    let body: Data
+    let boundary: String
 }
 
 extension EditPlanJobClienting {
+    /// Encode a submit without sending it. nil when the client cannot (test fakes) -> no lost-reply cache.
+    func prepareSubmit(_ request: EditPlanRequestDTO, operationId: String, owner: String,
+                       approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
+                       critiqueRevision: Bool, evidenceAccounting: [String: Any]?,
+                       buildProvenance: [String: Any]?) -> PreparedJobSubmit? { nil }
+    /// Send previously prepared bytes. Default (fakes): unsupported -> a transport error the caller handles.
+    func submitPrepared(_ prepared: PreparedJobSubmit) async throws -> String {
+        throw EditPlanJobError.transport(URLError(.unsupportedURL))
+    }
+
     /// Back-compat default so existing call sites / fakes that do not supply P0 diagnostics keep compiling.
     func submit(_ request: EditPlanRequestDTO, operationId: String, owner: String,
                 approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
@@ -102,7 +127,7 @@ extension EditPlanJobClienting {
 final class EditPlanJobClient: EditPlanJobClienting {
     private let baseURL: URL
     private let session: URLSession
-    init(baseURL: URL = StoryBackend.baseURL, session: URLSession = StoryBackend.longSession) {
+    init(baseURL: URL = StoryBackend.baseURL, session: URLSession = StoryBackend.jobSession) {
         self.baseURL = baseURL
         self.session = session
     }
@@ -113,11 +138,23 @@ final class EditPlanJobClient: EditPlanJobClienting {
                 approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
                 critiqueRevision: Bool, evidenceAccounting: [String: Any]? = nil,
                 buildProvenance: [String: Any]? = nil) async throws -> String {
+        guard let prepared = prepareSubmit(request, operationId: operationId, owner: owner, approach: approach,
+                                           sheets: sheets, creativeBrief: creativeBrief,
+                                           critiqueRevision: critiqueRevision,
+                                           evidenceAccounting: evidenceAccounting,
+                                           buildProvenance: buildProvenance) else {
+            throw EditPlanJobError.transport(URLError(.cannotDecodeContentData))
+        }
+        return try await submitPrepared(prepared)
+    }
+
+    /// Encode the multipart submit body (no network). Deterministic for a given request instance, so the bytes
+    /// cached for lost-reply recovery are the bytes sent.
+    func prepareSubmit(_ request: EditPlanRequestDTO, operationId: String, owner: String = "dev",
+                       approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
+                       critiqueRevision: Bool, evidenceAccounting: [String: Any]? = nil,
+                       buildProvenance: [String: Any]? = nil) -> PreparedJobSubmit? {
         let boundary = "story.job.\(UUID().uuidString)"
-        var req = URLRequest(url: baseURL.appendingPathComponent("v1/edit-plan-jobs"))
-        StoryBackend.authorize(&req)  // P0 auth seam: bearer token when signed in
-        req.httpMethod = "POST"
-        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
         let bodyJSON: Data
         let orderJSON: Data
@@ -125,7 +162,7 @@ final class EditPlanJobClient: EditPlanJobClienting {
         do {
             bodyJSON = try StoryContractCoding.encoder().encode(request)
             orderJSON = try JSONSerialization.data(withJSONObject: order)
-        } catch { throw EditPlanJobError.transport(error) }
+        } catch { return nil }
 
         var body = Data()
         func field(_ name: String, _ value: Data, contentType: String? = nil) {
@@ -161,7 +198,16 @@ final class EditPlanJobClient: EditPlanJobClienting {
             body.append(s.jpeg); body.append("\r\n".data(using: .utf8)!)
         }
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-        req.httpBody = body
+        return PreparedJobSubmit(body: body, boundary: boundary)
+    }
+
+    /// POST prepared bytes (idempotent on the operation_id inside them). Returns the job_id.
+    func submitPrepared(_ prepared: PreparedJobSubmit) async throws -> String {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/edit-plan-jobs"))
+        StoryBackend.authorize(&req)  // P0 auth seam: bearer token when signed in
+        req.httpMethod = "POST"
+        req.setValue("multipart/form-data; boundary=\(prepared.boundary)", forHTTPHeaderField: "Content-Type")
+        req.httpBody = prepared.body
 
         let data: Data, resp: URLResponse
         do { (data, resp) = try await session.data(for: req) }
