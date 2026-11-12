@@ -733,16 +733,9 @@ final class StoryCreationCoordinator {
             // behavior. Images, prior-version context/diversity, mandatory deterministic validation and the
             // worker's bounded repair are all preserved; only the automatic critique pass is dropped for
             // Explore (Explore always plans in ONE call; there is no switch to turn the critique on for it).
-            let critique: Bool = {
-                guard wantMultimodal && StoryMultimodalPlanning.critiqueRevisionEnabled else { return false }
-                if pendingOperationType == "another_version" {
-                    return false   // Explore: one planning call, no critique
-                }
-                // Phase 2: a TARGETED revise (Path B) runs critique OFF by default — it is a bounded change,
-                // not a creative re-edit. Only a full re-edit (Path C) keeps the original revise behavior.
-                if let scope = reviseScope, scope != .fullReedit { return false }
-                return true   // original create / full-reedit revision: unchanged
-            }()
+            let critique: Bool = StoryMultimodalPlanning.critiqueApplies(
+                wantMultimodal: wantMultimodal, critiqueEnabled: StoryMultimodalPlanning.critiqueRevisionEnabled,
+                isExplore: pendingOperationType == "another_version", reviseScope: reviseScope)
 
             // P0 EVIDENCE ACCOUNTING — assemble the reconciling census (stages 1-10) from the eligibility
             // census (build) + the visual-budget miss reasons + the R6-unrestorable set, plus build provenance.

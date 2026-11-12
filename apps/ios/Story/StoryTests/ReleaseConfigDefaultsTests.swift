@@ -34,6 +34,26 @@ final class ReleaseConfigDefaultsTests: XCTestCase {
         XCTAssertFalse(StoryMultimodalPlanning.critiqueRevisionEnabled, "the retained latency lever still works")
     }
 
+    /// The critique-pass rules that the removed STORY_CRITIQUE_EXPLORE / kept STORY_CRITIQUE_REVISION settings
+    /// used to blur: original Create + full re-edit run it; Explore and targeted Revise never do; the retained
+    /// setting can switch it off; text-only (non-multimodal) planning never runs it.
+    func test_critiqueDecision_originalYes_exploreAndTargetedReviseNo() {
+        typealias P = StoryMultimodalPlanning
+        XCTAssertTrue(P.critiqueApplies(wantMultimodal: true, critiqueEnabled: true, isExplore: false, reviseScope: nil),
+                      "original Create runs the critique pass")
+        XCTAssertTrue(P.critiqueApplies(wantMultimodal: true, critiqueEnabled: true, isExplore: false, reviseScope: .fullReedit),
+                      "a full re-edit (Path C) keeps the original behavior")
+        XCTAssertFalse(P.critiqueApplies(wantMultimodal: true, critiqueEnabled: true, isExplore: true, reviseScope: nil),
+                       "Explore plans in ONE call, always")
+        XCTAssertFalse(P.critiqueApplies(wantMultimodal: true, critiqueEnabled: true, isExplore: false,
+                                         reviseScope: .targeted(needsImages: false)),
+                       "a targeted revise is a bounded change, no critique")
+        XCTAssertFalse(P.critiqueApplies(wantMultimodal: true, critiqueEnabled: false, isExplore: false, reviseScope: nil),
+                       "the retained setting still switches it off (latency lever)")
+        XCTAssertFalse(P.critiqueApplies(wantMultimodal: false, critiqueEnabled: true, isExplore: false, reviseScope: nil),
+                       "text-only planning never runs a multimodal critique")
+    }
+
     /// Reference media (parked video feature) defaults to image with nothing configured.
     func test_referenceMedia_defaultsToImageAndVideoStaysOff() {
         XCTAssertEqual(StoryGuideFeatures.referenceMediaMode, .image)

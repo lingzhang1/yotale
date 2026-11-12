@@ -31,6 +31,19 @@ enum StoryMultimodalPlanning {
     static func setCritiqueOverride(_ on: Bool) { UserDefaults.standard.set(on, forKey: critiqueFlagKey) }
     private static let _critiqueDefault = true
 
+    /// PURE decision (unit-tested): does this planning call run the critique -> revision pass?
+    ///  • not multimodal, or the retained `critiqueRevisionEnabled` setting is off -> no
+    ///  • Explore ("Create Another Version") -> NEVER (one planning call; the old opt-in was removed)
+    ///  • a TARGETED revise (Path B) -> no (a bounded change, not a creative re-edit)
+    ///  • original create / full re-edit (Path C) -> yes
+    static func critiqueApplies(wantMultimodal: Bool, critiqueEnabled: Bool, isExplore: Bool,
+                                reviseScope: RevisionScope?) -> Bool {
+        guard wantMultimodal && critiqueEnabled else { return false }
+        if isExplore { return false }
+        if let scope = reviseScope, scope != .fullReedit { return false }
+        return true
+    }
+
     static let creativeBriefVersion = "shortform_mvp/1"
     static let creativeBrief = """
     When user intent does not require chronology, prioritize visually engaging and meaningful footage. \
