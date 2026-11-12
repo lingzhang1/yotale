@@ -82,7 +82,6 @@ class FakeVerifier(CognitoJwtVerifier):
 
 def _app(env="development", require="0"):
     import os
-    os.environ["STORY_JOBS_API_ENABLED"] = "1"
     os.environ["STORY_ENVIRONMENT"] = env
     os.environ["STORY_REQUIRE_AUTH"] = require
     os.environ["STORY_EPIDEMIC_MODE"] = "prototyping"  # so music routes are not flag-404'd before auth

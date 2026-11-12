@@ -1464,7 +1464,7 @@ def create_app() -> FastAPI:
         (retired ids never reused), and dropped uncaptured+unpinned scenes are archived (recorded).
 
         ADDITIVE/versioned. v1 generation is retired (410); v2 is the sole guide path, so refine is always
-        available (no STORY_GUIDE_V2 gate). On failure: 503, preserve the CURRENT Guide, NO fabrication —
+        available (Guide v2 is the sole path). On failure: 503, preserve the CURRENT Guide, NO fabrication —
         the client keeps the existing shooting script and retries."""
         correlation_id = str(uuid4())
         started = time.monotonic()
@@ -1500,7 +1500,7 @@ def create_app() -> FastAPI:
     ):
         """BOUNDED Unsplash reference-image lookup for ONE StoryGuide/2 scene (backend proxy).
 
-        FEATURE-GATED by STORY_SCENE_IMAGES (404 when off). This is NOT a public image-search proxy:
+        Always available (accepted feature, no gate). This is NOT a public image-search proxy:
         the query is a GENERIC scene/composition phrase (originating from our own server-authored
         `visual_reference_query`) which we NORMALIZE here (control-char/punctuation/digit strip, URL and
         email tokens removed, word cap by truncation) so no personal data / user media reaches the
@@ -1510,12 +1510,10 @@ def create_app() -> FastAPI:
         download_location tracking URL). Image bytes are NEVER fetched or re-hosted — the app hotlinks
         urls.* directly. The Unsplash key stays in Secrets Manager, read in-process, never logged.
 
-        FAIL-SOFT by contract: a disabled flag -> 404; any auth/provider/rate-limit/timeout/empty-match
+        FAIL-SOFT by contract: any auth/provider/rate-limit/timeout/empty-match
         -> 200 with {image: null, status: <reason>} so the client renders a text-only card. It MUST
         NEVER 5xx or block the Guide/UI. The download_location is returned but NOT triggered here —
         the client calls /v1/scene-image/track only when a photo is actually USED (Unsplash's rule)."""
-        if not _scene_image.enabled():
-            raise HTTPException(status_code=404, detail="scene_image not enabled")
         correlation_id = str(uuid4())
         started = time.monotonic()
         base = {"operation": "scene_image", "correlation_id": correlation_id, "provider": "unsplash"}
@@ -1566,9 +1564,7 @@ def create_app() -> FastAPI:
     ):
         """Fire Unsplash's download-tracking endpoint when a reference photo is actually USED/selected
         as a scene reference (Unsplash's documented requirement — NOT fired on mere display). Best-effort
-        and always 204: tracking failure must never surface to the user. Gated by STORY_SCENE_IMAGES."""
-        if not _scene_image.enabled():
-            raise HTTPException(status_code=404, detail="scene_image not enabled")
+        and always 204: tracking failure must never surface to the user."""
         loc = (body.download_location or "").strip()
         # Only ever call back to the Unsplash tracking host — never an arbitrary caller-supplied URL (SSRF guard).
         if loc.startswith("https://api.unsplash.com/"):
@@ -1892,12 +1888,6 @@ def create_app() -> FastAPI:
         ov = getattr(app.state, "_job_store_override", None)
         return ov if ov is not None else _jobs.JobStore()
 
-    def _dev_access_ok() -> bool:
-        # Adjustment 1: UUIDv5 secrecy is NOT authentication. In dev the job API is gated by an env flag so it
-        # is not open to the world; a real auth principal replaces this when auth lands. Default ON in dev.
-        import os as _os
-        return _os.environ.get("STORY_JOBS_API_ENABLED", "1") == "1"
-
     # P0 Beta Auth Increment 2: scope job identity + ownership to the authenticated principal.
     def _scoped_op_id(principal, operation_id: str) -> str:
         """Namespace the client operation_id by the trusted story_user_id BEFORE job_id_for/fingerprint, so
@@ -1934,8 +1924,6 @@ def create_app() -> FastAPI:
         operation_id; a same-id DIFFERENT-payload submit is 409. Stages derived sheets to encrypted S3, then
         enqueues for the worker."""
         import json as _json
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         try:
             parsed = EditPlanRequest.model_validate_json(body)
         except Exception as e:
@@ -2020,8 +2008,6 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/edit-plan-jobs/{job_id}")
     def get_edit_plan_job(job_id: str, principal: Principal = Depends(optional_user)):
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         job = _job_store().get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
@@ -2034,8 +2020,6 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/edit-plan-jobs/{job_id}/cancel")
     def cancel_edit_plan_job(job_id: str, principal: Principal = Depends(optional_user)):
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         store = _job_store()
         job = store.get(job_id)
         if not job:
@@ -2048,8 +2032,6 @@ def create_app() -> FastAPI:
         """Lost-enqueue recovery sweep (concern 6). Called by a scheduled EventBridge rule in CDK; also
         callable manually in dev. Re-enqueues only never-leased stranded queued jobs, capped. Requires a
         principal (not anonymous); it re-enqueues by job_id only and discloses no job data cross-user."""
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         return {"reenqueued": _job_store().reconcile_lost_enqueue()}
 
     # ========================================================================================================
@@ -2074,8 +2056,6 @@ def create_app() -> FastAPI:
         operation_id; a same-id DIFFERENT-payload submit is 409 (payload conflict preserved). Recovers an
         existing queued/running/completed job for the SAME snapshot without launching new inference."""
         import json as _json
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         # Validate the body against the SAME frozen request model the sync endpoint uses (never reinterpret).
         try:
             parsed = StoryCoverageV2Request.model_validate_json(body)
@@ -2121,8 +2101,6 @@ def create_app() -> FastAPI:
         """Durable status. Polling NEVER triggers inference — it only reads DynamoDB. On completion returns the
         StoryCoverage/2 result AND the operation_id, so the client can reject a result that is stale for the
         CURRENT Story (safeguard 4: input-freshness is enforced client-side against the live fingerprint)."""
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         job = _job_store().get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
@@ -2142,8 +2120,6 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/story-coverage/v2/jobs/{job_id}/cancel")
     def cancel_coverage_job(job_id: str, principal: Principal = Depends(optional_user)):
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         store = _job_store()
         job = store.get(job_id)
         if not job:

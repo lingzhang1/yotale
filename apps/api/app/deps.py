@@ -194,7 +194,7 @@ def get_story_guide_v2_engine():
 
     CreativeIntent -> scene-based shooting script, ONCE per Story. Same model selection as v1
     (config-driven STORY_GUIDE_MODEL, default Opus 4.6) with the Opus->Sonnet quota fallback. Set
-    STORY_GUIDE_MOCK=1 for the dev/offline mock. The ENDPOINT itself is feature-gated by STORY_GUIDE_V2;
+    STORY_GUIDE_MOCK=1 for the dev/offline mock. The Guide v2 endpoints are always available;
     this getter only constructs the engine. Guide failure preserves CreativeIntent (never fabricate)."""
     from story_guide import RealStoryGuideV2Engine, MockStoryGuideV2Engine
     if os.environ.get("STORY_GUIDE_MOCK") == "1":
@@ -210,7 +210,7 @@ def get_story_guide_refine_engine():
     change log. The MODEL proposes; the engine reconciles identity + history server-side (captured/
     pinned preserved, stable ids kept, new ids minted beyond max ordinal, dropped scenes archived).
     Same model selection + Opus->Sonnet quota fallback as v1/v2. STORY_GUIDE_MOCK=1 -> dev mock. The
-    ENDPOINT is feature-gated by STORY_GUIDE_V2; refine failure preserves the CURRENT Guide (no fabricate)."""
+    Endpoint is always available; refine failure preserves the CURRENT Guide (no fabricate)."""
     from story_guide import RealStoryGuideRefineEngine, MockStoryGuideRefineEngine
     if os.environ.get("STORY_GUIDE_MOCK") == "1":
         return MockStoryGuideRefineEngine()

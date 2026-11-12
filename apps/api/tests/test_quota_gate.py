@@ -116,7 +116,7 @@ class FakeStore:
 def _app(*, quota=None, qmode="enforce"):
     os.environ.update({"STORY_ENVIRONMENT": "beta", "STORY_COGNITO_USER_POOL_ID": POOL,
                        "STORY_COGNITO_APP_CLIENT_ID": CLIENT_ID, "STORY_EPIDEMIC_MODE": "prototyping",
-                       "STORY_JOBS_API_ENABLED": "1", "STORY_QUOTA_MODE": qmode,
+                       "STORY_QUOTA_MODE": qmode,
                        "STORY_THROTTLE_MODE": "observe"})
     app = create_app()
     app.state._jwt_verifier_override = FakeVerifier()
@@ -129,7 +129,7 @@ def _app(*, quota=None, qmode="enforce"):
 @pytest.fixture(autouse=True)
 def _restore_env():
     keys = ["STORY_ENVIRONMENT", "STORY_QUOTA_MODE", "STORY_THROTTLE_MODE", "STORY_COGNITO_USER_POOL_ID",
-            "STORY_COGNITO_APP_CLIENT_ID", "STORY_EPIDEMIC_MODE", "STORY_JOBS_API_ENABLED",
+            "STORY_COGNITO_APP_CLIENT_ID", "STORY_EPIDEMIC_MODE", 
             "STORY_USER_USAGE_TABLE"]
     saved = {k: os.environ.get(k) for k in keys}
     yield

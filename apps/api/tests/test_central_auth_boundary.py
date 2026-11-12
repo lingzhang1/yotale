@@ -75,7 +75,6 @@ class CountingIdentityStore(IdentityStore):
 
 def _app(env="beta", require="0"):
     import os
-    os.environ["STORY_JOBS_API_ENABLED"] = "1"
     os.environ["STORY_ENVIRONMENT"] = env
     os.environ["STORY_REQUIRE_AUTH"] = require
     os.environ["STORY_EPIDEMIC_MODE"] = "prototyping"
@@ -92,7 +91,7 @@ def _restore_env():
     """Snapshot/restore the env vars these tests mutate so running this module does not leak
     STORY_ENVIRONMENT=beta (etc.) into sibling test modules (order-independent suite)."""
     import os
-    keys = ["STORY_ENVIRONMENT", "STORY_REQUIRE_AUTH", "STORY_JOBS_API_ENABLED",
+    keys = ["STORY_ENVIRONMENT", "STORY_REQUIRE_AUTH", 
             "STORY_EPIDEMIC_MODE", "STORY_COGNITO_USER_POOL_ID", "STORY_COGNITO_APP_CLIENT_ID",
             "STORY_DOCS_PUBLIC"]
     saved = {k: os.environ.get(k) for k in keys}
