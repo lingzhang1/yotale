@@ -203,18 +203,31 @@ def test_N11_missing_required_beta_release_capability_is_rejected():
 
 
 def test_N13_unapproved_emergency_rollback_override_is_rejected_and_approval_unblocks_it():
-    s = _with(_snapshot("beta"), svc={"STORY_EDIT_PLAN_VERSION": "5.2"}, wrk={"STORY_EDIT_PLAN_VERSION": "5.2"})
-    assert "unapproved_override" in _codes(s)           # API and worker AGREE, still unapproved
-    ok = dict(MANIFEST, approved_overrides=[{"setting": "STORY_EDIT_PLAN_VERSION", "env": "beta", "value": "5.2",
-                                              "approved_by": "owner", "reason": "incident"}])
-    assert _codes(s, manifest=ok) == set()
-    # an approval for a DIFFERENT environment or value does not cover it
-    wrong_env = dict(MANIFEST, approved_overrides=[{"setting": "STORY_EDIT_PLAN_VERSION", "env": "development", "value": "5.2"}])
-    assert "unapproved_override" in _codes(s, manifest=wrong_env)
-    # a rollback to a version with no prompt bundle is rejected even when approved
+    pinned = _with(_snapshot("beta"), svc={"STORY_EDIT_PLAN_VERSION": "5.2"}, wrk={"STORY_EDIT_PLAN_VERSION": "5.2"})
+    # (a) API and worker AGREE on 5.2 but the manifest does not declare it => hand-pinned, rejected.
+    assert "unapproved_override" in _codes(pinned)
+    # (b) declared in the manifest but WITHOUT an approved_overrides entry => rejected.
+    declared = {**MANIFEST, "planner": {**MANIFEST["planner"], "emergency_override": "5.2"}}
+    assert "unapproved_override" in _codes(pinned, manifest=declared)
+    # (c) declared AND approved => accepted.
+    ok = {**declared, "approved_overrides": [{"setting": "STORY_EDIT_PLAN_VERSION", "env": "beta", "value": "5.2",
+                                              "approved_by": "owner", "reason": "incident"}]}
+    assert _codes(pinned, manifest=ok) == set()
+    # (d) approval for a DIFFERENT environment does not cover beta.
+    wrong_env = {**declared, "approved_overrides": [{"setting": "STORY_EDIT_PLAN_VERSION", "env": "development", "value": "5.2"}]}
+    assert "unapproved_override" in _codes(pinned, manifest=wrong_env)
+    # (e) a later deploy that silently DROPS a declared rollback is rejected.
+    assert "rollback_not_applied" in _codes(_snapshot("beta"), manifest=ok)
+    # (f) a rollback to a version with no prompt bundle is rejected even when declared+approved.
     s9 = _with(_snapshot("beta"), svc={"STORY_EDIT_PLAN_VERSION": "9.9"}, wrk={"STORY_EDIT_PLAN_VERSION": "9.9"})
-    ok9 = dict(MANIFEST, approved_overrides=[{"setting": "STORY_EDIT_PLAN_VERSION", "env": "beta", "value": "9.9"}])
+    ok9 = {**MANIFEST, "planner": {**MANIFEST["planner"], "emergency_override": "9.9"},
+           "approved_overrides": [{"setting": "STORY_EDIT_PLAN_VERSION", "env": "beta", "value": "9.9"}]}
     assert "prompt_missing" in _codes(s9, manifest=ok9)
+
+
+def test_committed_manifest_ships_with_no_active_rollback_or_degradation():
+    assert MANIFEST["planner"]["emergency_override"] is None
+    assert MANIFEST["approved_overrides"] == [] and MANIFEST["approved_degradations"] == []
 
 
 def test_planner_default_drift_from_manifest_is_rejected(tmp_repo):

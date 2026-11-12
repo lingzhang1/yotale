@@ -318,10 +318,17 @@ describe("StoryApiStack (Milestone A)", () => {
       expect(workerVars(legacy)[k]).toBeUndefined();
       expect(serviceVars(legacy)[k]).toBeUndefined();
     }
-    // (c) the ONE rollback control reaches API and worker identically (they can never disagree).
-    const rb = synth("development", { editPlanVersion: "5.2" });
+    // (c) the ONE rollback control (release/release.json planner.emergency_override; test seam: prop) reaches API
+    //     and worker identically, and the committed manifest ships with NO override.
+    const rb = Template.fromStack(new StoryApiStack(new cdk.App(), "story-development-api", {
+      environment: "development", plannerEmergencyOverride: "5.2",
+      env: { account: "123456789012", region: "us-east-1" } }));
     expect(workerVars(rb)["STORY_EDIT_PLAN_VERSION"]).toBe("5.2");
     expect(serviceVars(rb)["STORY_EDIT_PLAN_VERSION"]).toBe("5.2");
+    // the old command-line context is no longer an input: it must NOT pin a version
+    const ctxOnly = synth("development", { editPlanVersion: "5.2" });
+    expect(workerVars(ctxOnly)["STORY_EDIT_PLAN_VERSION"]).toBeUndefined();
+    expect(serviceVars(ctxOnly)["STORY_EDIT_PLAN_VERSION"]).toBeUndefined();
   });
 });
 

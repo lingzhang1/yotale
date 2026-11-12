@@ -10,6 +10,7 @@ import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
+import * as fs from "fs";
 import * as path from "path";
 import { Observability } from "./observability";
 
@@ -22,6 +23,9 @@ export interface StoryApiStackProps extends cdk.StackProps {
    * `-c observability=true` (and optionally `-c alarmDestination=...`, `-c monthlyBudgetUsd=...`) when the
    * owner is ready to provision it. Nothing is provisioned at synth time.
    */
+  /** TEST SEAM for the emergency planner rollback; production reads release/release.json (planner.emergency_override).
+   *  `null` forces "no override" regardless of the manifest. */
+  readonly plannerEmergencyOverride?: string | null;
   readonly enableObservability?: boolean;
   readonly alarmDestination?: string;
   readonly monthlyBudgetUsd?: number;
@@ -276,11 +280,18 @@ export class StoryApiStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // The ONLY EditPlan-version control: an explicit, documented emergency rollback (`-c editPlanVersion=5.2`).
-    // Normal deployments emit nothing (v5.3 is the code default). Shared by API and worker so they can't diverge.
-    const emergencyEditPlanVersion = this.node.tryGetContext("editPlanVersion") as string | undefined;
+    // The ONLY EditPlan-version control: the emergency rollback recorded in release/release.json
+    // (planner.emergency_override), a reviewed + committed decision. Normal deployments emit NOTHING (v5.3 is the
+    // code default). Because it lives in the repo and not on a command line, a LATER deploy cannot silently drop
+    // an intentional rollback, and it reaches API and worker identically. scripts/release_config_gate.py rejects
+    // an override with no approved_overrides entry, or a manifest override this stack failed to apply.
+    const releaseManifest = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "..", "..", "..", "release", "release.json"), "utf8"));
+    const emergencyEditPlanVersion: string | undefined = props.plannerEmergencyOverride !== undefined
+      ? (props.plannerEmergencyOverride ?? undefined)
+      : (releaseManifest?.planner?.emergency_override ?? undefined);
     const emergencyEditPlanVersionEnv: Record<string, string> =
-      emergencyEditPlanVersion ? { STORY_EDIT_PLAN_VERSION: emergencyEditPlanVersion } : {};
+      emergencyEditPlanVersion ? { STORY_EDIT_PLAN_VERSION: String(emergencyEditPlanVersion) } : {};
 
     // Per-environment OPERATIONAL POLICY DEFAULTS, defined here once (never re-stated in a deploy workflow's
     // env: a deploy from a shell without those vars used to silently synthesize beta as "observe").
@@ -326,8 +337,8 @@ export class StoryApiStack extends cdk.Stack {
         STORY_WORKER_DEADLINE_S: "840",
         // EditPlan planner version: NOT configured for a normal deployment — v5.3 is the code default
         // (packages/edit_planner). `emergencyEditPlanVersion` is the ONE deliberate, documented rollback
-        // override (e.g. `-c editPlanVersion=5.2`); it is emitted identically to API and worker below and
-        // must be recorded in release.yaml (checked by scripts/release_config_gate.py).
+        // override (release/release.json planner.emergency_override); it is emitted identically to API and worker
+        // below and must carry an approved_overrides entry (checked by scripts/release_config_gate.py).
         ...emergencyEditPlanVersionEnv,
         // STORY_MODEL_PROVIDER is intentionally NOT set: the code default is "direct" (OpenAI/Gemini via the
         // provider router, which refuses Anthropic). Any value set here is rejected by the release gate.

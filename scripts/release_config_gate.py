@@ -234,11 +234,27 @@ def check_snapshot(snap: Snapshot, manifest: dict, repo: Path = REPO) -> tuple[l
         v.append(Violation("planner_default_mismatch",
                            f"code default planner is {code_ver!r} but release/release.json requires {want_ver!r}"))
     s_ov, w_ov = svc.get("STORY_EDIT_PLAN_VERSION"), wrk.get("STORY_EDIT_PLAN_VERSION")
+    man_ov = manifest.get("planner", {}).get("emergency_override")
+    man_ov = str(man_ov) if man_ov else None
     if ("STORY_EDIT_PLAN_VERSION" in svc) != ("STORY_EDIT_PLAN_VERSION" in wrk) or (s_ov != w_ov):
         v.append(Violation("planner_mismatch",
                            f"EditPlan version differs between API ({s_ov or 'code default'}) and "
                            f"worker ({w_ov or 'code default'})"))
-    effective = s_ov or w_ov or code_ver
+    # The rollback is a REPORTED decision in release.json: a deployment that pins a version the manifest does not
+    # declare, or that fails to apply the one it declares (a later deploy silently dropping a rollback), is rejected.
+    for scope, val in (("service", s_ov), ("worker", w_ov)):
+        if val is not None and val != man_ov:
+            v.append(Violation("unapproved_override",
+                               f"{scope} pins STORY_EDIT_PLAN_VERSION={val} but release/release.json planner."
+                               f"emergency_override is {man_ov!r}"))
+    if man_ov and (s_ov != man_ov or w_ov != man_ov):
+        v.append(Violation("rollback_not_applied",
+                           f"release/release.json declares emergency EditPlan rollback {man_ov} but the deployment "
+                           f"runs API={s_ov or 'code default'} worker={w_ov or 'code default'}"))
+    if man_ov and ("STORY_EDIT_PLAN_VERSION", env, man_ov) not in approved:
+        v.append(Violation("unapproved_override",
+                           f"emergency EditPlan rollback {man_ov} has no approved_overrides entry for {env}"))
+    effective = s_ov or w_ov or man_ov or code_ver
     for scope, val in (("service", s_ov), ("worker", w_ov)):
         if val is not None and ("STORY_EDIT_PLAN_VERSION", env, str(val)) not in approved:
             v.append(Violation("unapproved_override",
