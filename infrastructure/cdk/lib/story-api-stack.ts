@@ -644,15 +644,23 @@ export class StoryApiStack extends cdk.Stack {
           githubOidc.openIdConnectProviderArn,
           {
             StringEquals: { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-            // GitHub may emit a numeric-id-qualified sub (repo:owner@<id>/repo@<id>:environment:...);
-            // match it with a StringLike that pins owner + repo name + THIS environment. The owner/repo
-            // pattern (lingzhang1*/story*) is UNCHANGED — it already tolerates the numeric repository-id
-            // qualifier GitHub appends — and only the environment segment is parameterized, so a beta role
-            // trusts exactly environment:beta and the dev role exactly environment:development. Trust is
-            // NOT broadened: each env's role matches its own single GitHub Environment, never a wildcard.
+            // After the story→yotale repo rename + going public, GitHub emits an IMMUTABLE subject that
+            // qualifies BOTH owner and repo with their numeric ids:
+            //   repo:lingzhang1@<owner-id>/yotale@<repo-id>:environment:<env>
+            //   (observed: repo:lingzhang1@20372002/yotale@1400800555:environment:development)
+            // The former `lingzhang1*/story*` pattern CANNOT match this — `story*` has no match against the
+            // literal `yotale@<id>` segment — which is why live dev/beta deploys failed until their roles were
+            // hand-patched. Anchor on the owner login + repo NAME and tolerate the numeric id qualifier with a
+            // single `*` per segment: `lingzhang1@*` matches `lingzhang1@20372002`, `yotale@*` matches
+            // `yotale@1400800555`. This is the narrowest maintainable pattern that also survives a future
+            // repo-id change (e.g. transfer) without another hand-patch. Trust is NOT broadened: audience is
+            // still pinned to sts.amazonaws.com, and the environment segment is the literal `${environment}`
+            // so each role trusts exactly its own single GitHub Environment (never `environment:*`). This
+            // matches the value the live dev/beta roles already carry, so `cdk deploy` will NOT revert them to
+            // the obsolete `story` identity.
             StringLike: {
               "token.actions.githubusercontent.com:sub":
-                `repo:lingzhang1*/story*:environment:${environment}`,
+                `repo:lingzhang1@*/yotale@*:environment:${environment}`,
             },
           }
         ),
