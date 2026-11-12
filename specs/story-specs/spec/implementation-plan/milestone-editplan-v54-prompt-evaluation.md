@@ -5,7 +5,7 @@
 > they exist only in commit `457dc65` on branch `fix/prebeta-p1f-editorial-alignment`. The offline replay
 > harness used for this evaluation (`StoryTests/RuntimeEvidenceReplayTests.swift`, skipped unless
 > `P1F_REPLAY_DIR` is set) is preserved because it is prompt-independent. Follow-ups from §7 are tracked in
-> `duration-reliability.md` (duration), `chronology-metadata-proposal.md` and the provenance section there.
+> [milestone-duration-reliability-and-provenance](./milestone-duration-reliability-and-provenance.md) (duration + provenance) and [proposal-chronology-metadata](./proposal-chronology-metadata.md).
 
 **Status: EXPERIMENT, NOT ADOPTED.** v5.3 remains the deployed version; the v5.4 code is not merged (see the note above).
 

@@ -113,3 +113,33 @@ actions and annotated context. Rendered quality is NOT claimed until device acce
 - The system prompt's "±20% hard tolerance" / crossfade-overlap wording and the repair prompt's "+50% acceptable"
   are unchanged (no prompt change in this milestone).
 - Deliberate-repetition detection relies on the planner's `narrative_role` wording for overlapping re-cuts.
+
+## 7. Delivery and acceptance (2026-11-11 / 12)
+
+**Status: ✅ ACCEPTED on dev (physical device) and DEPLOYED to beta** — master `2d2d379`, beta deploy run
+43170264903 (API image `sha256:fa0d8637…`, worker zip stamped `2d2d379998be`). EditPlan prompt stays v5.3.
+
+| PR | Scope | Ships via |
+|---|---|---|
+| #103 | Deterministic duration fit (this doc §3), delivered-timeline arithmetic, artifact-baked provenance (`api_build_sha`, `worker_build_sha`, `prompt_version`, iOS `selection_policy`, Xcode Cloud commit stamp) | backend + iOS |
+| #104 | Customize: a Recommended length no longer reopens as a stale Custom 50 s; Custom minimum 5 s instead of 2 s × Moments; Custom field commits per keystroke | iOS |
+| #105 | Fitter: every AU payoff in a shot protected; kept native audio cut only on clean AU event boundaries | backend |
+| #106 | Create another version honours the Video Type chosen in Customize (Full Story was ignored); fail-fast job session (30 s / 120 s) + lost-reply recovery (exact submit bytes cached, re-sent with the same operation id on retry / reopen) | iOS |
+
+Dev device acceptance (TMB Hiking, 25 Moments; CONFIRMED runtime):
+
+| Case | Requested | Model | Fitted | Result |
+|---|---|---|---|---|
+| Highlights | 50 s | 61–64 s | 49.8–51.6 s | MP4 within 0.1 s of plan |
+| Full Story (Recommended) | 90 s | 147.6 s | 121.2 s | Full Story sheets (3.26 MB); disclosed; owner accepted |
+| Highlights (Custom) | 32 s | 39.3 s | 32.0 s | 5 trims, no drops |
+| Highlights, opening #15 | 16 s | 16.0 s | 16.0 s | untouched; 1.2 s shot kept |
+| Storyboard (many directives) | 20 s | 102.3 s | 71.9 s | directed Moments kept; disclosed; owner accepted |
+
+Beta check (job `71df1864`, original create, 90 s): 128.3 → 95.6 s (+6%), complete; live env 33 API / 16 worker
+vars identical to the synthesized template; both build stamps `2d2d379998be`. The fitter adds no model call and
+no measurable latency (arithmetic on the plan); original creates still run plan + critique + revision (~125 s).
+
+Open (outside this milestone): chronology metadata (proposal approved conceptually — `proposal-chronology-metadata.md`);
+v5.3 prompt still says "±20% hard tolerance" / "+50% acceptable"; local Xcode builds report `commit_sha: unknown`
+(needs a Run Script phase → pbxproj edit); media-upload resume 500 on `NoSuchUpload` (`list_uploaded_parts`).
