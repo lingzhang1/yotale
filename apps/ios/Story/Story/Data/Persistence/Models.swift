@@ -115,6 +115,11 @@ final class StoryModel {
     // Never overwritten during retries, recreation, or version generation (only acceptCustomize sets it).
     var editingApproachExplicit: String?
 
+    // How the user chose the length on Customize: "recommended" or "custom". Every create persists its length
+    // in intentTargetDurationSeconds — a Recommended pick included — so the target alone cannot say whether
+    // the user typed it. Reopening reads this to seed Recommended vs Custom, so an old Recommended number is
+    // never resent as a typed Custom length. Additive migration (optional, nil = older Story => inferred).
+    var durationChoiceExplicit: String?
     // Explicit Moment References (MVP): resolved HARD directives captured in Creative Direction, as the encoded
     // backend contract {must_include/exclude/opening/ending} of STABLE Moment UUIDs — NEVER display numbers.
     // Additive migration (optional + defaulted nil); nil = no explicit references => behavior unchanged. Persists
