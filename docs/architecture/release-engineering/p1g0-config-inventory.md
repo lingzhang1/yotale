@@ -1,5 +1,7 @@
 # P1-G0 — Configuration Inventory & Ownership (Stage A)
 
+> **Update:** the cleanup this inventory fed is implemented on `fix/prebeta-release-config-gates`; result, exact deletions, counts and rollback are in [`p1g0-cleanup-result.md`](p1g0-cleanup-result.md). Rows below describe the pre-cleanup baseline (Audit 3).
+
 **Status: STAGE A (inventory + findings + recommendations) — OFFLINE, no code behavior changed, not merged, not deployed.**
 Branch `fix/prebeta-release-config-gates` off master `7797b13`. Beta runtime untouched. Signing/scheme preserved.
 
