@@ -15,7 +15,7 @@ import os
 from director_engine import DirectorEngine, MockDirectorEngine
 from edit_engine import EditEngine, MockEditEngine
 from story_engine import MockStoryEngine, StoryEngine
-from model_gateway import BedrockModelGateway, FallbackModelGateway, ModelGateway
+from model_gateway import BedrockModelGateway, ModelGateway
 from creative_intent import (
     CreativeIntentEngine,
     MockCreativeIntentEngine,
@@ -92,7 +92,7 @@ def get_edit_engine() -> EditEngine:
 
 def get_model_gateway() -> ModelGateway:
     """Provide the Model Gateway. ONE provider for C1 (Bedrock), config-driven
-    via env (STORY_BEDROCK_MODEL / STORY_AWS_REGION)."""
+    (fixed default model; region via STORY_AWS_REGION). NOT provider-routed - see release notes."""
     return BedrockModelGateway()
 
 
@@ -114,7 +114,7 @@ def get_creative_intent_engine() -> CreativeIntentEngine:
 def get_scene_understanding_engine() -> SceneUnderstandingEngine:
     """Provide the Scene Understanding analyzer.
 
-    Task-specific, config-driven VISION model (STORY_SCENE_MODEL), separate from
+    Task-specific, fixed VISION model constant, separate from
     the Creative Intent model (Creative Intent model != Scene Understanding model).
     Default amazon.nova-pro-v1:0 — on-demand-invocable, image-capable, no Anthropic
     form gate. Set STORY_SCENE_UNDERSTANDING_MOCK=1 for the dev/offline mock (never
@@ -129,11 +129,10 @@ def get_scene_understanding_engine() -> SceneUnderstandingEngine:
 def get_story_director_engine() -> StoryDirectorEngine:
     """Provide the Story Director — the most intelligence-sensitive component.
 
-    Task-specific, config-driven model (STORY_DIRECTOR_MODEL), independent of the
+    Task-specific, fixed model constant, independent of the
     Creative Intent / Scene Understanding / Shot Validation models. Default
     amazon.nova-pro-v1:0 (on-demand-invocable, no Anthropic use-case gate; passed
-    the C3A offline quality gate). Switch to a Claude id via STORY_DIRECTOR_MODEL
-    once the account's Anthropic use-case form is confirmed — config, no code change.
+    the C3A offline quality gate). (Fixed constant; the direct router decides the real provider.)
     Set STORY_DIRECTOR_MOCK=1 for the dev/offline mock (never a silent fallback).
     """
     if os.environ.get("STORY_DIRECTOR_MOCK") == "1":
@@ -147,8 +146,8 @@ def get_story_director_engine() -> StoryDirectorEngine:
 def get_asset_understanding_engine() -> AssetUnderstandingEngine:
     """Provide the Asset Understanding analyzer (Milestone D, FROZEN).
 
-    ONE model, config-driven via STORY_AU_MODEL (default us.anthropic.claude-sonnet-4-6 —
-    the frozen production AU model). NO routing/escalation/native-video. Set
+    ONE model, fixed model constant (us.anthropic.claude-sonnet-4-6 —
+    the frozen production AU model; used only in the explicit non-release Bedrock mode). NO routing/escalation/native-video. Set
     STORY_ASSET_UNDERSTANDING_MOCK=1 for the dev/offline mock (never a silent fallback).
     """
     if os.environ.get("STORY_ASSET_UNDERSTANDING_MOCK") == "1":
@@ -160,9 +159,9 @@ def get_asset_understanding_engine() -> AssetUnderstandingEngine:
 def get_story_coverage_engine() -> StoryCoverageEngine:
     """Provide the Story Coverage engine (Milestone E, FROZEN).
 
-    ONE model, config-driven via STORY_COVERAGE_MODEL (default us.anthropic.claude-opus-4-6-v1 —
+    ONE model, fixed model constant (us.anthropic.claude-opus-4-6-v1 —
     the experiment winner: uniquely avoided false-sufficient AND false-insufficient while missing
-    zero worthwhile ideas). NO Nova/Sonnet fallback, NO routing. Set STORY_COVERAGE_MOCK=1 for the
+    zero worthwhile ideas; used only in the explicit non-release Bedrock mode). NO Nova/Sonnet fallback, NO routing. Set STORY_COVERAGE_MOCK=1 for the
     dev/offline mock (never a silent production fallback).
     """
     if os.environ.get("STORY_COVERAGE_MOCK") == "1":
@@ -177,7 +176,7 @@ def get_story_guide_engine() -> StoryGuideEngine:
     """Provide the Story Guide engine (Milestone E2-a, FROZEN).
 
     CreativeIntent -> persistent StoryGuide, ONCE per Story. ONE model, config-driven via
-    STORY_GUIDE_MODEL (default us.anthropic.claude-opus-4-6-v1 — the E2-a selection: restraint +
+    fixed constant (us.anthropic.claude-opus-4-6-v1, non-release Bedrock mode only — the E2-a selection: restraint +
     scope discipline + framing voice; task-specific, NOT a general Opus rule). Set STORY_GUIDE_MOCK=1
     for the dev/offline mock (never a silent production fallback — Guide failure preserves CreativeIntent).
     """
@@ -193,7 +192,7 @@ def get_story_guide_v2_engine():
     """Provide the StoryGuide/2 engine — the AI SHOOTING SCRIPT (additive, 2026-10-23).
 
     CreativeIntent -> scene-based shooting script, ONCE per Story. Same model selection as v1
-    (config-driven STORY_GUIDE_MODEL, default Opus 4.6) with the Opus->Sonnet quota fallback. Set
+    (fixed model constant, Opus 4.6 id; direct router decides the real provider) with the Opus->Sonnet quota fallback. Set
     STORY_GUIDE_MOCK=1 for the dev/offline mock. The Guide v2 endpoints are always available;
     this getter only constructs the engine. Guide failure preserves CreativeIntent (never fabricate)."""
     from story_guide import RealStoryGuideV2Engine, MockStoryGuideV2Engine
@@ -223,7 +222,7 @@ def get_story_coverage_v2_engine() -> StoryCoverageV2Engine:
 
     Composes the internal two-call pipeline (Mapper story_coverage/mapper-v1 + Judge
     story_judgment/v2) into the public StoryCoverageContractV2. ONE model, config-driven via
-    STORY_COVERAGE_MODEL (default us.anthropic.claude-opus-4-6-v1) for BOTH internal calls. The
+    fixed constant (us.anthropic.claude-opus-4-6-v1, non-release Bedrock mode only) for BOTH internal calls. The
     deterministic evidence builder firewalls Guide/completion signals away from the Judge.
     """
     model = DEFAULT_COVERAGE_V2_MODEL
@@ -254,8 +253,8 @@ def get_edit_planner_engine() -> EditPlannerEngine:
     """Provide the production Edit Planner engine (Milestone M-d, frozen edit_plan/2).
 
     One Opus 4.6 call via the generic ModelGateway + the frozen prompt edit_plan/2, under a DETERMINISTIC
-    validator (the model never self-certifies). Model is config-driven (STORY_EDIT_PLANNER_MODEL) but defaults
-    to the frozen us.anthropic.claude-opus-4-6-v1. Music inputs are optional (no-music planning supported).
+    validator (the model never self-certifies). Model is a fixed constant (used only in the explicit non-release Bedrock mode):
+    the frozen us.anthropic.claude-opus-4-6-v1. Music inputs are optional (no-music planning supported).
     """
     model = EDIT_PLANNER_MODEL
     # R-d.2 reliability: 2 bounded executability-repair attempts (was 1). v4's significance weighting can
@@ -277,7 +276,7 @@ def get_music_plan_engine() -> MusicPlanEngine:
 
     One Opus 4.6 call via the generic ModelGateway + the frozen prompt music_plan/1. Produces the Story-level
     soundtrack SHAPE at creation time (not per Moment) from CreativeIntent + authoritative MusicDirection +
-    StoryGuide + StoryCoverage/2 + target duration. Model is config-driven (STORY_MUSIC_PLAN_MODEL) but
+    StoryGuide + StoryCoverage/2 + target duration. Model is a fixed constant:
     defaults to the frozen us.anthropic.claude-opus-4-6-v1. Never fabricates — a failure propagates so the
     caller falls back to no-music creation.
     """
@@ -291,7 +290,7 @@ def get_duration_planner_engine() -> DurationPlannerEngine:
     One Opus 4.6 call via the generic ModelGateway + the frozen prompt. RECOMMENDS a target duration from
     CreativeIntent + StoryGuide + StoryCoverage/2 + deterministic material evidence; it does NOT select cuts
     (Edit Planner v4) or render (Media Engine), and the user owns the final choice. Model is config-driven
-    (STORY_DURATION_PLANNER_MODEL) but defaults to the validated us.anthropic.claude-opus-4-6-v1. Never
+    (fixed constant) defaulting to the validated us.anthropic.claude-opus-4-6-v1. Never
     fabricates — a failure propagates so the caller falls back to manual duration selection.
     """
     model = DURATION_PLANNER_MODEL

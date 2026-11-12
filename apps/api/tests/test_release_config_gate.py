@@ -7,7 +7,6 @@ rejecting a bad deployment would fail the build.
 from __future__ import annotations
 
 import importlib.util
-import json
 import re
 import shutil
 import sys
@@ -430,6 +429,36 @@ def test_deploy_workflows_run_the_gate_before_and_after_deploy():
         text = (REPO / ".github/workflows" / wf).read_text()
         assert f"release_config_gate.py pre --environment {env}" in text, wf
         assert f"release_config_gate.py post --environment {env}" in text, wf
-        assert text.index("release_config_gate.py pre") < text.index("cdk deploy") < text.index("release_config_gate.py post"), wf
+        assert text.index("release_config_gate.py pre") < text.index("npx cdk deploy") < text.index("release_config_gate.py post"), wf
+        # the deploy consumes the EXACT gated cloud assembly, never a fresh (possibly different) synth
+        assert '--app "$RUNNER_TEMP/cdk-pre"' in text and "CDK_CTX" not in text, wf
+        assert f"cdk synth -q -c environment={env}" in text, wf
     ci = (REPO / ".github/workflows/ci.yml").read_text()
     assert "release_config_gate.py pre" in ci
+
+
+# ------------------------------------------------------------------ runtime behavior of defaults + rollback
+def _probe(code: str, **env) -> str:
+    import os
+    import subprocess
+    e = {k: v for k, v in os.environ.items() if not k.startswith("STORY_")}
+    e.update(env)
+    e["PYTHONPATH"] = f"{REPO}/packages:{REPO}:{REPO}/apps/api"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=e, cwd=REPO)
+    return (r.stdout + r.stderr).strip()
+
+
+def test_runtime_normal_deploy_selects_v53_and_direct_providers_with_no_env():
+    out = _probe("import edit_planner as e; from model_gateway.provider import provider_mode as m;"
+                 "print(e.PROMPT_VERSION, e._v53_active(), m())")
+    assert out.splitlines()[-1] == "edit_plan/5.3 True direct"
+
+
+def test_runtime_emergency_rollback_selects_v52_and_strips_v53_evidence():
+    out = _probe("import edit_planner as e; print(e.PROMPT_VERSION, e._v53_active())", STORY_EDIT_PLAN_VERSION="5.2")
+    assert out.splitlines()[-1] == "edit_plan/5.2 False"
+
+
+def test_runtime_unknown_provider_fails_explicitly_instead_of_falling_back():
+    out = _probe("from model_gateway.provider import provider_mode as m; m()", STORY_MODEL_PROVIDER="anthropic")
+    assert "unsupported STORY_MODEL_PROVIDER" in out

@@ -83,9 +83,9 @@ jobs:
 
       - name: Pre-deploy release configuration gate (synth + validate; any violation blocks the deploy)
         run: |
-          # Same CDK context as the deploy step below (written once, to CDK_CTX). Synthesizes ONLY; no AWS writes.
+          # Synthesizes ONLY (no AWS writes). The deploy step below deploys THIS EXACT cloud assembly (--app), so the
+          # gated template is, byte for byte, the one that gets deployed - no second synth that could differ.
           CTX='-c imageDigest=${{ steps.image.outputs.digest }}'
-          echo "CDK_CTX=$CTX" >> "$GITHUB_ENV"
           ( cd infrastructure/cdk && npm ci || npm install )
           ( cd infrastructure/cdk && npx cdk synth -q -c environment=development $CTX --output "$RUNNER_TEMP/cdk-pre" )
           python3 scripts/release_config_gate.py pre --environment development \
@@ -98,7 +98,7 @@ jobs:
           npm ci || npm install
           # Drive CloudFormation through Story's dedicated scoped exec role, NOT the admin bootstrap role.
           # CFN_EXEC_ROLE_ARN is set in the development Environment (the CfnExecRoleArn stack output).
-          npx cdk deploy -c environment=development --require-approval never $CDK_CTX \
+          npx cdk deploy story-development-api --app "$RUNNER_TEMP/cdk-pre" --require-approval never \
             --role-arn "${{ vars.CFN_EXEC_ROLE_ARN }}"
 
       - name: Post-deploy verification (effective running configuration must equal the intended release)

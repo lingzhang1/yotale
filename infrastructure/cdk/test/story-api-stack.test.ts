@@ -584,10 +584,10 @@ describe("P1-G0 per-environment operational policy defaults (defined once, in CD
       expect(v.STORY_REQUIRE_AUTH).toBe("1");
     }
   });
-  test("a stray STORY_QUOTA_MODE shell variable can no longer relax beta", () => {
+  test("neither a shell variable nor a CDK context can relax beta (no override input exists)", () => {
     process.env.STORY_QUOTA_MODE = "observe";
     process.env.STORY_THROTTLE_MODE = "observe";
-    const v = serviceVars("beta");
+    const v = serviceVars("beta", { quotaMode: "observe", throttleMode: "observe" });
     expect(v.STORY_QUOTA_MODE).toBe("enforce");
     expect(v.STORY_THROTTLE_MODE).toBe("enforce");
   });

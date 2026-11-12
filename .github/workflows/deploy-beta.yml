@@ -95,9 +95,9 @@ jobs:
 
       - name: Pre-deploy release configuration gate (synth + validate; any violation blocks the deploy)
         run: |
-          # Same CDK context as the deploy step below (written once, to CDK_CTX). Synthesizes ONLY; no AWS writes.
+          # Synthesizes ONLY (no AWS writes). The deploy step below deploys THIS EXACT cloud assembly (--app), so the
+          # gated template is, byte for byte, the one that gets deployed - no second synth that could differ.
           CTX='-c imageDigest=${{ steps.image.outputs.digest }} -c cognitoUserPoolId=${{ vars.BETA_COGNITO_USER_POOL_ID }} -c cognitoAppClientId=${{ vars.BETA_COGNITO_APP_CLIENT_ID }} -c observability=true -c alarmDestination=alerts@yotale.ai'
-          echo "CDK_CTX=$CTX" >> "$GITHUB_ENV"
           ( cd infrastructure/cdk && npm ci || npm install )
           ( cd infrastructure/cdk && npx cdk synth -q -c environment=beta $CTX --output "$RUNNER_TEMP/cdk-pre" )
           python3 scripts/release_config_gate.py pre --environment beta \
@@ -119,7 +119,7 @@ jobs:
           #  - observability + alarmDestination: deploy the single authoritative monitoring stack (owned by
           #    the observability thread) into beta, alarming to alerts@yotale.ai. createBudget is left UNSET
           #    (=false) — the account-level $100 beta budget is owned by B0's org-foundation, not duplicated here.
-          npx cdk deploy -c environment=beta --require-approval never $CDK_CTX \
+          npx cdk deploy story-beta-api --app "$RUNNER_TEMP/cdk-pre" --require-approval never \
             --role-arn "${{ vars.CFN_EXEC_ROLE_ARN }}"
 
       - name: Post-deploy verification (effective running configuration must equal the intended release)

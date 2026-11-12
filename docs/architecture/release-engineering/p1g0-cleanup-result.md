@@ -54,7 +54,7 @@ value to a baked value (relocated, not deleted).
 | Cognito/table/bucket/queue identities, music (`STORY_MUSIC_PROVIDER`, `STORY_EPIDEMIC_MODE`) | CDK | Environment identity / licensed integration. |
 
 **New entries (honest accounting):** `release/release.json` (43 lines of *intent*, not a flag list); CDK optional
-override contexts `quotaMode`, `throttleMode` (visible on the command line; unused by any workflow — delete if unwanted);
+~~override contexts `quotaMode`/`throttleMode`~~ (added, then **removed** in the integration review: no concrete need; posture is fixed per environment in CDK);
 iOS `StoryAppleSignInAvailable` Info.plist key + `STORY_APPLE_SIGNIN_AVAILABLE` xcconfig value (replaces an
 Xcode-run flag).
 
@@ -158,7 +158,7 @@ staged**. The *committed* `Story` scheme was cleaned (it pointed the default Run
 | Worker `STORY_*` env vars (synth) | 15 | **9** | −6 deleted (plus `PYTHONPATH`, unchanged) |
 | Backend distinct `STORY_*` names read | 50 | **36** | −14; read sites 74 → 49 |
 | CDK `STORY_*` textual references | 71 | **55** | |
-| CDK `tryGetContext` keys | 17 | **14** | −5 removed, +2 optional (`quotaMode`, `throttleMode`) |
+| CDK `tryGetContext` keys | 17 | **12** | −5 removed; none added (`quotaMode`/`throttleMode` dropped in review) |
 | iOS env/launch-config names read | 13 | **7** | 6 are Debug-only identity keys + the retained `STORY_CRITIQUE_REVISION` |
 | iOS product-feature switches | 7 | **1** (`CRITIQUE_REVISION`, retained by owner) | + parked `REFERENCE_MEDIA_MODE` |
 | Workflow beta `STORY_*` env lines | 4 | **0** | moved into CDK defaults |
@@ -194,5 +194,38 @@ resource replaced or destroyed; observability, WAF, auth, tables, buckets, queue
 2. Deploy-role IAM for the post-deploy read calls (above).
 3. Retire sync `/v1/edit-plan*` once no older client remains.
 4. Apple IdP provisioning (only if Apple Sign In is wanted for beta).
-5. Whether to keep the optional `quotaMode`/`throttleMode` CDK contexts.
+5. ~~quotaMode/throttleMode~~ resolved: removed.
 6. Gamma/production runtime not inspected; `release.json` only states required security posture.
+
+## 15. Integration review addendum (final)
+
+* **quota/throttle switches:** removed. Posture is `observeOnly ? observe : enforce` (dev/test observe; beta, gamma,
+  production enforce); a CDK test proves neither shell env nor context can relax beta.
+* **Gate now guards the exact artifact:** both deploy workflows synthesize once into `$RUNNER_TEMP/cdk-pre`, run the
+  gate on *that* template, and `cdk deploy --app $RUNNER_TEMP/cdk-pre` deploys *that assembly* (verified read-only with
+  `cdk diff --app`). No second synth, no `CDK_CTX`, nothing optional to omit. Bootstrap is sound: the pre gate judges
+  only the new template; the post gate runs after deploy, so the old configuration being removed is never a blocker.
+* **Deploy-role IAM (live, via `iam simulate-principal-policy` on `story-{development,beta}-github-deploy`):**
+  `apprunner:ListServices`, `apprunner:DescribeService` (service ARN), `lambda:GetFunction` (worker), `ecr:DescribeImages`
+  (`story-<env>-api`) are all **allowed** on both. The worker-zip download uses the presigned URL from `GetFunction`
+  (no extra grant). `cognito-idp:ListIdentityProviders` is denied but only needed if Apple sign-in is ever baked `1`.
+  **No IAM change required now.**
+* **IAM drift (report only):** the live OIDC trust is `repo:lingzhang1@*/yotale@*:environment:<env>` but
+  `story-api-stack.ts` still says `lingzhang1*/story*`. Unchanged by this work; if that role resource is ever re-applied
+  from source it would break GitHub OIDC for the renamed repo. Proposed fix (needs approval): update the trust pattern
+  in IaC to `lingzhang1@*/yotale@*`.
+* **Provider bypass found (pre-existing, not changed):** `POST` revision-interpret (`main.py` ~1071/1093) and the
+  non-direct creative-intent path use `deps.get_model_gateway()`, a fixed Bedrock gateway on `amazon.nova-lite-v1:0`
+  (not Anthropic) that ignores provider mode. Re-routing it is a provider-routing change → owner decision.
+* **Behavior preservation:** async (iOS) path unchanged — dev/beta workers already ran the three formerly-flagged
+  behaviors ON, and the old flags-ON tests pass unchanged with no env. Only the *sync* `/v1/edit-plan*` path changes
+  (it now matches the worker: objectives not terminal, best-valid retention, ≤1 repair). No new repair loop; Revise ≤1
+  only for an unrenderable hard defect. Soft creative misses ship a playable video with disclosure (existing tests).
+  iOS critique rule is pinned by `critiqueApplies` tests (not run — see device checklist).
+* **Rollback verified (executed in fresh interpreters, now tests):** no env → `edit_plan/5.3`, v5.3 evidence on,
+  provider `direct`; `STORY_EDIT_PLAN_VERSION=5.2` → `edit_plan/5.2`, v5.3 evidence stripped; `STORY_MODEL_PROVIDER=anthropic`
+  raises. Manifest ships with no override/degradation.
+* **Final CDK diffs (read-only, real digests, pipeline flags incl. `observability=true`):** dev and beta each change
+  exactly `EditPlanWorker` and `StoryApiService` in place; nothing else; no IAM/Cognito/WAF/storage/queue/observability/
+  budget change; no quota/throttle/auth/evidence value changes.
+* Device checklist: `p1g0-device-acceptance.md` (NOT RUN).

@@ -293,15 +293,13 @@ export class StoryApiStack extends cdk.Stack {
     const emergencyEditPlanVersionEnv: Record<string, string> =
       emergencyEditPlanVersion ? { STORY_EDIT_PLAN_VERSION: String(emergencyEditPlanVersion) } : {};
 
-    // Per-environment OPERATIONAL POLICY DEFAULTS, defined here once (never re-stated in a deploy workflow's
-    // env: a deploy from a shell without those vars used to silently synthesize beta as "observe").
-    // development/test observe; beta/gamma/production ENFORCE (fail-closed). Values are the ones beta was
-    // already running (quota/throttle enforce, $50 per-user monthly, 500 gens/day, $60 global). Explicit
-    // overrides are visible on the command line (`-c quotaMode=`, `-c throttleMode=`) and are checked against
-    // release/release.json by scripts/release_config_gate.py.
+    // Per-environment OPERATIONAL POLICY, defined here once (never re-stated in a deploy workflow's env: a deploy
+    // from a shell without those vars used to silently synthesize beta as "observe"). development/test observe;
+    // beta/gamma/production ENFORCE (fail-closed). There is deliberately NO override input: changing a posture is a
+    // reviewed edit to this file + release/release.json, which scripts/release_config_gate.py enforces.
     const observeOnly = environment === "development" || environment === "test";
-    const quotaMode = (this.node.tryGetContext("quotaMode") as string) ?? (observeOnly ? "observe" : "enforce");
-    const throttleMode = (this.node.tryGetContext("throttleMode") as string) ?? (observeOnly ? "observe" : "enforce");
+    const quotaMode = observeOnly ? "observe" : "enforce";
+    const throttleMode = observeOnly ? "observe" : "enforce";
     const userMonthlyUsdDefault = environment === "beta" ? "50" : "8";
 
     // Worker Lambda — DOCKER-FREE zip asset (the sandbox cannot run Docker). scripts/build_worker_asset.sh
