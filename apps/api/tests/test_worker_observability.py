@@ -31,8 +31,9 @@ def test_worker_ai_metrics_surface_tokens_and_cost_on_fallback():
             "any_fallback": True, "executability_repairs_used": 1, "critique_attempted": True}
     obj = _capture(lambda: W._emit_ai_metrics(diag, op_type="revision"))
     assert obj["_aws"]["CloudWatchMetrics"][0]["Namespace"] == "Story/Beta"
-    # Fallback fired -> the billed model is the fallback (sonnet), and cost uses sonnet pricing.
-    assert obj["model_id"] == W._FALLBACK_MODEL
+    # Fallback fired -> the billed model is the ACTIVE route's fallback (never an obsolete Anthropic label).
+    assert obj["model_id"] == W._planner_models()[1]
+    assert "anthropic" not in obj["model_id"] and "claude" not in obj["model_id"]
     assert obj["InputTokens"] == 20_000
     assert obj["OutputTokens"] == 1_000
     assert obj["ModelFallbacks"] == 1
@@ -48,7 +49,8 @@ def test_worker_ai_metrics_surface_tokens_and_cost_on_fallback():
 def test_worker_ai_metrics_primary_model_when_no_fallback():
     diag = {"input_tokens": 5_000, "output_tokens": 500, "model_calls": 1, "any_fallback": False}
     obj = _capture(lambda: W._emit_ai_metrics(diag, op_type="original"))
-    assert obj["model_id"] == W._PRIMARY_MODEL
+    assert obj["model_id"] == W._planner_models()[0]
+    assert "anthropic" not in obj["model_id"] and "claude" not in obj["model_id"]
     assert obj["ModelFallbacks"] == 0
 
 
