@@ -781,14 +781,34 @@ final class StoryCreationCoordinator {
                 reusedExistingJob = false
                 var submitted: String? = nil
                 var lastErr: Error? = nil
+                // LOST-REPLY RECOVERY: encode once, keep the exact bytes on device and durably record the attempt
+                // (phase "submitting", no job id yet) BEFORE the POST. A reply lost to a dropped connection, a
+                // locked screen or a killed app is then recoverable: the retries below and any later resume
+                // re-send these SAME bytes, which the server matches to the SAME job (deterministic job id +
+                // payload fingerprint) — never a second inference.
+                let prepared = jobClient.prepareSubmit(build.request, operationId: opId, owner: "dev",
+                                                       approach: requested, sheets: sheets,
+                                                       creativeBrief: brief, critiqueRevision: critique,
+                                                       evidenceAccounting: evidenceDict,
+                                                       buildProvenance: provenanceDict)
+                if let prepared {
+                    PendingJobSubmitStore.save(prepared, operationId: opId)
+                    upsertPending(story: story, operationId: opId, jobId: nil, phase: "submitting",
+                                  jobStatus: nil, fingerprint: Self.fingerprint(
+                                    for: build.includedMedia.map(\.momentId), story: story))
+                }
                 for attempt in 0..<3 {
                     if cancelRequested { return finishCancelled() }
                     do {
-                        submitted = try await jobClient.submit(build.request, operationId: opId, owner: "dev",
-                                                               approach: requested, sheets: sheets,
-                                                               creativeBrief: brief, critiqueRevision: critique,
-                                                           evidenceAccounting: evidenceDict,
-                                                           buildProvenance: provenanceDict)
+                        if let prepared {
+                            submitted = try await jobClient.submitPrepared(prepared)
+                        } else {
+                            submitted = try await jobClient.submit(build.request, operationId: opId, owner: "dev",
+                                                                   approach: requested, sheets: sheets,
+                                                                   creativeBrief: brief, critiqueRevision: critique,
+                                                                   evidenceAccounting: evidenceDict,
+                                                                   buildProvenance: provenanceDict)
+                        }
                         break
                     } catch let EditPlanJobError.transport(underlying) {
                         // A user cancel surfaces as NSURLError -999 — not retryable, it IS a cancellation.
@@ -802,10 +822,13 @@ final class StoryCreationCoordinator {
                     }
                 }
                 guard let jid = submitted else {
+                    // Keep the cached bytes + "submitting" row: the job may exist server-side (the reply was
+                    // lost), and reopening the Story resumes it by re-sending the same bytes.
                     let reason = lastErr.map { String(describing: $0) } ?? "submit failed"
                     return finishFailed(.planTransport(reason))
                 }
                 jobId = jid
+                PendingJobSubmitStore.remove(operationId: opId)   // job id known — the bytes are no longer needed
                 story.planJobId = jobId; story.planJobStatus = "queued"; try? context.save()
             }
             // Phase 1: durably record this unfinished operation NOW (job handle known) so a background/suspend/
@@ -1414,7 +1437,8 @@ extension StoryCreationCoordinator {
     /// this to offer "resume" instead of silently re-creating, and to decide whether reopen should recover.
     func hasRecoverablePendingOperation(storyId: UUID) -> Bool {
         guard let row = fetchPending(storyId: storyId) else { return false }
-        return row.isRecoverable && row.jobId != nil
+        return row.isRecoverable
+            && (row.jobId != nil || PendingJobSubmitStore.exists(operationId: row.operationId))
     }
 
     /// Mark every recoverable pending op for a Story as abandoned (user deliberately started a new operation).
@@ -1423,6 +1447,7 @@ extension StoryCreationCoordinator {
     func abandonPendingOperations(storyId: UUID) {
         let desc = FetchDescriptor<PendingOperationModel>(predicate: #Predicate { $0.storyId == storyId })
         for row in ((try? context.fetch(desc)) ?? []) where row.isRecoverable {
+            PendingJobSubmitStore.remove(operationId: row.operationId)
             context.delete(row)
         }
         try? context.save()
@@ -1474,6 +1499,7 @@ extension StoryCreationCoordinator {
 
     private func markPendingFailed(story: StoryModel, category: String?) {
         guard let row = fetchPending(storyId: story.id) else { return }
+        PendingJobSubmitStore.remove(operationId: row.operationId)
         row.failureCategory = category; row.jobStatus = "failed"
         // Mark the op TERMINAL (abandoned) so the app-level recovery does NOT re-resume this failed job on
         // every foreground (that caused an infinite resume->failed loop, and once planJobId was cleared it
@@ -1490,6 +1516,7 @@ extension StoryCreationCoordinator {
         let sid = story.id
         let desc = FetchDescriptor<PendingOperationModel>(predicate: #Predicate { $0.storyId == sid })
         for row in ((try? context.fetch(desc)) ?? []) {
+            PendingJobSubmitStore.remove(operationId: row.operationId)
             context.delete(row)
         }
         try? context.save()
@@ -1514,9 +1541,12 @@ extension StoryCreationCoordinator {
     @discardableResult
     func resumePendingOperation(for story: StoryModel, music: MusicSelection? = nil) -> Bool {
         guard !isCreating else { return false }                 // a run already owns this coordinator
-        guard let row = fetchPending(storyId: story.id), row.isRecoverable, let jobId = row.jobId else {
-            return false
-        }
+        guard let row = fetchPending(storyId: story.id), row.isRecoverable else { return false }
+        // A LOST-REPLY attempt has no job id yet but kept its exact submit bytes: re-send them (same operation
+        // id + payload -> the server returns the SAME job, or creates it if the first POST never arrived), then
+        // resume exactly like any other in-flight job. Never a new inference.
+        let cachedSubmit = row.jobId == nil ? PendingJobSubmitStore.load(operationId: row.operationId) : nil
+        guard row.jobId != nil || cachedSubmit != nil else { return false }
         guard Self.claimActive(story.id, by: self) else { return false }  // another coordinator already resuming/creating
         // Rehydrate the in-memory operation context from the durable row so persist() keeps lineage/music/type.
         lastStory = story
@@ -1529,16 +1559,44 @@ extension StoryCreationCoordinator {
         pendingParentVersionId = row.baseVersionId.flatMap(UUID.init(uuidString:))
         pendingRevisionContext = Self.rebuildRevisionContext(for: story, row: row)
         story.planOperationId = row.operationId
-        story.planJobId = jobId
+        story.planJobId = row.jobId
         isCreating = true
         cancelRequested = false
         Self.setKeepAwake(true, story.id)
         MediaEngineV1.beacon("editplan-recover: resume op=\(row.operationType) phase=\(row.phase) "
-            + "job=\(jobId.prefix(8)) music=\(music == nil ? "none" : "set")")
+            + "job=\(row.jobId?.prefix(8) ?? "lost-reply") music=\(music == nil ? "none" : "set")")
         task = Task { [weak self] in
-            await self?.resumeRun(story: story, row: row)
+            guard let self else { return }
+            if let cachedSubmit, !(await self.recoverLostReply(cachedSubmit, story: story, row: row)) {
+                // Could not reach the server (offline): leave the row + bytes for the next foreground/reopen.
+                self.isCreating = false; self.task = nil
+                Self.setKeepAwake(false, story.id); Self.releaseActive(story.id)
+                self.finishFailed(.planTransport("couldn't reach Story — reopen to continue"))
+                return
+            }
+            await self.resumeRun(story: story, row: row)
         }
         return true
+    }
+
+    /// Re-send a lost-reply submit's exact bytes (bounded retries) and adopt the returned job id. Returns false
+    /// when the server could not be reached.
+    private func recoverLostReply(_ prepared: PreparedJobSubmit, story: StoryModel, row: PendingOperationModel) async -> Bool {
+        for attempt in 0..<3 {
+            do {
+                let jid = try await jobClient.submitPrepared(prepared)
+                story.planJobId = jid; story.planJobStatus = "queued"; try? context.save()
+                row.jobId = jid; row.phase = "planning"; row.updatedAt = .now; try? context.save()
+                PendingJobSubmitStore.remove(operationId: row.operationId)
+                MediaEngineV1.beacon("editplan-recover: lost reply recovered job=\(jid.prefix(8)) attempt=\(attempt + 1)")
+                return true
+            } catch {
+                MediaEngineV1.beacon("editplan-recover: lost-reply resend failed attempt=\(attempt + 1) "
+                    + "code=\((error as NSError).code)")
+                try? await Task.sleep(nanoseconds: UInt64(800_000_000 * (attempt + 1)))
+            }
+        }
+        return false
     }
 
     /// Drive a resumed operation to completion. For plan_ready with a saved plan we SKIP planning entirely and

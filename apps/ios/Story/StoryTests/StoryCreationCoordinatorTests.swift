@@ -94,6 +94,13 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         }
 
         func cancel(jobId: String) async { /* no-op in tests */ }
+
+        // Lost-reply recovery seam: re-sending cached submit bytes returns the SAME job (server idempotency).
+        private(set) var submitPreparedCount = 0
+        func submitPrepared(_ prepared: PreparedJobSubmit) async throws -> String {
+            submitPreparedCount += 1
+            return "job-recovered"
+        }
     }
 
     /// A renderer that records whether it was called + the inputs it saw, and returns a canned result
@@ -667,6 +674,47 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         guard case .completed = coord.state else { return XCTFail("expected .completed, got \(coord.state)") }
         XCTAssertEqual(jobClient.submitCount, 0, "queued-resume must poll the existing job, not submit a new one")
         XCTAssertEqual(s.generatedOutputs.count, 1)
+    }
+
+    /// LOST REPLY (dev 2026-11-12): the POST reached the server but its 202 never reached the phone, so the row
+    /// was left at "submitting" with NO job id. Reopening must re-send the cached bytes (same operation id ->
+    /// the SAME server job), adopt the job id and poll it — never a fresh inference — and drop the cached bytes.
+    func test_recovery_lostReply_resendsCachedSubmitThenPollsSameJob() async throws {
+        let s = newStory()
+        let m1 = momentWithFile(s, rel: "media/rec-lost-1.mov", dur: 8); completeAU(m1, useful: [(0, 5)])
+        let plan = validPlan([m1])
+        let opId = "op-lost-\(UUID().uuidString)"
+        let op = PendingOperationModel(storyId: s.id, operationId: opId, jobId: nil,
+                                       operationType: "another_version", phase: "submitting",
+                                       outputFormat: "vertical")
+        ctx.insert(op); try ctx.save()
+        s.planOperationId = opId; try ctx.save()
+        PendingJobSubmitStore.save(PreparedJobSubmit(body: Data("multipart".utf8), boundary: "b"), operationId: opId)
+        defer { PendingJobSubmitStore.remove(operationId: opId) }
+        let jobClient = FakeJobClient(.ok(plan))
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(plan)),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx,
+                                             jobClient: jobClient)
+        XCTAssertTrue(coord.hasRecoverablePendingOperation(storyId: s.id), "a lost-reply attempt is recoverable")
+        XCTAssertTrue(coord.resumePendingOperation(for: s))
+        await awaitSettled(coord)
+        XCTAssertEqual(jobClient.submitPreparedCount, 1, "re-sends the cached bytes exactly once")
+        XCTAssertEqual(jobClient.submitCount, 0, "never builds a NEW submit (no second inference)")
+        XCTAssertGreaterThanOrEqual(jobClient.pollCount, 1, "then polls the recovered job")
+        XCTAssertFalse(PendingJobSubmitStore.exists(operationId: opId), "cached bytes dropped once the job id is known")
+    }
+
+    func test_recovery_noJobIdAndNoCachedSubmit_isNotRecoverable() async throws {
+        let s = newStory()
+        let op = PendingOperationModel(storyId: s.id, operationId: "op-none-\(UUID().uuidString)", jobId: nil,
+                                       operationType: "another_version", phase: "submitting",
+                                       outputFormat: "vertical")
+        ctx.insert(op); try ctx.save()
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(validPlan([]))),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx,
+                                             jobClient: FakeJobClient(.failUnavailable))
+        XCTAssertFalse(coord.hasRecoverablePendingOperation(storyId: s.id))
+        XCTAssertFalse(coord.resumePendingOperation(for: s))
     }
 
     /// Phase 5: a deliberate Create Another Version while a recoverable op exists ABANDONS the stale op (no two
