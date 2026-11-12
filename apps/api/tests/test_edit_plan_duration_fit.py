@@ -361,3 +361,50 @@ def test_feasible_false_overshoot_is_shipped_and_fitted():
     eng = RealEditPlannerEngine(FakeModelGateway(response=plan))
     out = eng.generate(_inputs(ms, 50))
     assert out.feasible is True and abs(sum(s.output_duration_seconds for s in out.segments) - 50) <= 5
+
+
+# ---------------------------------------------------------------------------- device-acceptance regressions (2026-11-11)
+
+def _multi_peak_moment(dur, peaks, events):
+    m = _moment(dur, events=events)
+    m["editorial"] = {"visual_candidates": [{"start_time": max(0.0, p - 1), "end_time": min(dur, p + 1),
+                                             "peak_time": p, "confidence": c} for p, c in peaks]}
+    return m
+
+
+def test_every_payoff_in_a_shot_is_kept_not_only_the_strongest():
+    # Real case D: boulder clip — raise poles (5.06, conf .95) then turn to face the camera (6.56, conf .90).
+    boulder = _multi_peak_moment(6.86, [(5.06, 0.95), (6.56, 0.9)], [(0, 4.1), (4.1, 5.7), (5.7, 6.8)])
+    # Real case C/D: church clip — backpack detail (1.33) and the pink-facade reveal (8.17).
+    church = _multi_peak_moment(15.6, [(1.333, 0.85), (8.167, 0.88)], [(0, 4.5), (4.5, 11.2), (11.2, 15.6)])
+    fillers = [_moment(20) for _ in range(6)]
+    ms = [fillers[0], boulder, fillers[1], church, *fillers[2:]]
+    segs = [_seg(0, fillers[0], 2, 18), _seg(1, boulder, 4.0, 6.8), _seg(2, fillers[1], 2, 18),
+            _seg(3, church, 0.0, 11.5), *[_seg(4 + i, m, 2, 18) for i, m in enumerate(fillers[2:])]]
+    p = _plan(segs)
+    inp = _inputs(ms, 70)
+    f, rep = fit_plan_duration(p, inp)
+    assert rep["applied"]
+    by = {s["asset_id"]: s for s in f["segments"]}
+    assert by[boulder["id"]]["source_end_seconds"] >= 6.56            # the turn to camera survives
+    assert by[church["id"]]["source_start_seconds"] <= 1.333          # the backpack detail survives
+    assert by[church["id"]]["source_end_seconds"] >= 8.167
+    _assert_shrunk_valid(p, f, inp)
+
+
+def test_kept_native_audio_is_only_cut_on_au_event_boundaries():
+    ms = [_moment(30, events=[(0, 3), (3, 9), (9, 14), (14, 21), (21, 30)]) for _ in range(5)]
+    p = _plan([_seg(i, m, 0, 30, native="keep") for i, m in enumerate(ms)])   # 150s for 80s
+    f, rep = fit_plan_duration(p, _inputs(ms, 80))
+    assert rep["applied"]
+    bounds = {0, 3, 9, 14, 21, 30}
+    for s in f["segments"]:
+        assert round(s["source_start_seconds"], 3) in bounds and round(s["source_end_seconds"], 3) in bounds
+
+
+def test_ducked_audio_is_not_snapped():
+    ms = [_moment(30, events=[(0, 3), (3, 9), (9, 14), (14, 21), (21, 30)]) for _ in range(5)]
+    p = _plan([_seg(i, m, 0, 30, native="duck") for i, m in enumerate(ms)])
+    f, rep = fit_plan_duration(p, _inputs(ms, 80))
+    assert rep["within_band"]                                         # free to trim precisely to the target
+    assert abs(delivered_total_seconds(f["segments"]) - 80) <= 1
