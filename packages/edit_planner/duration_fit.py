@@ -16,7 +16,9 @@ Protected core of a shot (never trimmed into): from the first to the last AU vis
 it (±PAYOFF_HALF_WINDOW_S) — every payoff, not only the strongest — widened to the whole containing AU events for
 Full Story (complete actions) and for kept native audio; a kept-audio shot without a payoff keeps its main AU
 event. A kept-audio shot's trimmed edges are also snapped to AU event boundaries, so its sound never starts or
-stops mid-event. A trim never takes a shot below RETAIN_FRACTION of the length the
+stops mid-event. A trim never takes a shot below MIN_TRIM_OUT_S (the final shot below MIN_FINAL_OUT_S: the
+renderer's 1 s soundtrack end fade must fit inside it — a 0.79 s trimmed ending crashed the iOS audio mix on beta,
+2026-11-12), and never below RETAIN_FRACTION of the length the
 planner chose for it. There is NO absolute minimum shot length: a short planner shot is never lengthened or
 rejected, and the validator is unchanged.
 
@@ -35,6 +37,8 @@ from typing import Any
 FIT_TRIGGER = 0.10            # fit only when delivered total > target * (1 + FIT_TRIGGER)
 FIT_BAND = 0.10               # stage C stops dropping once total <= target * (1 + FIT_BAND)
 RETAIN_FRACTION = 0.5         # a trim keeps at least this fraction of the shot the planner chose
+MIN_TRIM_OUT_S = 1.0          # a trim never takes a shot below this (a shorter PLANNER shot is left as-is)
+MIN_FINAL_OUT_S = 2.0         # ... nor the final shot below this (the soundtrack's 1 s end fade lives in it)
 PAYOFF_HALF_WINDOW_S = 1.25   # protected source window around an AU visual-candidate peak
 LITERAL_REPEAT_OVERLAP = 0.8  # a later same-Moment segment this much covered by earlier footage is a literal repeat
 _CALLBACK_RE = re.compile(r"\b(callback|reprise|echo|bookend|recap|motif|mirror|refrain|again)\b", re.I)
@@ -172,6 +176,7 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
         s["_orig"] = (k, *_range(s))
     last_anchor = max((k for k, s in enumerate(segs) if _anchored(s)), default=-1)
     aim, band = target, target * (1 + FIT_BAND)
+    floor_total = target * (1 - FIT_BAND)   # a DROP never takes the video below this (trims stop at `aim`)
 
     def mom(s):
         return moments.get(str(s.get("asset_id")).lower())
@@ -200,7 +205,8 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
         a, b = _range(s)
         covered = sum(max(0.0, min(b, y) - max(a, x)) for x, y in kept_ranges.get(aid, []))
         if (aid in kept_ranges and droppable(i, s) and covered >= LITERAL_REPEAT_OVERLAP * (b - a)
-                and not _CALLBACK_RE.search(str(s.get("narrative_role") or ""))):
+                and not _CALLBACK_RE.search(str(s.get("narrative_role") or ""))
+                and delivered_total_seconds(segs) - float(s["output_duration_seconds"]) >= floor_total - _EPS):
             drop(i, "literal_repeat")
             continue
         kept_ranges.setdefault(aid, []).append((a, b))
@@ -216,7 +222,9 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
         a, b = _range(s)
         out = float(s["output_duration_seconds"])
         core = _core(s, mom(s), whole_event=full_story)
-        min_out = max(RETAIN_FRACTION * out, ((core[1] - core[0]) / _speed(s)) if core else 0.0)
+        floor_out = MIN_FINAL_OUT_S if s is segs[-1] else MIN_TRIM_OUT_S
+        min_out = max(RETAIN_FRACTION * out, min(out, floor_out),
+                      ((core[1] - core[0]) / _speed(s)) if core else 0.0)
         if out - min_out > _EPS:
             lo, hi = core if core else ((a + b) / 2, (a + b) / 2)
             limits[id(s)] = (min_out, lo, hi)
@@ -258,8 +266,10 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
             trimmed_ids.add(id(s))
     report["trimmed"] = len(trimmed_ids)
 
-    # C. still over the band: drop optional shots with no AU payoff. Least valuable first: no visual-candidate
-    # overlap before candidate overlap, non-kept audio before kept audio, then the LONGEST (fewest shots removed).
+    # C. still over the band: drop an optional shot with no AU payoff — the one whose removal lands CLOSEST to the
+    # target, never one that would take the video more than FIT_BAND under it (if every option would, the video
+    # stays a little long and is disclosed). Ties: no visual-candidate overlap first, then non-kept audio.
+    # (Was "longest first": a 21 s drop took a 68 s Full Story to 55 s on beta, 2026-11-12.)
     def _cand_overlap(s):
         ed = (mom(s) or {}).get("editorial") or {}
         a, b = _range(s)
@@ -269,12 +279,14 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
 
     while delivered_total_seconds(segs) > band + _EPS:
         # Full Story keeps annotated context (any AU visual-candidate overlap); only unannotated filler may go.
+        total = delivered_total_seconds(segs)
         cands = [(i, s) for i, s in enumerate(segs) if droppable(i, s) and _payoff(s, mom(s)) is None
-                 and not (full_story and _cand_overlap(s))]
+                 and not (full_story and _cand_overlap(s))
+                 and total - float(s["output_duration_seconds"]) >= floor_total - _EPS]
         if not cands:
             break
-        i, _ = min(cands, key=lambda t: (_cand_overlap(t[1]), (t[1].get("native_audio") or "keep") == "keep",
-                                         -float(t[1]["output_duration_seconds"])))
+        i, _ = min(cands, key=lambda t: (round(abs(total - float(t[1]["output_duration_seconds"]) - aim), 3),
+                                         _cand_overlap(t[1]), (t[1].get("native_audio") or "keep") == "keep"))
         drop(i, "optional_no_payoff")
 
     for k, s in enumerate(segs):
