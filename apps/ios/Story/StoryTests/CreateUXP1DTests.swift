@@ -37,6 +37,61 @@ final class CreateUXP1DTests: XCTestCase {
         XCTAssertEqual(V.seedDurationChoice(editorialMode: "highlights", explicitTarget: 30), .custom)
     }
 
+    func testSavedRecommendedPickReopensRecommendedEvenWhenTodaysPointsDiffer() {
+        // beta 2026-11-12: a 67.5 s Recommended pick, today's points 53/95 — must NOT reopen as Custom 67.5 s.
+        XCTAssertEqual(V.seedDurationChoice(editorialMode: "highlights", explicitTarget: 67.5,
+                                            recommendedPoints: [53, 95], savedChoice: "recommended"), .recommended)
+    }
+
+    func testSavedCustomPickReopensCustomEvenWhenItMatchesAPoint() {
+        XCTAssertEqual(V.seedDurationChoice(editorialMode: "highlights", explicitTarget: 53,
+                                            recommendedPoints: [53, 95], savedChoice: "custom"), .custom)
+    }
+
+    func testNoSavedChoiceFallsBackToPointMatchingForOlderStories() {
+        XCTAssertEqual(V.seedDurationChoice(editorialMode: "highlights", explicitTarget: 53.4,
+                                            recommendedPoints: [53, 95], savedChoice: nil), .recommended)
+        XCTAssertEqual(V.seedDurationChoice(editorialMode: "highlights", explicitTarget: 67.5,
+                                            recommendedPoints: [53, 95], savedChoice: "garbage"), .custom)
+    }
+
+    func testDurationChoiceWireRoundTrips() {
+        for c in [V.DurationChoice.recommended, .custom] { XCTAssertEqual(V.DurationChoice(rawValue: c.wire), c) }
+    }
+
+    // MARK: - Duration recommendation cache key = footage only
+
+    private func moment(_ id: String, _ dur: Double, summary: String = "a", segmentEnd: Double = 10) -> JSONValue {
+        .object(["id": .string(id), "duration_seconds": .number(dur),
+                 "useful_segments": .array([.array([.number(0), .number(segmentEnd)])]), "summary": .string(summary)])
+    }
+
+    private func fp(target: Double?, type: String = "highlights", _ moments: [JSONValue]) -> String {
+        DurationService.durationFingerprint(
+            creativeIntent: .object(["target_duration_seconds": target.map { .number($0) } ?? .null,
+                                     "editorial_mode": .string(type), "theme": .string("trip")]),
+            moments: moments, requestedScope: nil)
+    }
+
+    func testRecommendationKeyIgnoresTheChosenTargetAndType() {
+        let ms = [moment("A", 12), moment("B", 30)]
+        XCTAssertEqual(fp(target: nil, ms), fp(target: 67.5, ms))
+        XCTAssertEqual(fp(target: 53, ms), fp(target: 90, type: "full", ms))
+    }
+
+    func testRecommendationKeyChangesWhenFootageChanges() {
+        let base = fp(target: nil, [moment("A", 12), moment("B", 30)])
+        XCTAssertNotEqual(base, fp(target: nil, [moment("A", 12)]))                          // Moment removed
+        XCTAssertNotEqual(base, fp(target: nil, [moment("A", 12), moment("B", 30), moment("C", 5)]))  // added
+        XCTAssertNotEqual(base, fp(target: nil, [moment("A", 12), moment("B", 31)]))         // duration
+        XCTAssertNotEqual(base, fp(target: nil, [moment("A", 12), moment("B", 30, summary: "b")]))   // AU
+        XCTAssertNotEqual(base, fp(target: nil, [moment("A", 12), moment("B", 30, segmentEnd: 8)]))   // AU
+    }
+
+    func testRecommendationKeyToleratesMillisecondDurationNoise() {
+        XCTAssertEqual(fp(target: nil, [moment("A", 12.001)]), fp(target: nil, [moment("A", 11.998)]))
+    }
+
     func testNoExplicitTargetSeedsRecommended() {
         // ...while no explicit target (a fresh/recommended selection) opens as Recommended.
         XCTAssertEqual(V.seedDurationChoice(editorialMode: "highlights", explicitTarget: nil), .recommended)

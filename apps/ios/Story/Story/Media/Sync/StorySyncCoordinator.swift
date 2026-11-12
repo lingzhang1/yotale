@@ -411,6 +411,7 @@ extension StorySyncCoordinator {
         story.soundPreferenceExplicit = sd["sound_preference_explicit"] as? String
         story.editorialMode = sd["editorial_mode"] as? String
         story.editingApproachExplicit = sd["editing_approach_explicit"] as? String
+        story.durationChoiceExplicit = sd["duration_choice_explicit"] as? String
         story.creativeDirectivesJSON = sd["creative_directives_json"] as? String
         story.momentSequenceJSON = sd["moment_sequence_json"] as? String   // Customize UX v2: storyboard seq
         story.creativeDirectionText = sd["creative_direction_text"] as? String
@@ -483,6 +484,7 @@ extension StorySyncCoordinator {
         copy.intentPace = src.intentPace; copy.intentTargetDurationSeconds = src.intentTargetDurationSeconds
         copy.soundPreferenceExplicit = src.soundPreferenceExplicit
         copy.editorialMode = src.editorialMode; copy.editingApproachExplicit = src.editingApproachExplicit
+        copy.durationChoiceExplicit = src.durationChoiceExplicit
         copy.creativeDirectivesJSON = src.creativeDirectivesJSON
         copy.momentSequenceJSON = src.momentSequenceJSON
         copy.creativeDirectionText = src.creativeDirectionText

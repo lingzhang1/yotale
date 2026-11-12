@@ -566,9 +566,11 @@ struct MediaEngineV1 {
                        soundtrackTrackB: AVMutableCompositionTrack? = nil,
                        loopSeams: [CMTime] = [],
                        totalDuration: CMTime = .zero) -> AVMutableAudioMix {
+        // Every gain change goes through AudioGainSchedule, which never lets two changes on one track overlap
+        // (an overlap is an uncatchable AVFoundation exception — the 2026-11-12 beta crash-on-reopen loop).
         let mix = AVMutableAudioMix()
         var params: [AVMutableAudioMixInputParameters] = []
-        let ramp = CMTime(seconds: 0.08, preferredTimescale: 600)   // short deterministic click-guard fade
+        let ramp = 0.08   // short deterministic click-guard fade (seconds), shortened for very short shots
 
         let soundtrackTracks: [AVMutableCompositionTrack] = [soundtrackTrack, soundtrackTrackB].compactMap { $0 }
         // Capture audio lives on up to TWO tracks (ping-pong, index = segment order % 2). A crossfade overlaps
@@ -579,17 +581,19 @@ struct MediaEngineV1 {
         let captureArr = composition.tracks(withMediaType: .audio).filter { t in !soundtrackTracks.contains(t) }
         for (idx, track) in captureArr.enumerated() {
             let p = AVMutableAudioMixInputParameters(track: track)
-            // segments placed on THIS track (every other segment)
+            var sched = AudioGainSchedule()
+            // segments placed on THIS track (every other segment). A ramp is at most half its segment, so a
+            // shot shorter than two ramps still gets a clean in/out; a zero-length segment gets nothing. After a
+            // ramp-in the gain holds at `g` until the ramp-out, so no separate hold point is needed.
             for (i, sr) in segmentRanges.enumerated() where i % 2 == idx {
                 let g = NativeAudioPolicy.captureGain(nativeAudio: sr.segment.nativeAudio)
-                let r = sr.range
-                let inEnd = CMTimeAdd(r.start, ramp)
-                let outStart = CMTimeSubtract(CMTimeAdd(r.start, r.duration), ramp)
-                let outEnd = CMTimeAdd(r.start, r.duration)
-                p.setVolumeRamp(fromStartVolume: 0.0, toEndVolume: g, timeRange: CMTimeRange(start: r.start, end: inEnd))
-                p.setVolume(g, at: inEnd)
-                p.setVolumeRamp(fromStartVolume: g, toEndVolume: 0.0, timeRange: CMTimeRange(start: outStart, end: outEnd))
+                let start = sr.range.start.seconds, dur = sr.range.duration.seconds
+                guard start.isFinite, dur.isFinite, dur > 0 else { continue }
+                let r = min(ramp, dur / 2)
+                sched.ramp(from: 0.0, to: g, start: start, end: start + r)
+                sched.ramp(from: g, to: 0.0, start: start + dur - r, end: start + dur)
             }
+            sched.apply(to: p)
             params.append(p)
         }
 
@@ -597,47 +601,50 @@ struct MediaEngineV1 {
         // seam crossfades at loop joins and a final fade-out at the video end. Loop N lives on track (N%2);
         // at each seam the outgoing loop ramps 1->0 and the incoming loop ramps 0->1 over the seam window,
         // so there is no click/abrupt restart and NO accidental silence between loops.
-        let seamXf = CMTime(seconds: 0.4, preferredTimescale: 600)
-        let finalFade = CMTime(seconds: 1.0, preferredTimescale: 600)
+        let seamXf = 0.4
+        let finalFade = 1.0
         // base gain curve for the soundtrack across the timeline, sampled at each segment start
-        func baseGain(at t: CMTime) -> Float {
+        func baseGain(at t: Double) -> Float {
             // find the segment live at t; default to the first segment's strategy
-            let sr = segmentRanges.last(where: { CMTimeCompare($0.range.start, t) <= 0 }) ?? segmentRanges.first
+            let sr = segmentRanges.last(where: { $0.range.start.seconds <= t }) ?? segmentRanges.first
             guard let s = sr?.segment else { return 0.8 }
             return NativeAudioPolicy.soundtrackGainUnder(nativeAudio: s.nativeAudio,
                                                          role: inputs.soundtrackRole, priority: inputs.nativeAudioPriority)
         }
+        // The end fade lives INSIDE the last shot: at most 1 s, never longer than that shot (a 0.79 s ending
+        // used to put the shot's own volume point inside a 1 s fade — the crash).
+        let lastEnd = segmentRanges.last.map { $0.range.end.seconds } ?? 0
+        let videoEnd = totalDuration.seconds.isFinite && totalDuration.seconds > 0 ? totalDuration.seconds : lastEnd
+        let lastStart = segmentRanges.last.map { $0.range.start.seconds } ?? 0
+        let fadeLen = min(finalFade, max(0, videoEnd - lastStart))
+        let fadeStart = videoEnd - fadeLen
         for (trackIdx, music) in soundtrackTracks.enumerated() {
             let p = AVMutableAudioMixInputParameters(track: music)
-            // per-segment strategy gain
-            for sr in segmentRanges {
-                p.setVolume(baseGain(at: sr.range.start), at: sr.range.start)
+            var sched = AudioGainSchedule()
+            // 1. final fade-out (whichever track carries the last loop), avoiding a hard stop. Highest priority.
+            if fadeLen > 0 {
+                sched.ramp(from: baseGain(at: fadeStart), to: 0.0, start: fadeStart, end: videoEnd)
             }
-            // seam crossfades: a seam at time `s` joins the loop ENDING at s (track (loopIdx)%2) with the loop
+            // 2. seam crossfades: a seam at time `s` joins the loop ENDING at s (track (loopIdx)%2) with the loop
             // STARTING at s - seamXf (track (loopIdx+1)%2). We ramp this track at every seam where it is the
-            // outgoing or incoming side.
-            for (loopIdx, seam) in loopSeams.enumerated() {
-                let outgoingTrack = loopIdx % 2
-                let incomingTrack = (loopIdx + 1) % 2
+            // outgoing or incoming side. A seam that would overlap the end fade is skipped (the fade wins).
+            for (loopIdx, seamTime) in loopSeams.enumerated() {
+                let seam = seamTime.seconds
                 let g = baseGain(at: seam)
-                if trackIdx == outgoingTrack {
-                    // ramp down into the seam
-                    p.setVolumeRamp(fromStartVolume: g, toEndVolume: 0.0,
-                                    timeRange: CMTimeRange(start: CMTimeSubtract(seam, seamXf), end: seam))
+                if trackIdx == loopIdx % 2 {          // outgoing: ramp down into the seam
+                    sched.ramp(from: g, to: 0.0, start: seam - seamXf, end: seam)
                 }
-                if trackIdx == incomingTrack {
-                    // ramp up from the seam start (which began seamXf before `seam`)
-                    let inStart = CMTimeSubtract(seam, seamXf)
-                    p.setVolumeRamp(fromStartVolume: 0.0, toEndVolume: g,
-                                    timeRange: CMTimeRange(start: inStart, end: seam))
+                if trackIdx == (loopIdx + 1) % 2 {    // incoming: ramp up from the seam start
+                    sched.ramp(from: 0.0, to: g, start: seam - seamXf, end: seam)
                 }
             }
-            // final fade-out at the very end (whichever track carries the last loop), avoiding a hard stop.
-            if CMTimeCompare(totalDuration, finalFade) > 0 {
-                let fadeStart = CMTimeSubtract(totalDuration, finalFade)
-                p.setVolumeRamp(fromStartVolume: baseGain(at: fadeStart), toEndVolume: 0.0,
-                                timeRange: CMTimeRange(start: fadeStart, end: totalDuration))
+            // 3. per-segment strategy gain: a level point that falls inside a seam crossfade moves to just after
+            // it; one inside the end fade is skipped.
+            for sr in segmentRanges {
+                let t = sr.range.start.seconds
+                sched.pointOrAfterRamp(baseGain(at: t), at: t, before: fadeLen > 0 ? fadeStart : nil)
             }
+            sched.apply(to: p)
             params.append(p)
         }
         mix.inputParameters = params

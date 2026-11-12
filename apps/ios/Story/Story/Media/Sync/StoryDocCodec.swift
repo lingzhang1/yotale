@@ -49,6 +49,7 @@ enum StoryDocCodec {
         story["sound_preference_explicit"] = s.soundPreferenceExplicit as Any
         story["editorial_mode"] = s.editorialMode as Any
         story["editing_approach_explicit"] = s.editingApproachExplicit as Any
+        story["duration_choice_explicit"] = s.durationChoiceExplicit as Any
         story["creative_directives_json"] = s.creativeDirectivesJSON as Any
         story["moment_sequence_json"] = s.momentSequenceJSON as Any   // Customize UX v2: storyboard sequence
         story["creative_direction_text"] = s.creativeDirectionText as Any
