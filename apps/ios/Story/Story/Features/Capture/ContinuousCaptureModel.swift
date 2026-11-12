@@ -433,7 +433,6 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         }
         // Not fetched yet: clear any previous idea's image immediately so it can't linger on this idea.
         currentIdeaImage = nil
-        guard StoryGuideFeatures.sceneImagesEnabled else { imagesByIdeaKey[key] = nil; return }
         guard let query = currentReferenceQuery() else {
             imagesByIdeaKey[key] = nil      // no grounded signal -> resolved "no image" (never a placeholder)
             return

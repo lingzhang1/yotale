@@ -8,8 +8,8 @@ import Foundation
 //
 // This is a PRODUCT preference, independent of Story Length and Sound. It is persisted on StoryModel and
 // routed by StoryCreationCoordinator. It carries NO model names / endpoints / tokens — the user-facing copy is
-// deliberately non-technical. Visual-first is only OFFERED when StoryMultimodalPlanning.enabled is true (the
-// deployment safety gate): we never present an option we cannot honor. Even when offered, Visual-first keeps
+// deliberately non-technical. Visual-first is only OFFERED when the caller says it can be honored (always true since
+// P1-G0 removed the kill-switch): we never present an option we cannot honor. Even when offered, Visual-first keeps
 // the existing graceful text-only fallback, so a Story is never failed when a valid text-only edit is possible.
 enum EditingApproach: String, CaseIterable {
     case storytelling = "storytelling"

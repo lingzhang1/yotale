@@ -208,8 +208,7 @@ struct CreativeDirectionView: View {
                 _ = await useCases.enrichCreativeIntent(for: story)
                 guard sufficient else { return }   // don't fabricate a generic Guide from thin context
                 let coord = StoryGuideCoordinator(context: context)
-                if StoryGuideFeatures.guideV2Enabled { await coord.ensureGuideV2(for: story) }
-                else { await coord.ensureGuide(for: story) }
+                await coord.ensureGuideV2(for: story)
             }
         } catch {
             isCreating = false

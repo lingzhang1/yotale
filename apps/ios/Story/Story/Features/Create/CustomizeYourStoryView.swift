@@ -11,7 +11,7 @@ struct CustomizeYourStoryView: View {
     let inferredSound: SoundPreference?         // advisory recommendation (nil => none inferred)
     let initialExplicitSound: SoundPreference?  // the user's prior explicit choice, if any
     let initialEditingApproach: EditingApproach // the Story's current approach (default .storytelling)
-    /// Whether the Visual-first option can be honored right now (StoryMultimodalPlanning.enabled). When false
+    /// Whether the Visual-first option can be honored right now (always true since P1-G0; kept as a parameter for previews/tests). When false
     /// the Editing Approach section is HIDDEN entirely — we never present an option that silently can't run.
     let visualFirstAvailable: Bool
     /// STABLE Moment-number snapshot for Creative Direction (Stage 2). Empty => the section is hidden (no
