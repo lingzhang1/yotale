@@ -26,10 +26,10 @@ enum ChangeMusicError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .noPersistedPlan: return "This video was made before version history; its exact edit can't be reused. Re-create it to enable Change Music."
-        case .planUndecodable: return "Couldn't read the saved edit for this video."
-        case .sourceMediaMissing: return "Some of the original footage for this video is no longer available."
-        case .renderFailed(let w): return "Couldn't re-render with the new music (\(w))."
+        case .noPersistedPlan: return L10n.t("This video was made before version history; its exact edit can't be reused. Re-create it to enable Change Music.")
+        case .planUndecodable: return L10n.t("Couldn't read the saved edit for this video.")
+        case .sourceMediaMissing: return L10n.t("Some of the original footage for this video is no longer available.")
+        case .renderFailed(let w): return L10n.t("Couldn't re-render with the new music (\(w)).")
         }
     }
 }

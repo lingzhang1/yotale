@@ -106,7 +106,7 @@ enum InterpretationCoordinator {
                 return InterpretationOutcome(
                     directives: det.directives, softDirection: trimmed,
                     unresolved: det.unresolved.map(humanReadable),
-                    blocking: ["Couldn't reach the interpreter — tap Retry."],
+                    blocking: [L10n.t("Couldn't reach the interpreter — tap Retry.")],
                     canSubmit: false, source: .deterministicFallbackAfterServerError,
                     kind: .serviceFailure,
                     unresolvedMomentNumbers: unresolvedNumbers(det.unresolved),
@@ -127,7 +127,7 @@ enum InterpretationCoordinator {
             return InterpretationOutcome(
                 directives: det.directives, softDirection: trimmed,
                 unresolved: det.unresolved.map(humanReadable),
-                blocking: ["Couldn't reach the interpreter — tap Retry."],
+                blocking: [L10n.t("Couldn't reach the interpreter — tap Retry.")],
                 canSubmit: false, source: .deterministicFallbackAfterServerError,
                 kind: .serviceFailure,
                 unresolvedMomentNumbers: unresolvedNumbers(det.unresolved),
@@ -159,7 +159,7 @@ enum InterpretationCoordinator {
         let musicWords = ["soundtrack", "song", " track", "music", "tune", "score", "jazzy", "jazz",
                           "acoustic", "upbeat", "beat drop", "lo-fi", "lofi", "orchestral"]
         guard musicWords.contains(where: { lower.contains($0) }) else { return nil }
-        return "Music preferences aren't applied as a directive yet — this part is passed as a general note only."
+        return L10n.t("Music preferences aren't applied as a directive yet — this part is passed as a general note only.")
     }
 
     // MARK: - Completeness
@@ -289,8 +289,8 @@ enum InterpretationCoordinator {
 
     static func humanReadable(_ u: UnresolvedReference) -> String {
         switch u.reason {
-        case .numberOutOfRange(let n): return "Moment \(n) doesn't exist in this Story."
-        case .momentUnavailable: return "A referenced Moment is no longer in this Story."
+        case .numberOutOfRange(let n): return L10n.t("Moment \(n) doesn't exist in this Story.")
+        case .momentUnavailable: return L10n.t("A referenced Moment is no longer in this Story.")
         }
     }
 }

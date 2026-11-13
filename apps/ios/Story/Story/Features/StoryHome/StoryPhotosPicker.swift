@@ -40,19 +40,19 @@ enum StoryImportCopy {
         if !p.finished {
             switch p.phase {
             case .preparing:
-                return "Preparing selected media…"
+                return L10n.t("Preparing selected media…")
             case .importing:
-                return p.total > 1 ? "Importing… (\(p.done) of \(p.total))" : "Importing your video…"
+                return p.total > 1 ? L10n.t("Importing… (\(p.done) of \(p.total))") : L10n.t("Importing your video…")
             case .analyzing:
-                return "Analyzing moments…"
+                return L10n.t("Analyzing moments…")
             }
         }
         // Finished.
-        if p.done == 0 { return "Couldn't add those videos. Please try again." }
+        if p.done == 0 { return L10n.t("Couldn't add those videos. Please try again.") }
         if p.failed > 0 {
-            return "Added \(p.done) · \(p.failed) couldn't be added."
+            return L10n.t("Added \(p.done) · \(p.failed) couldn't be added.")
         }
-        return p.done > 1 ? "Added \(p.done) videos." : "Added your video."
+        return p.done > 1 ? L10n.t("Added \(p.done) videos.") : L10n.t("Added your video.")
     }
 }
 

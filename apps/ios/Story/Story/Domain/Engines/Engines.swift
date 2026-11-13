@@ -66,13 +66,13 @@ struct MockStoryEngine: StoryEngineProtocol {
 }
 
 struct MockDirectorEngine: DirectorEngineProtocol {
-    private let prompts = [
-        "Open on a wide establishing shot — let the place breathe.",
-        "Get in close on a detail: hands, faces, texture.",
-        "Capture motion — follow someone moving through the scene.",
-        "Hold a quiet beat. Steady, a few seconds, no talking.",
-        "Grab a reaction — the moment someone responds to something.",
-    ]
+    private var prompts: [String] { [
+        L10n.t("Open on a wide establishing shot — let the place breathe."),
+        L10n.t("Get in close on a detail: hands, faces, texture."),
+        L10n.t("Capture motion — follow someone moving through the scene."),
+        L10n.t("Hold a quiet beat. Steady, a few seconds, no talking."),
+        L10n.t("Grab a reaction — the moment someone responds to something."),
+    ] }
 
     func directNextMoment(storyTitle: String, existingMomentCount: Int) -> ShotSuggestion {
         let guidance = prompts[existingMomentCount % prompts.count]

@@ -92,7 +92,7 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
 
     private func configureUI() {
         recordButton.translatesAutoresizingMaskIntoConstraints = false
-        recordButton.setTitle("Record", for: .normal)
+        recordButton.setTitle(L10n.t("Record"), for: .normal)
         recordButton.setTitleColor(.white, for: .normal)
         recordButton.titleLabel?.font = .boldSystemFont(ofSize: 20)
         recordButton.backgroundColor = UIColor(red: 0.83, green: 0.66, blue: 0.33, alpha: 1)
@@ -102,7 +102,7 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
 
         let cancel = UIButton(type: .system)
         cancel.translatesAutoresizingMaskIntoConstraints = false
-        cancel.setTitle("Cancel", for: .normal)
+        cancel.setTitle(L10n.t("Cancel"), for: .normal)
         cancel.setTitleColor(.white, for: .normal)
         cancel.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         view.addSubview(cancel)
@@ -132,7 +132,7 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
             movieOutput.startRecording(to: tempURL, recordingDelegate: self)
             isRecording = true
             screenAwake.recordingChanged(true)
-            recordButton.setTitle("Stop", for: .normal)
+            recordButton.setTitle(L10n.t("Stop"), for: .normal)
             recordButton.backgroundColor = .systemRed
         }
     }
@@ -145,7 +145,7 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
                     error: Error?) {
         isRecording = false
         screenAwake.recordingChanged(false)
-        recordButton.setTitle("Record", for: .normal)
+        recordButton.setTitle(L10n.t("Record"), for: .normal)
         let asset = AVURLAsset(url: outputFileURL)
         let duration = CMTimeGetSeconds(asset.duration)
         onFinish?(outputFileURL, duration.isFinite ? duration : 0)

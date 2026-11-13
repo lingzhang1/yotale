@@ -27,8 +27,8 @@ enum ContactSheetError: Error, LocalizedError {
     case encodeFailed
     var errorDescription: String? {
         switch self {
-        case .noFrames: return "No frames could be extracted for the contact sheet."
-        case .encodeFailed: return "The contact sheet could not be encoded."
+        case .noFrames: return L10n.t("No frames could be extracted for the contact sheet.")
+        case .encodeFailed: return L10n.t("The contact sheet could not be encoded.")
         }
     }
 }

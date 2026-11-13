@@ -125,12 +125,12 @@ enum EditPlannerServiceError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach the Edit Planner. Check your connection and try again."
-        case .unavailable: return "The Edit Planner is temporarily unavailable. Please retry."
-        case .infeasible(let r): return "This Story's material can't fill the target: \(r)"
-        case .badStatus(let c): return "Unexpected response (\(c))."
-        case .decoding: return "The plan response couldn't be read."
-        case .imageRejected(let c, let d): return "Visual evidence rejected (\(c)): \(d)"
+        case .transport: return L10n.t("Couldn't reach the Edit Planner. Check your connection and try again.")
+        case .unavailable: return L10n.t("The Edit Planner is temporarily unavailable. Please retry.")
+        case .infeasible(let r): return L10n.t("This Story's material can't fill the target: \(r)")
+        case .badStatus(let c): return L10n.t("Unexpected response (\(c)).")
+        case .decoding: return L10n.t("The plan response couldn't be read.")
+        case .imageRejected(let c, let d): return L10n.t("Visual evidence rejected (\(c)): \(d)")
         }
     }
 }

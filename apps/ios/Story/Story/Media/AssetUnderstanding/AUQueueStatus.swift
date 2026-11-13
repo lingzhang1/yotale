@@ -201,29 +201,29 @@ enum AUQueueStatusMapper {
     /// `continuesInBackground` is true ONLY while a system background task is actually running for this work —
     /// it is never claimed otherwise (the system does not guarantee completion).
     static func line(_ s: AUQueueSnapshot, continuesInBackground: Bool = false) -> String? {
-        let progress = "\(s.done) of \(s.total)"
+        let progress = L10n.t("\(s.done) of \(s.total)")
         var out: String
         switch s.state {
         case .idle, .complete:
             return nil
         case .analyzing:
-            out = "Analyzing — \(progress) done"
-            if continuesInBackground { out += " · continues in the background" }
+            out = L10n.t("Analyzing — \(progress) done")
+            if continuesInBackground { out += L10n.t(" · continues in the background") }
         case .retryingSoon:
-            out = "\(progress) analyzed · retrying shortly"
+            out = L10n.t("\(progress) analyzed · retrying shortly")
         case .waitingToContinue:
-            out = "\(progress) analyzed · continues when YoTale is open"
+            out = L10n.t("\(progress) analyzed · continues when YoTale is open")
         case .waitingForNetwork:
-            out = "\(progress) analyzed · waiting for network"
+            out = L10n.t("\(progress) analyzed · waiting for network")
         case .waitingToSignIn:
-            out = "\(progress) analyzed · sign in to continue"
+            out = L10n.t("\(progress) analyzed · sign in to continue")
         case .usageLimit:
-            out = "\(progress) analyzed · paused, daily limit reached — resumes tomorrow"
+            out = L10n.t("\(progress) analyzed · paused, daily limit reached — resumes tomorrow")
         case .retryRequired:
             let n = max(1, s.parkedForRetry)
-            return n == 1 ? "1 moment couldn't be analyzed" : "\(n) moments couldn't be analyzed"
+            return L10n.t("\(n) moments couldn't be analyzed")
         }
-        if s.parkedForRetry > 0 { out += " · \(s.parkedForRetry) need a retry" }
+        if s.parkedForRetry > 0 { out += L10n.t(" · \(s.parkedForRetry) need a retry") }
         return out
     }
 

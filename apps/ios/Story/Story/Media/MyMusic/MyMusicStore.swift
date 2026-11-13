@@ -22,9 +22,9 @@ enum MyMusicStoreError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unreadable: return "That file couldn't be read. If it's from a streaming service it may be protected."
-        case .unsupportedOrCorrupt: return "That file isn't a supported, playable audio file."
-        case .copyFailed(let w): return "Couldn't save that track (\(w))."
+        case .unreadable: return L10n.t("That file couldn't be read. If it's from a streaming service it may be protected.")
+        case .unsupportedOrCorrupt: return L10n.t("That file isn't a supported, playable audio file.")
+        case .copyFailed(let w): return L10n.t("Couldn't save that track (\(w)).")
         }
     }
 }
@@ -91,7 +91,7 @@ struct MyMusicStore {
         let name = pickedURL.deletingPathExtension().lastPathComponent
         let asset = MyMusicAssetModel(
             id: id,
-            displayName: name.isEmpty ? "Imported track" : name,
+            displayName: name.isEmpty ? L10n.t("Imported track") : name,
             relativePath: rel,
             originalFilename: pickedURL.lastPathComponent,
             durationSeconds: durationSeconds,

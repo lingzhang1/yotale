@@ -73,8 +73,8 @@ enum AUContinuedProcessing {
         }
         let request = BGContinuedProcessingTaskRequest(
             identifier: identifier,
-            title: "Analyzing your Moments",
-            subtitle: "\(batchCount) Moments"
+            title: L10n.t("Analyzing your Moments"),
+            subtitle: L10n.t("\(batchCount) Moments")
         )
         request.strategy = .queue
         do {
@@ -149,7 +149,7 @@ enum AUContinuedProcessing {
             highWater = min(totalUnits, max(highWater, Int64(units)))
             task.progress.totalUnitCount = totalUnits
             task.progress.completedUnitCount = highWater
-            task.updateTitle("Analyzing your Moments", subtitle: "\(snap.done) of \(snap.total) done")
+            task.updateTitle(L10n.t("Analyzing your Moments"), subtitle: L10n.t("\(snap.done) of \(snap.total) done"))
 
             // Done, or waiting on something only the user / the clock / the network can supply.
             let app = AssetUnderstandingQueue.backgroundState()

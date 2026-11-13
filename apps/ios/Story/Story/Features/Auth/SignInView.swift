@@ -75,7 +75,7 @@ struct SignInView: View {
                 HStack { if busy { ProgressView() }; Text("Verify") }.frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent).disabled(busy || code.count < 4)
-            Button(cooldownLeft > 0 ? "Resend in \(cooldownLeft)s" : "Resend code") {
+            Button(cooldownLeft > 0 ? L10n.t("Resend in \(cooldownLeft)s") : L10n.t("Resend code")) {
                 Task { await resend() }
             }
             .font(.footnote).disabled(busy || cooldownLeft > 0)
@@ -92,7 +92,7 @@ struct SignInView: View {
             challenge = try await auth.startEmailAuth(email: email)
             step = .code
             startCooldownTimer()
-        } catch { self.error = (error as? LocalizedError)?.errorDescription ?? "Couldn't send a code." }
+        } catch { self.error = (error as? LocalizedError)?.errorDescription ?? L10n.t("Couldn't send a code.") }
     }
 
     private func resend() async {
@@ -101,7 +101,7 @@ struct SignInView: View {
         do {
             challenge = try await auth.resendCode(for: current)
             startCooldownTimer()
-        } catch { self.error = (error as? LocalizedError)?.errorDescription ?? "Couldn't resend the code." }
+        } catch { self.error = (error as? LocalizedError)?.errorDescription ?? L10n.t("Couldn't resend the code.") }
     }
 
     private func verify() async {
@@ -126,9 +126,9 @@ struct SignInView: View {
             self.challenge = OTPChallenge(session: "", email: AuthHelpers.normalizeEmail(email),
                                           maskedDestination: challenge.maskedDestination, kind: .signIn)
             Task { await requestFreshSignInCode() }
-            error = "Almost there — enter the new code we just emailed you."
+            error = L10n.t("Almost there — enter the new code we just emailed you.")
         } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? "That code didn't work."
+            self.error = (error as? LocalizedError)?.errorDescription ?? L10n.t("That code didn't work.")
         }
     }
 
@@ -136,13 +136,13 @@ struct SignInView: View {
     /// Cognito Session needed to verify). Used only on the rare ConfirmSignUp-session fallback.
     private func requestFreshSignInCode() async {
         do { challenge = try await auth.startEmailAuth(email: email) }
-        catch { self.error = (error as? LocalizedError)?.errorDescription ?? "Couldn't send a new code." }
+        catch { self.error = (error as? LocalizedError)?.errorDescription ?? L10n.t("Couldn't send a new code.") }
     }
 
     private func appleSignIn() async {
         error = nil; busy = true; defer { busy = false }
         do { try await auth.signInWithApple(); onSignedIn() }
-        catch { self.error = (error as? LocalizedError)?.errorDescription ?? "Apple sign-in failed." }
+        catch { self.error = (error as? LocalizedError)?.errorDescription ?? L10n.t("Apple sign-in failed.") }
     }
 
     private func startCooldownTimer() {

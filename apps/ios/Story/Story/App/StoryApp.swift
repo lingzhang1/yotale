@@ -11,6 +11,8 @@ struct StoryApp: App {
     // P0 Beta Auth Increment 4: the shared session layer. Restored on launch; adopts anonymous local content
     // on first sign-in. Views read it from the environment; the networking seam gets its token via AuthStore.
     @State private var auth = AuthStore()
+    // App language (English | 简体中文 | follow iPhone). One store, injected below; see AppLanguage.swift.
+    @State private var languageStore = AppLanguageStore.shared
 
     init() {
         // Backend selection: the build's xcconfig decides (Story = dev, Story (Beta) = beta). Delete backend
@@ -83,6 +85,12 @@ struct StoryApp: App {
     var body: some Scene {
         WindowGroup {
             HomeView()
+                // Rebuild the view tree when the EFFECTIVE app language changes so String-valued text computed in
+                // view bodies (L10n.t) refreshes too. Stories, Moments and GeneratedOutputs live in SwiftData and
+                // are untouched; only navigation state resets to Home.
+                .id(languageStore.effective)
+                .environment(\.locale, languageStore.locale)
+                .environment(languageStore)
                 .environment(auth)
                 .task {
                     // Gate paid Asset Understanding on an authenticated session (Phase 4): the AU queue drains

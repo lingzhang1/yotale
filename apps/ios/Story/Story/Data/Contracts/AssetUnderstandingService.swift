@@ -180,13 +180,13 @@ enum AssetUnderstandingServiceError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach Story for Moment analysis."
-        case .unavailableRetryable: return "Moment analysis is busy; will retry."
-        case .rateLimited: return "Moment analysis is rate-limited; will retry shortly."
-        case .quotaExhausted(let s): return "Moment analysis paused — usage limit reached (\(s))."
-        case .unauthorized: return "Sign-in expired; Moment analysis will continue after you reopen YoTale."
-        case .badStatus(let c): return "Unexpected analysis response (\(c))."
-        case .decoding: return "Analysis returned an unexpected shape."
+        case .transport: return L10n.t("Couldn't reach Story for Moment analysis.")
+        case .unavailableRetryable: return L10n.t("Moment analysis is busy; will retry.")
+        case .rateLimited: return L10n.t("Moment analysis is rate-limited; will retry shortly.")
+        case .quotaExhausted(let s): return L10n.t("Moment analysis paused — usage limit reached (\(s)).")
+        case .unauthorized: return L10n.t("Sign-in expired; Moment analysis will continue after you reopen YoTale.")
+        case .badStatus(let c): return L10n.t("Unexpected analysis response (\(c)).")
+        case .decoding: return L10n.t("Analysis returned an unexpected shape.")
         }
     }
 }

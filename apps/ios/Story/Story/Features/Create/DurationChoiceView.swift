@@ -58,7 +58,7 @@ struct DurationChoiceView: View {
                         .font(StoryTheme.body(15)).foregroundStyle(StoryTheme.gold)
                 }
             } else {
-                Text(rec.note ?? "Choose a length for your Story.")
+                Text(rec.note ?? L10n.t("Choose a length for your Story."))
                     .font(StoryTheme.body(14)).foregroundStyle(StoryTheme.textSecondary)
             }
 

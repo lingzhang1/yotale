@@ -112,10 +112,10 @@ enum CreativeIntentServiceError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach Story. Check your connection and try again."
-        case .unavailable: return "Story's director is busy. Please try again."
-        case .badStatus(let c): return "Unexpected response (\(c)). Please try again."
-        case .decoding: return "Story returned something unexpected. Please try again."
+        case .transport: return L10n.t("Couldn't reach Story. Check your connection and try again.")
+        case .unavailable: return L10n.t("Story's director is busy. Please try again.")
+        case .badStatus(let c): return L10n.t("Unexpected response (\(c)). Please try again.")
+        case .decoding: return L10n.t("Story returned something unexpected. Please try again.")
         }
     }
 }

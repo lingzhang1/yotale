@@ -41,16 +41,16 @@ enum StoryCreationReadiness: Equatable {
         switch self {
         case .ready(let usable, let total):
             return usable == total
-                ? "Ready to create your Story."
-                : "\(usable) of \(total) moments ready."
+                ? L10n.t("Ready to create your Story.")
+                : L10n.t("\(usable) of \(total) moments ready.")
         case .pendingAnalysis(let ready, let pending):
-            return "\(ready) ready · \(pending) still being analyzed."
+            return L10n.t("\(ready) ready · \(pending) still being analyzed.")
         case .noMoments:
-            return "Shoot or add a moment first."
+            return L10n.t("Shoot or add a moment first.")
         case .noUsableMedia:
-            return "The original files for these moments are no longer on this device. Re-add them to create your Story."
+            return L10n.t("The original files for these moments are no longer on this device. Re-add them to create your Story.")
         case .analyzing:
-            return "Your moments are still being analyzed."
+            return L10n.t("Your moments are still being analyzed.")
         }
     }
 

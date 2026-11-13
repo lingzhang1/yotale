@@ -60,10 +60,10 @@ struct CustomizeYourStoryView: View {
     enum VideoType: Hashable, CaseIterable {
         case highlights, full
         var wire: String { self == .highlights ? "highlights" : "full" }
-        var title: String { self == .highlights ? "Highlights" : "Full Story" }
+        var title: String { self == .highlights ? L10n.t("Highlights") : L10n.t("Full Story") }
         var blurb: String {
-            self == .highlights ? "The best visual moments, beautifully cut."
-                                 : "More of the journey, people, and atmosphere."
+            self == .highlights ? L10n.t("The best visual moments, beautifully cut.")
+                                 : L10n.t("More of the journey, people, and atmosphere.")
         }
     }
 
@@ -126,15 +126,16 @@ struct CustomizeYourStoryView: View {
     /// user sees exactly what is saved (e.g. "Start with Moment 1", "Moment 6 right after Moment 1"). Part B.
     static func savedDirectiveLines(_ d: ResolvedDirectives?, numbering: StoryMomentNumbering) -> [String] {
         guard let d, !d.isEmpty else { return [] }
-        func n(_ id: UUID) -> String { numbering.number(forId: id).map { "Moment \($0)" } ?? "a Moment" }
+        func n(_ id: UUID) -> String { numbering.number(forId: id).map { L10n.t("Moment \($0)") } ?? L10n.t("a Moment") }
+        let sep = L10n.current == .zhHans ? "、" : ", "
         var lines: [String] = []
-        if let o = d.opening { lines.append("Start with \(n(o))") }
-        if let e = d.ending { lines.append("End with \(n(e))") }
-        for p in d.orderAdjacent where p.count == 2 { lines.append("\(n(p[0])) right after \(n(p[1]))") }
-        for p in d.orderAfter where p.count == 2 { lines.append("\(n(p[0])) after \(n(p[1]))") }
+        if let o = d.opening { lines.append(L10n.t("Start with \(n(o))")) }
+        if let e = d.ending { lines.append(L10n.t("End with \(n(e))")) }
+        for p in d.orderAdjacent where p.count == 2 { lines.append(L10n.t("\(n(p[0])) right after \(n(p[1]))")) }
+        for p in d.orderAfter where p.count == 2 { lines.append(L10n.t("\(n(p[0])) after \(n(p[1]))")) }
         let incOnly = d.mustInclude.filter { $0 != d.opening && $0 != d.ending }
-        if !incOnly.isEmpty { lines.append("Include " + incOnly.map(n).joined(separator: ", ")) }
-        if !d.exclude.isEmpty { lines.append("Exclude " + d.exclude.map(n).joined(separator: ", ")) }
+        if !incOnly.isEmpty { lines.append(L10n.t("Include \(incOnly.map(n).joined(separator: sep))")) }
+        if !d.exclude.isEmpty { lines.append(L10n.t("Exclude \(d.exclude.map(n).joined(separator: sep))")) }
         return lines
     }
 
@@ -248,22 +249,18 @@ struct CustomizeYourStoryView: View {
     private static func sequenceConflictMessage(_ conflicts: [MomentSequence.Conflict],
                                                 numbering: StoryMomentNumbering) -> String? {
         func names(_ ids: [UUID]) -> String {
-            ids.compactMap { numbering.number(forId: $0) }.sorted().map { "Moment \($0)" }.joined(separator: ", ")
+            ids.compactMap { numbering.number(forId: $0) }.sorted().map { L10n.t("Moment \($0)") }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
         }
         for c in conflicts {
             switch c {
             case .excludedButSequenced(let ids):
-                return "\(names(ids)) is in your Moment sequence but your text asks to drop it. "
-                     + "Remove it from the sequence, or edit the text."
+                return L10n.t("\(names(ids)) is in your Moment sequence but your text asks to drop it. Remove it from the sequence, or edit the text.")
             case .outsideOnlySelected(let ids):
-                return "\(names(ids)) isn’t in your sequence, which is set to “Use only the selected Moments”. "
-                     + "Add it in Arrange Moments, change that setting, or edit the text."
+                return L10n.t("\(names(ids)) isn’t in your sequence, which is set to “Use only the selected Moments”. Add it in Arrange Moments, change that setting, or edit the text.")
             case .openingDiffersFromTopCard(let typed, let top):
-                return "Your text says to start with \(names([typed])), but your sequence starts with \(names([top])). "
-                     + "Drag the one you want to the top in Arrange Moments, or edit the text."
+                return L10n.t("Your text says to start with \(names([typed])), but your sequence starts with \(names([top])). Drag the one you want to the top in Arrange Moments, or edit the text.")
             case .endingDiffersFromLastCard(let typed, let last):
-                return "Your text says to end with \(names([typed])), but your sequence ends with \(names([last])). "
-                     + "Drag the one you want to the bottom in Arrange Moments, or edit the text."
+                return L10n.t("Your text says to end with \(names([typed])), but your sequence ends with \(names([last])). Drag the one you want to the bottom in Arrange Moments, or edit the text.")
             }
         }
         return nil
@@ -331,12 +328,12 @@ struct CustomizeYourStoryView: View {
         var parts: [String] = [videoType.title]
         if let d = durationSummaryText { parts.append(d) }
         switch sound {
-        case .immersive: parts.append("Immersive sound")
-        case .balanced:  parts.append("Balanced sound")
-        case .musicLed:  parts.append("Music-led sound")
+        case .immersive: parts.append(L10n.t("Immersive sound"))
+        case .balanced:  parts.append(L10n.t("Balanced sound"))
+        case .musicLed:  parts.append(L10n.t("Music-led sound"))
         }
         let feels = StylePreset.allCases.filter { selectedPresets.contains($0) }.map { $0.label }
-        if !feels.isEmpty { parts.append(feels.joined(separator: ", ")) }
+        if !feels.isEmpty { parts.append(feels.joined(separator: L10n.current == .zhHans ? "、" : ", ")) }
         return parts.joined(separator: " · ")
     }
 
@@ -344,8 +341,8 @@ struct CustomizeYourStoryView: View {
     /// type-aware recommendation exists, else nil (show nothing — never a fabricated estimate, §4/§9).
     private var durationSummaryText: String? {
         switch durationChoice {
-        case .custom:      return "Custom \(Int(clampedCustom.rounded())) seconds"
-        case .recommended: return typeRecommendedSeconds.map { "About \(Int($0.rounded())) seconds" }
+        case .custom:      return L10n.t("Custom \(Int(clampedCustom.rounded())) seconds")
+        case .recommended: return typeRecommendedSeconds.map { L10n.t("About \(Int($0.rounded())) seconds") }
         }
     }
 
@@ -354,7 +351,7 @@ struct CustomizeYourStoryView: View {
     private func cardEstimate(for type: VideoType) -> String? {
         let s: Double? = (type == .highlights) ? (highlightsSeconds ?? fullSeconds)
                                                : (fullSeconds ?? highlightsSeconds)
-        return s.map { "About \(Int($0.rounded()))s" }
+        return s.map { L10n.t("About \(Int($0.rounded()))s") }
     }
 
     var body: some View {
@@ -376,7 +373,7 @@ struct CustomizeYourStoryView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Anything you want to include?")
                             .font(StoryTheme.body(17, .semibold)).foregroundStyle(StoryTheme.cream)
-                        StoryTextField(placeholder: "Start with the mountain reveal, show the best moments, and make the cuts follow the music…",
+                        StoryTextField(placeholder: L10n.t("Start with the mountain reveal, show the best moments, and make the cuts follow the music…"),
                                        text: $creativeDirection, minHeight: 92)
                             .onChange(of: creativeDirection) { _, _ in
                                 interpretToken = UUID()
@@ -431,7 +428,7 @@ struct CustomizeYourStoryView: View {
                 Button { attemptCreate() } label: {
                     HStack(spacing: 8) {
                         if isInterpreting { ProgressView().tint(StoryTheme.ink) }
-                        Text(isInterpreting ? "Understanding…" : "Create my video")
+                        Text(isInterpreting ? L10n.t("Understanding…") : L10n.t("Create my video"))
                             .font(StoryTheme.body(17, .semibold)).foregroundStyle(StoryTheme.ink)
                     }
                     .frame(maxWidth: .infinity).padding(.vertical, 16)
@@ -507,7 +504,7 @@ struct CustomizeYourStoryView: View {
                 switch outcome.kind {
                 case .serviceFailure:
                     retryableInstruction = snapshotText     // preserve draft + offer Retry (#2)
-                    clarification = (outcome.blocking.first ?? "Couldn't interpret that right now.") + musicSuffix
+                    clarification = (outcome.blocking.first ?? L10n.t("Couldn't interpret that right now.")) + musicSuffix
                     return
                 case .clarify:
                     // Thumbnail clarification when numeric refs are unresolved, else text (#2).
@@ -586,16 +583,15 @@ struct CustomizeYourStoryView: View {
     /// use the picker — never silently dropped (#2/#6).
     private func clarificationText(_ o: InterpretationOutcome) -> String {
         if !o.unresolvedMomentNumbers.isEmpty {
-            let list = o.unresolvedMomentNumbers.map { "Moment \($0)" }.joined(separator: ", ")
-            return "\(list) couldn't be matched (this Story has \(numbering.count)). Choose Moments with “Arrange Moments”, or rephrase."
+            let list = o.unresolvedMomentNumbers.map { L10n.t("Moment \($0)") }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
+            return L10n.t("\(list) couldn't be matched (this Story has \(numbering.count)). Choose Moments with “Arrange Moments”, or rephrase.")
         }
         if !o.unresolved.isEmpty {
             // "Add Moment reference" no longer exists on this screen; point at what does.
-            return "I couldn’t apply: “" + o.unresolved.joined(separator: "”, “")
-                + "”. Try rephrasing it, or use “Arrange Moments” to set the order."
+            return L10n.t("I couldn’t apply: “\(o.unresolved.joined(separator: "”, “"))”. Try rephrasing it, or use “Arrange Moments” to set the order.")
         }
         if let b = o.blocking.first { return b }
-        return "Please rephrase your instruction so I can apply it."
+        return L10n.t("Please rephrase your instruction so I can apply it.")
     }
 
     // MARK: - row builders
@@ -689,14 +685,14 @@ struct CustomizeYourStoryView: View {
 
         var label: String {
             switch self {
-            case .arrange:      return "Arrange Moments"
-            case .startWith:    return "Start with…"
-            case .endWith:      return "End with…"
-            case .useEvery:     return "Use every Moment"
-            case .shorterShots: return "Shorter shots"
-            case .longerShots:  return "Longer scenic shots"
-            case .cutToBeat:    return "Cut to the beat"
-            case .keepAudio:    return "Keep original audio"
+            case .arrange:      return L10n.t("Arrange Moments")
+            case .startWith:    return L10n.t("Start with…")
+            case .endWith:      return L10n.t("End with…")
+            case .useEvery:     return L10n.t("Use every Moment")
+            case .shorterShots: return L10n.t("Shorter shots")
+            case .longerShots:  return L10n.t("Longer scenic shots")
+            case .cutToBeat:    return L10n.t("Cut to the beat")
+            case .keepAudio:    return L10n.t("Keep original audio")
             }
         }
         /// Structural shortcuts reuse the storyboard (ordering/inclusion), so they open Arrange rather than
@@ -731,7 +727,7 @@ struct CustomizeYourStoryView: View {
             }
         }
         var accessibilityLabel: String {
-            isStructural ? "\(label): opens the storyboard" : "Add instruction: \(label)"
+            isStructural ? L10n.t("\(label): opens the storyboard") : L10n.t("Add instruction: \(label)")
         }
     }
 
@@ -765,7 +761,10 @@ struct CustomizeYourStoryView: View {
         let cur = creativeDirection.trimmingCharacters(in: .whitespacesAndNewlines)
         if cur.isEmpty { creativeDirection = fragment }
         else {
-            let sep = (cur.hasSuffix(".") || cur.hasSuffix("!") || cur.hasSuffix("?")) ? " " : ". "
+            let sep: String
+            if cur.hasSuffix("。") || cur.hasSuffix("！") || cur.hasSuffix("？") { sep = "" }
+            else if cur.hasSuffix(".") || cur.hasSuffix("!") || cur.hasSuffix("?") { sep = " " }
+            else { sep = L10n.current == .zhHans ? "。" : ". " }
             creativeDirection = cur + sep + fragment
         }
         interpretToken = UUID()
@@ -776,8 +775,8 @@ struct CustomizeYourStoryView: View {
     /// phrasings; Highlights leans visual/pace, Full Story leans coverage — plus the shared "keep original audio".
     private var p1dSuggestions: [String] {
         switch videoType {
-        case .highlights: return ["Beautiful views first", "Follow the music", "Keep original audio"]
-        case .full:       return ["Show the whole journey", "Follow the music", "Keep original audio"]
+        case .highlights: return [L10n.t("Beautiful views first"), L10n.t("Follow the music"), L10n.t("Keep original audio")]
+        case .full:       return [L10n.t("Show the whole journey"), L10n.t("Follow the music"), L10n.t("Keep original audio")]
         }
     }
 
@@ -794,7 +793,7 @@ struct CustomizeYourStoryView: View {
                 }
                 Spacer()
                 HStack(spacing: 5) {
-                    Text(momentSequence.isActive ? "Edit" : "Arrange")
+                    Text(momentSequence.isActive ? L10n.t("Edit") : L10n.t("Arrange"))
                         .font(StoryTheme.body(14, .medium)).foregroundStyle(StoryTheme.cream)
                     Image(systemName: "arrow.right").font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(StoryTheme.cream)
@@ -812,11 +811,11 @@ struct CustomizeYourStoryView: View {
     /// The compact one-line summary under "Moment sequence". Default = "AI chooses order"; active = the order
     /// + policy in plain words. Never presents the order as a guarantee (owner §6 — "intended").
     private var sequenceSummary: String {
-        guard momentSequence.isActive else { return "AI chooses order" }
+        guard momentSequence.isActive else { return L10n.t("AI chooses order") }
         let nums = momentSequence.orderedIds.compactMap { numbering.number(forId: $0) }.map(String.init)
         let order = nums.joined(separator: " → ")
-        let policy = momentSequence.policy == .onlySelected ? "only these Moments" : "others allowed between"
-        return "\(nums.count) arranged · \(order) · \(policy)"
+        let policy = momentSequence.policy == .onlySelected ? L10n.t("only these Moments") : L10n.t("others allowed between")
+        return L10n.t("\(nums.count) arranged · \(order) · \(policy)")
     }
 
     /// FEELING / STYLE (§7) — optional, initial small set (Cinematic/Energetic/Emotional/Playful) with an
@@ -847,14 +846,14 @@ struct CustomizeYourStoryView: View {
     /// The 5 compact §9 moods, each a friendly label over an existing StylePreset (so the soft-direction +
     /// music-seed plumbing is unchanged). Single-select: choosing one replaces any prior; Clear empties it.
     private var moodOptions: [(label: String, preset: StylePreset)] {
-        [("Calm & scenic", .calm), ("Fast & energetic", .energetic), ("Warm & personal", .emotional),
-         ("Playful", .playful), ("Cinematic", .cinematic)]
+        [(L10n.t("Calm & scenic"), .calm), (L10n.t("Fast & energetic"), .energetic), (L10n.t("Warm & personal"), .emotional),
+         (L10n.t("Playful"), .playful), (L10n.t("Cinematic"), .cinematic)]
     }
 
     /// The row's trailing text: the chosen mood's friendly label, or "No preference" when none is set.
     private var moodLabel: String {
         guard let p = selectedPresets.first,
-              let m = moodOptions.first(where: { $0.preset == p }) else { return "No preference" }
+              let m = moodOptions.first(where: { $0.preset == p }) else { return L10n.t("No preference") }
         return m.label
     }
 
@@ -908,7 +907,7 @@ struct CustomizeYourStoryView: View {
                         .font(.system(size: 13, weight: .semibold)).foregroundStyle(StoryTheme.textMuted)
                 }
             }.buttonStyle(.plain)
-            .accessibilityLabel("More options. Duration, Sound, Music. \(moreOptionsExpanded ? "Expanded" : "Collapsed")")
+            .accessibilityLabel(moreOptionsExpanded ? L10n.t("More options. Duration, Sound, Music. Expanded") : L10n.t("More options. Duration, Sound, Music. Collapsed"))
             if moreOptionsExpanded {
                 durationSection
                 soundSection
@@ -919,12 +918,12 @@ struct CustomizeYourStoryView: View {
     /// DURATION (§8) — independent of type: Recommended (type-aware) or Custom. Highlights/Full are NEVER
     /// duration choices here.
     @ViewBuilder private var durationSection: some View {
-        section(title: "Duration", subtitle: "Recommended is tuned to your video type, or set your own.") {
-            row(selected: durationChoice == .recommended, title: "Recommended",
-                detail: videoType == .highlights ? "A concise highlights length" : "Room for the fuller story",
-                trailing: typeRecommendedSeconds.map { "~\(Int($0.rounded()))s" }) { durationChoice = .recommended }
-            row(selected: durationChoice == .custom, title: "Custom",
-                detail: "Set a specific length", trailing: "Your choice") { durationChoice = .custom }
+        section(title: L10n.t("Duration"), subtitle: L10n.t("Recommended is tuned to your video type, or set your own.")) {
+            row(selected: durationChoice == .recommended, title: L10n.t("Recommended"),
+                detail: videoType == .highlights ? L10n.t("A concise highlights length") : L10n.t("Room for the fuller story"),
+                trailing: typeRecommendedSeconds.map { L10n.t("~\(Int($0.rounded()))s") }) { durationChoice = .recommended }
+            row(selected: durationChoice == .custom, title: L10n.t("Custom"),
+                detail: L10n.t("Set a specific length"), trailing: L10n.t("Your choice")) { durationChoice = .custom }
             if durationChoice == .custom {
                 HStack(spacing: 12) {
                     // String-backed so every keystroke updates `customSeconds`. A `value:format:` field only
@@ -954,10 +953,10 @@ struct CustomizeYourStoryView: View {
     // Advanced subsections (Sound retained under More Options; Story-length replaced by durationSection and
     // Editing-approach removed entirely per P1-D §5 — approach is forced .storytelling at init).
     @ViewBuilder private var soundSection: some View {
-        section(title: "Sound", subtitle: "How should your Story feel and sound?") {
-            soundRow(.immersive, "Immersive", "Bring natural sounds, voices and atmosphere forward")
-            soundRow(.balanced, "Balanced", "Blend original sounds with background music")
-            soundRow(.musicLed, "Music-led", "Let the soundtrack lead the experience")
+        section(title: L10n.t("Sound"), subtitle: L10n.t("How should your Story feel and sound?")) {
+            soundRow(.immersive, L10n.t("Immersive"), L10n.t("Bring natural sounds, voices and atmosphere forward"))
+            soundRow(.balanced, L10n.t("Balanced"), L10n.t("Blend original sounds with background music"))
+            soundRow(.musicLed, L10n.t("Music-led"), L10n.t("Let the soundtrack lead the experience"))
         }
     }
 
@@ -965,7 +964,7 @@ struct CustomizeYourStoryView: View {
     private func soundRow(_ value: SoundPreference, _ title: String, _ detail: String) -> some View {
         let isRec = (initialExplicitSound == nil && inferredSound == value)
         row(selected: sound == value, title: title,
-            detail: detail, trailing: isRec ? "Recommended" : nil) { sound = value }
+            detail: detail, trailing: isRec ? L10n.t("Recommended") : nil) { sound = value }
     }
 
     /// A whole-row tappable option with an obvious selected state (gold ring + check).

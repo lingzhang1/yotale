@@ -33,25 +33,25 @@ enum EditingApproach: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .storytelling: return "Storytelling"
-        case .visualFirst:  return "Visual-first"
+        case .storytelling: return L10n.t("Storytelling")
+        case .visualFirst:  return L10n.t("Visual-first")
         }
     }
 
     var detail: String {
         switch self {
         case .storytelling:
-            return "Build a meaningful story from your moments, with a clear beginning, progression, and ending."
+            return L10n.t("Build a meaningful story from your moments, with a clear beginning, progression, and ending.")
         case .visualFirst:
-            return "Look across your footage to find striking visuals, expressive moments, and compelling sequences."
+            return L10n.t("Look across your footage to find striking visuals, expressive moments, and compelling sequences.")
         }
     }
 
     /// Secondary supporting line (speed / effort hint).
     var supporting: String {
         switch self {
-        case .storytelling: return "Faster · Uses video descriptions"
-        case .visualFirst:  return "More visual analysis · May take longer"
+        case .storytelling: return L10n.t("Faster · Uses video descriptions")
+        case .visualFirst:  return L10n.t("More visual analysis · May take longer")
         }
     }
 

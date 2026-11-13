@@ -41,14 +41,14 @@ enum CognitoAuthError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach sign-in. Check your connection and try again."
-        case .badCode: return "That code is incorrect. Check it and try again."
-        case .expiredCode: return "That code has expired. Request a new one."
-        case .tooManyAttempts: return "Too many tries. Request a new code to continue."
-        case .noOTPPath: return "Couldn't send a code to that email. Check the address and try again."
-        case .accountDisabled: return "This account can't sign in. Contact support if you think this is a mistake."
+        case .transport: return L10n.t("Couldn't reach sign-in. Check your connection and try again.")
+        case .badCode: return L10n.t("That code is incorrect. Check it and try again.")
+        case .expiredCode: return L10n.t("That code has expired. Request a new one.")
+        case .tooManyAttempts: return L10n.t("Too many tries. Request a new code to continue.")
+        case .noOTPPath: return L10n.t("Couldn't send a code to that email. Check the address and try again.")
+        case .accountDisabled: return L10n.t("This account can't sign in. Contact support if you think this is a mistake.")
         case .service(let m): return m
-        case .decoding, .noChallengeSession: return "Sign-in failed. Please try again."
+        case .decoding, .noChallengeSession: return L10n.t("Sign-in failed. Please try again.")
         }
     }
 }

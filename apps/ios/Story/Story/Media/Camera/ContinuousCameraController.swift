@@ -431,7 +431,7 @@ final class ContinuousCameraController: UIViewController, AVCaptureFileOutputRec
             // Validate the file actually exists before claiming a clip.
             guard FileManager.default.fileExists(atPath: outputFileURL.path) else {
                 self.cleanupTempFile()
-                self.delegate?.captureEvent(.captureFailed("The recording could not be saved."))
+                self.delegate?.captureEvent(.captureFailed(L10n.t("The recording could not be saved.")))
                 return
             }
             let asset = AVURLAsset(url: outputFileURL)
@@ -818,8 +818,8 @@ final class ContinuousCameraController: UIViewController, AVCaptureFileOutputRec
     }
 
     private func friendly(_ error: NSError) -> String {
-        if error.code == AVError.Code.diskFull.rawValue { return "Your device is out of storage." }
-        return "The recording stopped unexpectedly."
+        if error.code == AVError.Code.diskFull.rawValue { return L10n.t("Your device is out of storage.") }
+        return L10n.t("The recording stopped unexpectedly.")
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }

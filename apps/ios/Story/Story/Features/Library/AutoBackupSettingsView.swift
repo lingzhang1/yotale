@@ -45,8 +45,8 @@ struct AutoBackupSettingsView: View {
                         .tint(StoryTheme.gold)
                     } footer: {
                         Text(allowCellular
-                             ? "Uploads can use Wi-Fi or cellular data."
-                             : "Uploads happen on Wi-Fi only. Moments wait until you're on Wi-Fi.")
+                             ? L10n.t("Uploads can use Wi-Fi or cellular data.")
+                             : L10n.t("Uploads happen on Wi-Fi only. Moments wait until you're on Wi-Fi."))
                     }
 
                     Section {

@@ -58,8 +58,8 @@ enum MusicPresentation: Equatable {
 
     var copy: String {
         switch self {
-        case .createdWithoutMusic:   return "Created without music"
-        case .soundtrackUnavailable: return "Music wasn't available for this version"
+        case .createdWithoutMusic:   return L10n.t("Created without music")
+        case .soundtrackUnavailable: return L10n.t("Music wasn't available for this version")
         }
     }
 
@@ -138,7 +138,7 @@ struct StoryResultView: View {
     }
 
     private var lengthLabel: String {
-        "\(Int(output.durationSeconds.rounded())) sec"
+        L10n.t("\(Int(output.durationSeconds.rounded())) sec")
     }
 
     private var isStale: Bool {
@@ -260,7 +260,7 @@ struct StoryResultView: View {
         if let idx = versions.firstIndex(where: { ($0.versionId ?? $0.id) == currentId }) {
             return "V\(idx + 1)"
         }
-        return "this version"
+        return L10n.t("this version")
     }
 
     /// Inline version selector (redesign MVP). Simplest UI for the version count: nothing for 1 version, a
@@ -291,7 +291,7 @@ struct StoryResultView: View {
                             .clipShape(Capsule())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Version \(idx + 1)\(selected ? ", selected" : "")")
+                        .accessibilityLabel(selected ? L10n.t("Version \(idx + 1), selected") : L10n.t("Version \(idx + 1)"))
                     }
                     if pendingInFlight {
                         HStack(spacing: 5) {
@@ -418,13 +418,13 @@ struct StoryResultView: View {
             // to "exclude fewer Moments" — give an honest, non-blaming message. The coordinator path, which
             // knows whether hard directives were present and the specific failure detail, phrases the rare
             // genuine directive-conflict case more specifically.
-            return "I couldn't put together a valid edit this time — this is on my side, not your footage. Please try again."
+            return L10n.t("I couldn't put together a valid edit this time — this is on my side, not your footage. Please try again.")
         case "material_infeasible":
-            return "There isn't enough usable footage for that length — try a shorter video."
+            return L10n.t("There isn't enough usable footage for that length — try a shorter video.")
         case "unsupported_operation":
-            return "That kind of edit isn't supported yet — this app can re-cut, re-time, reorder, set transitions and change the soundtrack, but not color, filters or visual effects. Your current version was kept."
+            return L10n.t("That kind of edit isn't supported yet — this app can re-cut, re-time, reorder, set transitions and change the soundtrack, but not color, filters or visual effects. Your current version was kept.")
         default:
-            return "Something went wrong creating the new version. You can try again."
+            return L10n.t("Something went wrong creating the new version. You can try again.")
         }
     }
 
@@ -475,10 +475,10 @@ struct StoryResultView: View {
     /// Human-readable stage for a persisted phase — the REAL stage, no percentage, no ETA (owner rule).
     private func stageLabel(_ phase: String?) -> String {
         switch phase {
-        case "preparing": return "Preparing your moments…"
-        case "submitted", "planning": return "Planning your edit…"
-        case "plan_ready", "rendering": return "Rendering your video…"
-        default: return "Working…"
+        case "preparing": return L10n.t("Preparing your moments…")
+        case "submitted", "planning": return L10n.t("Planning your edit…")
+        case "plan_ready", "rendering": return L10n.t("Rendering your video…")
+        default: return L10n.t("Working…")
         }
     }
 
@@ -497,9 +497,9 @@ struct StoryResultView: View {
             // EDITING — the central Story features, first-class. Both need a persisted executable plan.
             let canEdit = output.editPlanJSON != nil
             HStack(spacing: 10) {
-                editingCard(icon: "pencil.and.scribble", title: "Revise", subtitle: "Describe changes",
+                editingCard(icon: "pencil.and.scribble", title: L10n.t("Revise"), subtitle: L10n.t("Describe changes"),
                             enabled: canEdit) { showRevise = true }
-                editingCard(icon: "music.note", title: "Music", subtitle: "Change soundtrack",
+                editingCard(icon: "music.note", title: L10n.t("Music"), subtitle: L10n.t("Change soundtrack"),
                             enabled: canEdit) { showChangeMusic = true }
             }
 
@@ -563,17 +563,17 @@ struct StoryResultView: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .accessibilityHint(enabled ? "" : "Not available for this video")
+        .accessibilityHint(enabled ? "" : L10n.t("Not available for this video"))
     }
 
     @ViewBuilder
     private func saveStatusLine(_ outcome: PhotosSaveOutcome) -> some View {
         let text: String = {
             switch outcome {
-            case .saved: return "Saved to Photos."
-            case .permissionDenied: return "Photos access is needed to save. Enable it in Settings."
-            case .failed: return "Couldn't save to Photos. Please try again."
-            case .skipped: return "Nothing to save yet."
+            case .saved: return L10n.t("Saved to Photos.")
+            case .permissionDenied: return L10n.t("Photos access is needed to save. Enable it in Settings.")
+            case .failed: return L10n.t("Couldn't save to Photos. Please try again.")
+            case .skipped: return L10n.t("Nothing to save yet.")
             }
         }()
         Text(text).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.45))
@@ -635,7 +635,7 @@ struct StoryResultView: View {
             // Success: the resolver stamped relativeFilePath; reset the player so playableBody loads it.
             player?.pause(); player = nil; isPlaying = false
         } catch {
-            restoreError = (error as? LocalizedError)?.errorDescription ?? "Couldn't restore this video."
+            restoreError = (error as? LocalizedError)?.errorDescription ?? L10n.t("Couldn't restore this video.")
         }
         restoring = false
     }

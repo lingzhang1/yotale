@@ -35,18 +35,18 @@ enum StylePreset: String, CaseIterable, Identifiable, Equatable {
     /// User-facing chip label.
     var label: String {
         switch self {
-        case .cinematic: return "Cinematic"
-        case .energetic: return "Energetic"
-        case .emotional: return "Emotional"
-        case .playful:   return "Playful"
-        case .calm:      return "Calm"
-        case .nostalgic: return "Nostalgic"
-        case .dramatic:  return "Dramatic"
-        case .dreamy:    return "Dreamy"
-        case .upbeat:    return "Upbeat"
-        case .romantic:  return "Romantic"
-        case .epic:      return "Epic"
-        case .minimal:   return "Minimal"
+        case .cinematic: return L10n.t("Cinematic")
+        case .energetic: return L10n.t("Energetic")
+        case .emotional: return L10n.t("Emotional")
+        case .playful:   return L10n.t("Playful")
+        case .calm:      return L10n.t("Calm")
+        case .nostalgic: return L10n.t("Nostalgic")
+        case .dramatic:  return L10n.t("Dramatic")
+        case .dreamy:    return L10n.t("Dreamy")
+        case .upbeat:    return L10n.t("Upbeat")
+        case .romantic:  return L10n.t("Romantic")
+        case .epic:      return L10n.t("Epic")
+        case .minimal:   return L10n.t("Minimal")
         }
     }
 

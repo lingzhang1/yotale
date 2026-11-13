@@ -6,6 +6,12 @@ import SwiftData
 // resolves the intent at the Context step ("Here's what I understood"); the
 // Blueprint arc is a disabled-future surface (no StoryBlueprint capability).
 // C3.5.
+/// Localize a fixed English UI term held in a String (preset names, chips, mood words). Falls back to the input.
+/// Tapping a chip inserts this localized text into the user's field (the displayed text).
+fileprivate func storyLiteral(_ key: String) -> String {
+    L10n.bundle.localizedString(forKey: key, value: key, table: nil)
+}
+
 struct CreativeDirectionView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
@@ -213,7 +219,7 @@ struct CreativeDirectionView: View {
         } catch {
             isCreating = false
             errorMessage = (error as? LocalizedError)?.errorDescription
-                ?? "Couldn't create your Story. Please try again."
+                ?? L10n.t("Couldn't create your Story. Please try again.")
         }
     }
 
@@ -247,11 +253,11 @@ struct CreativeDirectionView: View {
                     Button { feeling = selected ? nil : p.title } label: {
                         VStack(alignment: .leading, spacing: 0) {
                             Spacer(minLength: 0)
-                            Text(p.title).font(StoryTheme.display(17))
+                            Text(storyLiteral(p.title)).font(StoryTheme.display(17))
                                 .foregroundStyle(StoryTheme.cream)
                                 .multilineTextAlignment(.leading)
                                 .fixedSize(horizontal: false, vertical: true)
-                            Text(p.desc).font(StoryTheme.body(11))
+                            Text(storyLiteral(p.desc)).font(StoryTheme.body(11))
                                 .foregroundStyle(StoryTheme.cream.opacity(0.4))
                                 .padding(.top, 5)
                         }
@@ -324,11 +330,11 @@ struct CreativeDirectionView: View {
     private var musicSummaryLine: String {
         if let md = musicDirection {
             if !md.moodTags.isEmpty {
-                return md.moodTags.map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " · ")
+                return md.moodTags.map { storyLiteral($0.prefix(1).uppercased() + $0.dropFirst()) }.joined(separator: " · ")
             }
             return md.summary
         }
-        return musicLoading ? "Finding the right feel…" : "Story will choose a fitting feel"
+        return musicLoading ? L10n.t("Finding the right feel…") : L10n.t("Story will choose a fitting feel")
     }
 
     @MainActor
@@ -438,7 +444,7 @@ struct CreativeDirectionView: View {
             resolvedStory = story
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription
-                ?? "Something went wrong. Please try again."
+                ?? L10n.t("Something went wrong. Please try again.")
             step = .feel
         }
     }
@@ -569,7 +575,7 @@ private struct FlowChips: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 8)], alignment: .leading, spacing: 8) {
             ForEach(options, id: \.self) { f in
                 let on = selected.contains(f)
-                Button(f) { if on { selected.remove(f) } else { selected.insert(f) } }
+                Button(storyLiteral(f)) { if on { selected.remove(f) } else { selected.insert(f) } }
                     .font(StoryTheme.body(13))
                     .foregroundStyle(on ? StoryTheme.ink : StoryTheme.cream.opacity(0.6))
                     .padding(.horizontal, 14).padding(.vertical, 8)
@@ -591,8 +597,8 @@ private struct FlowExampleChips: View {
         // column and wrapping to two. Reuses the shared FlowLayout (MomentReferencePicker).
         FlowLayout(spacing: 8) {
             ForEach(examples, id: \.self) { ex in
-                Button { onTap(ex) } label: {
-                    Text(ex).font(StoryTheme.body(13))
+                Button { onTap(storyLiteral(ex)) } label: {
+                    Text(storyLiteral(ex)).font(StoryTheme.body(13))
                         .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                         .foregroundStyle(StoryTheme.cream.opacity(0.7))
                         .padding(.horizontal, 14).padding(.vertical, 8)

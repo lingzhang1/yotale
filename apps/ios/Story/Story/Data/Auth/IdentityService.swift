@@ -18,10 +18,10 @@ enum IdentityServiceError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach Story to finish signing in. Check your connection and try again."
-        case .unauthorized: return "Your session could not be verified. Please sign in again."
-        case .badStatus(let c): return "Sign-in verification failed (\(c)). Please try again."
-        case .decoding, .missingId: return "Sign-in verification returned an unexpected result. Please try again."
+        case .transport: return L10n.t("Couldn't reach Story to finish signing in. Check your connection and try again.")
+        case .unauthorized: return L10n.t("Your session could not be verified. Please sign in again.")
+        case .badStatus(let c): return L10n.t("Sign-in verification failed (\(c)). Please try again.")
+        case .decoding, .missingId: return L10n.t("Sign-in verification returned an unexpected result. Please try again.")
         }
     }
 }

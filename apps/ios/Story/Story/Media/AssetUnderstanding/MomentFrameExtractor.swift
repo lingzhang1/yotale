@@ -22,9 +22,9 @@ enum MomentFrameExtractorError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unreadable: return "The Moment video could not be read."
-        case .tooShort: return "The Moment video has no usable duration."
-        case .noFrames: return "No frames could be extracted from the Moment."
+        case .unreadable: return L10n.t("The Moment video could not be read.")
+        case .tooShort: return L10n.t("The Moment video has no usable duration.")
+        case .noFrames: return L10n.t("No frames could be extracted from the Moment.")
         }
     }
 }

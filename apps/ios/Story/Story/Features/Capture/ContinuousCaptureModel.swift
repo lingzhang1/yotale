@@ -387,7 +387,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
 
     var currentIdeaTitle: String {
         if let s = seededIdea, ideas.isEmpty { return s.title }
-        return ideasOutput?.concept.title ?? "Shot idea"
+        return ideasOutput?.concept.title ?? L10n.t("Shot idea")
     }
     var currentIdeaBody: String {
         if let s = seededIdea, ideas.isEmpty { return s.body }
@@ -532,7 +532,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         currentIdeaVideo = nil      // Phase 1B: drop any shown video too
         scanProgress = 0
         aiState = .scanning
-        guard let controller else { aiState = .failed("Camera unavailable."); return }
+        guard let controller else { aiState = .failed(L10n.t("Camera unavailable.")); return }
         controller.startScan(progress: { [weak self] p in
             Task { @MainActor in
                 guard let self, gen == self.aiGeneration, self.aiState == .scanning else { return }
@@ -561,7 +561,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         guard gen == aiGeneration else { return }                 // stale — drop silently
         guard let captureContext else { aiState = .off; return }
         guard !frames.isEmpty else {
-            if gen == aiGeneration { aiState = .failed("Couldn't read the scene. Try again.") }
+            if gen == aiGeneration { aiState = .failed(L10n.t("Couldn't read the scene. Try again.")) }
             return
         }
         do {
@@ -580,7 +580,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
             let candidates = out.candidates.isEmpty ? [out.decision] : out.candidates
             let shots = candidates.filter { $0.action == .captureShot || $0.action == .retryShot }
             if shots.isEmpty {
-                aiState = .failed("No strong shot here. Try moving or scanning again.")
+                aiState = .failed(L10n.t("No strong shot here. Try moving or scanning again."))
             } else {
                 ideas = shots
                 ideasOutput = out
@@ -592,7 +592,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         } catch {
             // AI failure / quota exhaustion must NOT disable recording — just report, if still current.
             guard gen == aiGeneration else { return }
-            aiState = .failed("AI ideas are unavailable right now.")
+            aiState = .failed(L10n.t("AI ideas are unavailable right now."))
         }
     }
 
@@ -769,7 +769,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
             inFlightURLs.remove(key)
             isSaving = !inFlightURLs.isEmpty
             try? FileManager.default.removeItem(at: tempURL)
-            errorMessage = "That clip couldn't be saved. Please try again."
+            errorMessage = L10n.t("That clip couldn't be saved. Please try again.")
             showError = true
         }
     }

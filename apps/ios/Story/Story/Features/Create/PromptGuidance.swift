@@ -58,7 +58,10 @@ struct PromptSuggestionChips: View {
             text = fragment
         } else {
             // Join with a period+space unless the current text already ends in sentence punctuation.
-            let sep = (cur.hasSuffix(".") || cur.hasSuffix("!") || cur.hasSuffix("?")) ? " " : ". "
+            let sep: String
+            if cur.hasSuffix("。") || cur.hasSuffix("！") || cur.hasSuffix("？") { sep = "" }
+            else if cur.hasSuffix(".") || cur.hasSuffix("!") || cur.hasSuffix("?") { sep = " " }
+            else { sep = L10n.current == .zhHans ? "。" : ". " }
             text = cur + sep + fragment
         }
         onInsert()
@@ -87,23 +90,23 @@ struct CapabilityInfoButton: View {
 struct CapabilitySheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    private let supported: [(String, String)] = [
-        ("scissors", "Trim, reorder and select clips"),
-        ("timer", "Change how long each shot plays"),
-        ("gauge.with.dots.needle.67percent", "Adjust playback speed (within limits)"),
-        ("square.on.square.dashed", "Apply supported transitions (cut, crossfade, fade)"),
-        ("music.note", "Change the soundtrack"),
-        ("speaker.wave.2", "Keep, duck or mute the original audio"),
-        ("waveform.path", "Align cuts with the music's beats"),
-    ]
-    private let unsupported: [String] = [
-        "Color grading and filters",
-        "Brightness / exposure adjustments",
-        "Stabilization",
-        "Text overlays and subtitles",
-        "Advanced zoom / reframing",
-        "Background replacement",
-    ]
+    private var supported: [(String, String)] { [
+        ("scissors", L10n.t("Trim, reorder and select clips")),
+        ("timer", L10n.t("Change how long each shot plays")),
+        ("gauge.with.dots.needle.67percent", L10n.t("Adjust playback speed (within limits)")),
+        ("square.on.square.dashed", L10n.t("Apply supported transitions (cut, crossfade, fade)")),
+        ("music.note", L10n.t("Change the soundtrack")),
+        ("speaker.wave.2", L10n.t("Keep, duck or mute the original audio")),
+        ("waveform.path", L10n.t("Align cuts with the music's beats")),
+    ] }
+    private var unsupported: [String] { [
+        L10n.t("Color grading and filters"),
+        L10n.t("Brightness / exposure adjustments"),
+        L10n.t("Stabilization"),
+        L10n.t("Text overlays and subtitles"),
+        L10n.t("Advanced zoom / reframing"),
+        L10n.t("Background replacement"),
+    ] }
 
     var body: some View {
         NavigationStack {
@@ -154,13 +157,13 @@ enum PromptSuggestions {
     static func customize(firstMomentNumber: Int?) -> [PromptSuggestion] {
         var out: [PromptSuggestion] = []
         if let n = firstMomentNumber {
-            out.append(.init(label: "Start with Moment \(n)", text: "Start with Moment \(n)"))
+            out.append(.init(label: L10n.t("Start with Moment \(n)"), text: L10n.t("Start with Moment \(n)")))
         }
         out.append(contentsOf: [
-            .init(label: "Keep each shot around 5 seconds", text: "Keep each shot around 5 seconds"),
-            .init(label: "Use the most beautiful views first", text: "Use the most beautiful views first"),
-            .init(label: "Make cuts follow the music", text: "Make the cuts follow the music"),
-            .init(label: "Keep the original audio", text: "Keep the original audio"),
+            .init(label: L10n.t("Keep each shot around 5 seconds"), text: L10n.t("Keep each shot around 5 seconds")),
+            .init(label: L10n.t("Use the most beautiful views first"), text: L10n.t("Use the most beautiful views first")),
+            .init(label: L10n.t("Make cuts follow the music"), text: L10n.t("Make the cuts follow the music")),
+            .init(label: L10n.t("Keep the original audio"), text: L10n.t("Keep the original audio")),
         ])
         return out
     }
@@ -173,9 +176,9 @@ enum PromptSuggestions {
         // Moment numbers. `firstMomentNumber` is kept for call-site compatibility and is intentionally unused.
         _ = firstMomentNumber
         return [
-            .init(label: "Shorten each shot to ~5 seconds", text: "Shorten each shot to around 5 seconds"),
-            .init(label: "Make the pacing faster", text: "Make the pacing faster"),
-            .init(label: "Change the soundtrack", text: "Change the soundtrack to something calmer"),
+            .init(label: L10n.t("Shorten each shot to ~5 seconds"), text: L10n.t("Shorten each shot to around 5 seconds")),
+            .init(label: L10n.t("Make the pacing faster"), text: L10n.t("Make the pacing faster")),
+            .init(label: L10n.t("Change the soundtrack"), text: L10n.t("Change the soundtrack to something calmer")),
         ]
     }
 }
@@ -206,10 +209,22 @@ enum CapabilityClassifier {
         (#"\bstabili[sz]e|\bstabili[sz]ation|anti-?shake"#, "stabilization"),
         (#"\btext\b|\bcaption|\bsubtitle|\bsticker|\boverlay|title card"#, "text/overlays"),
         (#"green ?screen|chroma ?key|remove background|replace background"#, "background replacement"),
+        // 简体中文 vocabulary (additive; English patterns above are unchanged). Nouns stay the English keys
+        // (they are localized for display at the call site via `phrase`).
+        (#"调色|色彩校正|色彩分级"#, "color correction"),
+        (#"滤镜|滤色"#, "filters"),
+        (#"亮度|对比度|饱和度|曝光|色调|变亮|调亮|调暗"#, "brightness/color adjustments"),
+        (#"更暖|暖色|冷色|偏蓝|偏绿|偏红|胶片感|复古色|更鲜艳|更多彩"#, "color tone changes"),
+        (#"光晕|暗角|柔光|漏光"#, "glow/vignette effects"),
+        (#"模糊|锐化|颗粒"#, "blur/sharpen effects"),
+        (#"放大|缩放|裁切|变焦|重新构图|推近"#, "zoom/reframe"),
+        (#"防抖|稳定画面|去抖"#, "stabilization"),
+        (#"文字|字幕|贴纸|标题卡|叠加"#, "text/overlays"),
+        (#"绿幕|抠像|换背景|替换背景|去除背景"#, "background replacement"),
     ]
     /// Genuine edit verbs/targets (mirrors the backend SUPPORTED set) — presence => MIXED, not all-unsupported.
     private static let supportedPattern =
-        #"shorten|length|trim|\bcut\b|duration|pace|pacing|faster|slow(er)?|\bspeed\b|reorder|rearrange|\bswap\b|opening|ending|move (moment|clip|shot|it)|\binclude\b|\bexclude\b|\bremove\b|add moment|crossfade|\bfade\b|dissolve|transition|\bmusic\b|soundtrack|\btrack\b|\bsong\b|\bmute\b|\bduck\b"#
+        #"shorten|length|trim|\bcut\b|duration|pace|pacing|faster|slow(er)?|\bspeed\b|reorder|rearrange|\bswap\b|opening|ending|move (moment|clip|shot|it)|\binclude\b|\bexclude\b|\bremove\b|add moment|crossfade|\bfade\b|dissolve|transition|\bmusic\b|soundtrack|\btrack\b|\bsong\b|\bmute\b|\bduck\b|缩短|时长|修剪|剪辑|节奏|加快|放慢|变慢|变快|速度|调整顺序|重新排序|交换|开头|结尾|包含|排除|删除|去掉|淡入|淡出|转场|音乐|配乐|歌曲|静音"#
 
     static func classify(_ instruction: String) -> CapabilityVerdict {
         let text = instruction.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -224,8 +239,28 @@ enum CapabilityClassifier {
     /// Human phrase for a noun list: "a or b" / "a, b or c".
     static func phrase(_ nouns: [String]) -> String {
         guard let first = nouns.first else { return "" }
-        if nouns.count == 1 { return first }
-        return nouns.dropLast().joined(separator: ", ") + " or " + nouns[nouns.count - 1]
+        let zh = L10n.current == .zhHans
+        let loc: (String) -> String = { zh ? Self.localizedNoun($0) : $0 }
+        if nouns.count == 1 { return loc(first) }
+        let head = nouns.dropLast().map(loc).joined(separator: zh ? "、" : ", ")
+        return head + (zh ? "或" : " or ") + loc(nouns[nouns.count - 1])
+    }
+
+    /// Chinese display names for the (English-keyed) unsupported-effect nouns.
+    private static func localizedNoun(_ noun: String) -> String {
+        switch noun {
+        case "color correction": return "调色"
+        case "filters": return "滤镜"
+        case "brightness/color adjustments": return "亮度/色彩调整"
+        case "color tone changes": return "色调变化"
+        case "glow/vignette effects": return "光晕/暗角效果"
+        case "blur/sharpen effects": return "模糊/锐化效果"
+        case "zoom/reframe": return "缩放/重新构图"
+        case "stabilization": return "防抖"
+        case "text/overlays": return "文字/叠加层"
+        case "background replacement": return "背景替换"
+        default: return noun
+        }
     }
 
     private static func matches(_ pattern: String, _ text: String) -> Bool {

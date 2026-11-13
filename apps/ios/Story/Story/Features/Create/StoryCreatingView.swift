@@ -27,9 +27,9 @@ enum CreatingPhase: Equatable {
     /// Pure mapping. Honest, consumer-safe copy — nothing about planners, models, or HTTP status.
     static func from(_ state: StoryCreationCoordinator.State) -> CreatingPhase {
         switch state {
-        case .idle, .preparing:        return .indeterminate(status: "Getting your moments ready…")
-        case .planning:                return .indeterminate(status: "Planning your Story…")
-        case .validating:              return .indeterminate(status: "Checking the plan…")
+        case .idle, .preparing:        return .indeterminate(status: L10n.t("Getting your moments ready…"))
+        case .planning:                return .indeterminate(status: L10n.t("Planning your Story…"))
+        case .validating:              return .indeterminate(status: L10n.t("Checking the plan…"))
         case .rendering(let progress): return .determinate(progress: max(0, min(1, progress)))
         case .failed(let message):     return .failed(message: message)
         case .cancelled:               return .cancelled
@@ -94,7 +94,7 @@ struct StoryCreatingView: View {
     var onRequestRecreate: ((GeneratedOutputModel) -> Void)? = nil
     /// When the render completes, hand the output UP to the parent so it can present Result in place of this
     /// screen (stack stays Home -> Preview -> Result instead of Home -> Preview -> Creating -> Result, which
-    /// left the stuck "Finishing up…" screen behind when Result dismissed). When nil, this view falls back to
+    /// left the stuck L10n.t("Finishing up…") screen behind when Result dismissed). When nil, this view falls back to
     /// pushing Result itself (standalone / test host).
     var onCompleted: ((GeneratedOutputModel) -> Void)? = nil
     /// P0 recovery: when true, this screen RESUMES the Story's existing unfinished edit-plan operation instead
@@ -122,7 +122,7 @@ struct StoryCreatingView: View {
     @State private var createStartedAt = Date()   // for the time-based patience reminder (honest elapsed time)
 
     private var phase: CreatingPhase {
-        guard let coordinator else { return .indeterminate(status: "Getting your moments ready…") }
+        guard let coordinator else { return .indeterminate(status: L10n.t("Getting your moments ready…")) }
         let p = CreatingPhase.from(coordinator.state)
         // During planning, prefer the REAL backend job status (queued/running) over the static copy.
         if case .indeterminate = p, coordinator.state == .planning,
@@ -145,7 +145,7 @@ struct StoryCreatingView: View {
                 initialOutput: output,
                 onHome: {
                     // Pop BOTH Result and this Creating screen so the user lands on Story Home in one tap
-                    // (fixes the stuck "Finishing up…" screen that a single dismiss left behind). Clearing
+                    // (fixes the stuck L10n.t("Finishing up…") screen that a single dismiss left behind). Clearing
                     // `completedOutput` pops Result; dismissing on the next runloop pops Creating.
                     completedOutput = nil
                     DispatchQueue.main.async { dismiss() }
@@ -260,7 +260,7 @@ struct StoryCreatingView: View {
         case .indeterminate(let status):
             creatingBody(status: status, determinate: false, progress: 0)
         case .determinate(let progress):
-            creatingBody(status: "Putting your Story together…", determinate: true, progress: progress)
+            creatingBody(status: L10n.t("Putting your Story together…"), determinate: true, progress: progress)
         case .failed(let message):
             failedBody(message: message)
         case .cancelled:
@@ -268,7 +268,7 @@ struct StoryCreatingView: View {
             Color.clear.onAppear { dismiss() }
         case .completed:
             // Transition handled by navigationDestination; show the final frame of the bar meanwhile.
-            creatingBody(status: "Finishing up…", determinate: true, progress: 1.0)
+            creatingBody(status: L10n.t("Finishing up…"), determinate: true, progress: 1.0)
         }
     }
 
@@ -279,11 +279,11 @@ struct StoryCreatingView: View {
     /// expectation-setting so a 1-2 min plan never reads as "stuck".
     private func patienceNote(elapsed: TimeInterval) -> String? {
         switch elapsed {
-        case ..<12:  return "Sit back — we're shaping your moments into a Story."
-        case ..<30:  return "Hang tight — this usually takes a moment."
-        case ..<60:  return "Still working. Good edits take a little longer."
-        case ..<120: return "Almost there — crafting your Story carefully. This can take a minute or two."
-        default:     return "Thanks for your patience — finishing up your Story. You can keep waiting or cancel."
+        case ..<12:  return L10n.t("Sit back — we're shaping your moments into a Story.")
+        case ..<30:  return L10n.t("Hang tight — this usually takes a moment.")
+        case ..<60:  return L10n.t("Still working. Good edits take a little longer.")
+        case ..<120: return L10n.t("Almost there — crafting your Story carefully. This can take a minute or two.")
+        default:     return L10n.t("Thanks for your patience — finishing up your Story. You can keep waiting or cancel.")
         }
     }
 

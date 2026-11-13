@@ -26,7 +26,7 @@ enum EditorialType: String, Equatable, CaseIterable {
     static let defaultType: EditorialType = .highlights
 
     /// Human label for UI/diagnostics (UI itself is P1-C).
-    var displayName: String { self == .highlights ? "Highlights" : "Full Story" }
+    var displayName: String { self == .highlights ? L10n.t("Highlights") : L10n.t("Full Story") }
 
     /// The value sent on the existing `EditPlanRequestDTO.editorial_mode` wire field, so NO new wire contract
     /// is needed in P1-A: highlights -> "highlights", full_story -> "full" (the exact strings the live v5.2
