@@ -439,9 +439,28 @@ final class StoryCreationCoordinator {
         partialRelativePath = nil
         lastFailure = nil
         Self.setKeepAwake(true, story.id)   // don't let the screen sleep mid-plan/render (sleep tears down the connection)
+        recordPreparingAttempt(story: story)
         task = Task { [weak self] in
             await self?.run(story: story, outputFormat: outputFormat, targetSeconds: targetSeconds)
         }
+    }
+
+    /// Record the attempt NOW, before the multi-second on-device evidence preparation, so an app kill during
+    /// preparation leaves a resumable "preparing" row instead of nothing (dev 2026-11-13: a kill ~20 s after
+    /// tapping create lost the attempt entirely). Nothing has been sent or billed yet. The operation id is minted
+    /// HERE rather than after preparation so the resumed attempt submits with the SAME id: the server's
+    /// idempotency then guarantees it can never run twice. An existing resumable row for the same operation (a
+    /// retry of an attempt that already reached the server) is left untouched.
+    private func recordPreparingAttempt(story: StoryModel) {
+        if story.planOperationId == nil {
+            story.planOperationId = UUID().uuidString
+            try? context.save()
+        }
+        let opId = story.planOperationId!
+        if let existing = fetchPending(storyId: story.id), existing.operationId == opId, existing.isRecoverable {
+            return
+        }
+        upsertPending(story: story, operationId: opId, jobId: nil, phase: "preparing")
     }
 
     // Process-global set of Story ids with an ACTIVE run/resume, each mapped to the OWNING coordinator (weak).
@@ -1329,12 +1348,26 @@ final class StoryCreationCoordinator {
         planningSubstatus = nil
         lastFailure = error
         state = .failed(message: error.errorDescription ?? "Creation failed.")
+        dropPreparingAttempt()
     }
 
     private func finishCancelled() {
         if let rel = partialRelativePath { cleanup(relative: rel) }
         planningSubstatus = nil
         state = .cancelled
+        dropPreparingAttempt()
+    }
+
+    /// An attempt that ENDED (failed / cancelled) before anything reached the server leaves nothing to resume:
+    /// delete its "preparing" row so a later foreground never re-runs a failure (e.g. insufficient material)
+    /// in a loop. Rows past submit are untouched (submitting keeps its bytes for lost-reply recovery; failures
+    /// after submit are handled by markPendingFailed).
+    private func dropPreparingAttempt() {
+        guard let sid = lastStory?.id, let row = fetchPending(storyId: sid), row.isRecoverable,
+              row.phase == "preparing", row.jobId == nil,
+              !PendingJobSubmitStore.exists(operationId: row.operationId) else { return }
+        context.delete(row)
+        try? context.save()
     }
 
     private func cleanup(relative: String) {
@@ -1426,8 +1459,37 @@ extension StoryCreationCoordinator {
     /// this to offer "resume" instead of silently re-creating, and to decide whether reopen should recover.
     func hasRecoverablePendingOperation(storyId: UUID) -> Bool {
         guard let row = fetchPending(storyId: storyId) else { return false }
-        return row.isRecoverable
-            && (row.jobId != nil || PendingJobSubmitStore.exists(operationId: row.operationId))
+        return Self.isResumable(row)
+    }
+
+    /// How long an attempt killed DURING PREPARATION stays resumable. Resuming it submits paid AI, so it must
+    /// never start by surprise hours later; past this window the row is discarded and the user simply creates
+    /// again.
+    static let preparingResumeWindow: TimeInterval = 30 * 60
+
+    /// Single source of truth for "can this row be resumed?" (coordinator, app-level recovery, Result banner):
+    /// a submitted job, a lost reply whose exact bytes are cached, or a recent pre-submit "preparing" attempt.
+    static func isResumable(_ row: PendingOperationModel, now: Date = .now) -> Bool {
+        guard row.isRecoverable else { return false }
+        if row.jobId != nil || PendingJobSubmitStore.exists(operationId: row.operationId) { return true }
+        return isPreparing(row) && now.timeIntervalSince(row.updatedAt) < preparingResumeWindow
+    }
+
+    /// Pre-submit attempt: recorded at create start, nothing sent yet.
+    static func isPreparing(_ row: PendingOperationModel) -> Bool {
+        row.isRecoverable && row.phase == "preparing" && row.jobId == nil
+            && !PendingJobSubmitStore.exists(operationId: row.operationId)
+    }
+
+    /// Decode a JSON blob persisted on a pending row (revision context / music plan); nil when absent/invalid.
+    static func decodeStoredJSON(_ s: String?) -> JSONValue? {
+        guard let s, let d = s.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(JSONValue.self, from: d)
+    }
+
+    private static func encodeStoredJSON(_ v: JSONValue?) -> String? {
+        guard let v, let d = try? JSONEncoder().encode(v) else { return nil }
+        return String(data: d, encoding: .utf8)
     }
 
     /// Mark every recoverable pending op for a Story as abandoned (user deliberately started a new operation).
@@ -1468,6 +1530,13 @@ extension StoryCreationCoordinator {
         row.nativeAudioPriority = pendingMusic?.nativeAudioPriority ?? row.nativeAudioPriority
         row.outputFormat = lastOutputFormat
         row.targetSeconds = lastTargetSeconds
+        // Resume-from-preparing inputs (only overwritten when known, so a resumed run never erases them).
+        if let rc = Self.encodeStoredJSON(pendingRevisionContext) { row.revisionContextJSON = rc }
+        row.directedByCustomize = pendingDirectedByCustomize
+        if let plan = pendingMusic?.musicPlanJSON, case .object(let o) = plan, !o.isEmpty,
+           let s = Self.encodeStoredJSON(plan) {
+            row.musicPlanJSON = s
+        }
         row.updatedAt = .now
         try? context.save()
     }
@@ -1531,11 +1600,19 @@ extension StoryCreationCoordinator {
     func resumePendingOperation(for story: StoryModel, music: MusicSelection? = nil) -> Bool {
         guard !isCreating else { return false }                 // a run already owns this coordinator
         guard let row = fetchPending(storyId: story.id), row.isRecoverable else { return false }
+        // KILLED DURING PREPARATION: nothing reached the server, so re-run the pipeline from the start with the
+        // SAME operation id (the server's idempotency makes a duplicate impossible). Past the resume window the
+        // attempt is discarded instead — resuming submits paid AI and must never start by surprise much later.
+        let preparing = Self.isPreparing(row)
+        if preparing && !Self.isResumable(row) {
+            context.delete(row); try? context.save()
+            return false
+        }
         // A LOST-REPLY attempt has no job id yet but kept its exact submit bytes: re-send them (same operation
         // id + payload -> the server returns the SAME job, or creates it if the first POST never arrived), then
         // resume exactly like any other in-flight job. Never a new inference.
         let cachedSubmit = row.jobId == nil ? PendingJobSubmitStore.load(operationId: row.operationId) : nil
-        guard row.jobId != nil || cachedSubmit != nil else { return false }
+        guard row.jobId != nil || cachedSubmit != nil || preparing else { return false }
         guard Self.claimActive(story.id, by: self) else { return false }  // another coordinator already resuming/creating
         // Rehydrate the in-memory operation context from the durable row so persist() keeps lineage/music/type.
         lastStory = story
@@ -1546,7 +1623,11 @@ extension StoryCreationCoordinator {
         pendingOperationType = row.operationType
         pendingEditorialType = row.editorialTypeRaw   // P1-C: resume uses the PERSISTED attempt type, not a re-derivation
         pendingParentVersionId = row.baseVersionId.flatMap(UUID.init(uuidString:))
-        pendingRevisionContext = Self.rebuildRevisionContext(for: story, row: row)
+        // The EXACT context the attempt was built with when stored (required for a pre-submit Revise, whose
+        // directives exist nowhere else); legacy rows fall back to the previous rebuild.
+        pendingRevisionContext = Self.decodeStoredJSON(row.revisionContextJSON)
+            ?? Self.rebuildRevisionContext(for: story, row: row)
+        pendingDirectedByCustomize = row.directedByCustomize ?? false
         story.planOperationId = row.operationId
         story.planJobId = row.jobId
         isCreating = true

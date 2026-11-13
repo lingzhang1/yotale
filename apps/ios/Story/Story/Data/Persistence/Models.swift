@@ -990,9 +990,10 @@ final class PendingOperationModel {
     var editorialTypeRaw: String?
     var requestFingerprint: String?  // included-Moments fingerprint at submit time (drift detection; advisory)
 
-    // Lifecycle. `phase` tracks the exactly-once pipeline: submitted -> planning -> plan_ready -> rendering ->
-    // saved. `status` mirrors the last observed backend job status (queued|running|completed|failed|...).
-    var phase: String                // submitted|planning|plan_ready|rendering|saved|abandoned
+    // Lifecycle. `phase` tracks the exactly-once pipeline: preparing -> submitting -> planning -> plan_ready ->
+    // rendering -> saved. `status` mirrors the last observed backend job status (queued|running|completed|...).
+    // "preparing" = recorded at create start, BEFORE on-device evidence preparation; nothing sent or billed yet.
+    var phase: String                // preparing|submitting|submitted|planning|plan_ready|rendering|saved|abandoned
     var jobStatus: String?           // last observed backend status (advisory)
     var failureCategory: String?     // backend failure_category when phase ended in failure
 
@@ -1009,6 +1010,13 @@ final class PendingOperationModel {
     var nativeAudioPriority: String?
     var outputFormat: String?
     var targetSeconds: Double?
+
+    // Resume-from-"preparing" inputs: an attempt killed BEFORE submit must rebuild the SAME request, so it needs
+    // what a post-submit resume never did (the server already held it). Additive, optional (nil default => no
+    // migration; nil = legacy row, which resumes exactly as before).
+    var revisionContextJSON: String? = nil   // Explore/Revise context exactly as built (directives, soft ask, base plan)
+    var directedByCustomize: Bool? = nil     // Explore launched from Customize (folds the Story's creative direction)
+    var musicPlanJSON: String? = nil         // the MusicPlan this attempt plans with (music-aware planning on resume)
 
     var createdAt: Date
     var updatedAt: Date

@@ -40,8 +40,14 @@ final class PendingOperationRecovery {
     func recoverAll() {
         guard activeAccountId != nil else { return }   // signed out → recover nothing
         let desc = FetchDescriptor<PendingOperationModel>(sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
-        let rows = ((try? context.fetch(desc)) ?? []).filter {
-            $0.isRecoverable && ($0.jobId != nil || PendingJobSubmitStore.exists(operationId: $0.operationId))
+        let all = (try? context.fetch(desc)) ?? []
+        // A pre-submit attempt past its resume window is discarded (resuming would start paid AI by surprise).
+        // Split BEFORE deleting: never read a SwiftData object after it was deleted.
+        let expired = all.filter { StoryCreationCoordinator.isPreparing($0) && !StoryCreationCoordinator.isResumable($0) }
+        let rows = all.filter { StoryCreationCoordinator.isResumable($0) }
+        if !expired.isEmpty {
+            for row in expired { context.delete(row) }
+            try? context.save()
         }
         guard !rows.isEmpty else { return }
         // One resume per Story (dedupe multiple rows defensively).
@@ -110,7 +116,9 @@ final class PendingOperationRecovery {
             return nil
         }
         return StoryCreationCoordinator.MusicSelection(
-            musicPlanJSON: .object([:]),                 // planning is done; not used at render
+            // A post-submit resume never re-plans, so an empty plan was always enough there. A PRE-submit resume
+            // (killed during preparation) still has to plan music-aware: use the attempt's stored MusicPlan.
+            musicPlanJSON: StoryCreationCoordinator.decodeStoredJSON(row.musicPlanJSON) ?? .object([:]),
             trackId: trackId,
             analysisJSON: both.raw,
             analysis: both.analysis,
