@@ -126,6 +126,10 @@ class MediaVerificationError(Exception):
     """Durable verification failed (missing object / size mismatch / checksum mismatch). NOT marked verified."""
 
 
+class MultipartUploadGone(Exception):
+    """An `uploading` record's S3 multipart upload no longer exists (aborted/expired) — surfaced as 409."""
+
+
 @dataclass
 class MediaStoreConfig:
     table: str = field(default_factory=lambda: os.environ.get("STORY_MEDIA_TABLE", ""))
@@ -384,19 +388,42 @@ class MediaStore:
 
     def list_uploaded_parts(self, *, owner: str, cloud_media_id: str) -> list[dict]:
         """Reconcile: the parts S3 has already received for this MPU (so the client re-uploads only what's
-        missing after an interruption). Returns [{part_number, etag, checksum_sha256, size}]."""
+        missing after an interruption). Returns [{part_number, etag, checksum_sha256, size}].
+
+        ALREADY VERIFIED: a re-initiate of content that is already `cloud_verified` returns the existing record
+        (idempotent), whose `upload_id` belongs to a multipart upload S3 has since COMPLETED — ListParts on it
+        is `NoSuchUpload`. That object is durably verified, so every part is reported as present (from the
+        recorded per-part digests) without calling S3; the client then skips all part PUTs and its
+        `multipart/complete` call is an idempotent no-op. Nothing is re-uploaded and nothing is re-verified.
+
+        EXPIRED: an `uploading` record whose MPU no longer exists (aborted/expired) raises
+        MultipartUploadGone (-> 409), never an unhandled 500."""
         rec = self.get(owner, cloud_media_id)
         if rec is None:
             raise MediaNotFound(cloud_media_id)
         upload_id = rec.get("upload_id")
         if not upload_id:
             raise MediaVerificationError("not a multipart upload")
+        if rec.get("state") == STATE_CLOUD_VERIFIED:
+            try:
+                shas = json.loads(rec.get("part_shas") or "[]")
+            except (TypeError, ValueError):
+                shas = []
+            count = int(rec.get("part_count") or len(shas) or 0)
+            return [{"part_number": i + 1, "etag": "",
+                     "checksum_sha256": shas[i] if i < len(shas) else "", "size": 0} for i in range(count)]
         out: list[dict] = []
         paginator = self._s3_c().get_paginator("list_parts")
-        for page in paginator.paginate(Bucket=self.cfg.bucket, Key=rec["s3_key"], UploadId=upload_id):
-            for p in page.get("Parts", []):
-                out.append({"part_number": p["PartNumber"], "etag": p["ETag"],
-                            "checksum_sha256": p.get("ChecksumSHA256", ""), "size": p.get("Size", 0)})
+        try:
+            for page in paginator.paginate(Bucket=self.cfg.bucket, Key=rec["s3_key"], UploadId=upload_id):
+                for p in page.get("Parts", []):
+                    out.append({"part_number": p["PartNumber"], "etag": p["ETag"],
+                                "checksum_sha256": p.get("ChecksumSHA256", ""), "size": p.get("Size", 0)})
+        except Exception as e:  # botocore ClientError subclass; matched by code, not imported
+            code = getattr(e, "response", {}).get("Error", {}).get("Code") if hasattr(e, "response") else None
+            if code == "NoSuchUpload":
+                raise MultipartUploadGone(cloud_media_id) from e
+            raise
         return out
 
     def complete_multipart(self, *, owner: str, cloud_media_id: str) -> dict:

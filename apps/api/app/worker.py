@@ -82,6 +82,31 @@ def _served_model_id(diag: dict) -> str:
     return fallback if diag.get("any_fallback") else primary
 
 
+_EDITORIAL_TYPES = ("highlights", "full_story")
+
+
+def _editorial_diag(body: dict, prompt_version: str, v53_active: bool) -> dict:
+    """Which editorial type this job was planned as — PURE, persisted on the job item and logged, so a run can
+    PROVE Highlights vs Full Story after the staged request is deleted.
+
+      requested  the request's `editorial_type` exactly as the device sent it (None = not sent, e.g. a legacy
+                 Revise base with no stamped type), normalized to a known value or "unrecognized"
+      effective  what the planner was actually told: the requested type when v5.3 is active, else None (a
+                 v5.2 rollback strips it, so it is reported as NOT applied rather than claimed)
+      applied    True only when the planner received an editorial-type directive
+      legacy_mode  the legacy `editorial_mode` breadth hint (highlights|full|custom), kept for comparison
+    Only these closed-vocabulary strings are recorded: no Story content, no Moment ids."""
+    raw = body.get("editorial_type") if isinstance(body, dict) else None
+    req = None
+    if isinstance(raw, str) and raw.strip():
+        req = raw.strip().lower() if raw.strip().lower() in _EDITORIAL_TYPES else "unrecognized"
+    eff = req if (v53_active and req in _EDITORIAL_TYPES) else None
+    mode = body.get("editorial_mode") if isinstance(body, dict) else None
+    return {"requested": req, "effective": eff, "applied": eff is not None,
+            "legacy_mode": mode if mode in ("highlights", "full", "custom") else None,
+            "prompt_version": prompt_version}
+
+
 def _evidence_diag(env: dict, plan_dict: dict, order: list) -> dict:
     """Editorial Pipeline v2, P0 — PURE assembly of the durable evidence diagnostics that get persisted onto
     the job item (so they survive the staged-payload TTL). `env` is the staged submit envelope (carries the
@@ -583,6 +608,12 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
             "dur_src": _rc.get("duration_target_source"),
         }
         diag_out["rev_diag"] = rev_diag
+        # EDITORIAL TYPE visibility: Highlights vs Full Story, as requested and as the planner actually received it.
+        try:
+            import edit_planner as _ep
+            diag_out["editorial"] = _editorial_diag(b, diag_out["prompt_version"], bool(_ep._v53_active()))
+        except Exception:
+            pass   # diagnostics must never break a job
         # Greppable diagnostics line (CloudWatch): which model served each call, first-pass validator errors,
         # and WHY the primary failed over — so Opus-vs-Sonnet reject behavior is analyzable without DynamoDB.
         print(json.dumps({"msg": "worker_plan_diag", "job_id": job_id,
@@ -593,6 +624,7 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                           "first_fallback_error": diag_out.get("first_fallback_error"),
                           "calls": diag_out.get("calls"),
                           "rev_diag": rev_diag,
+                          "editorial": diag_out.get("editorial"),
                           "revision_path": diag_out.get("revision_path"),
                           "retime_reject_errors": diag_out.get("retime_reject_errors"),
                           "input_tokens": diag_out.get("input_tokens"),

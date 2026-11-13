@@ -243,3 +243,94 @@ def test_multipart_reconcile_lists_uploaded_parts():
     s3.put_part(rec["upload_id"], 1, p1, shas[0])   # only part 1 uploaded
     got = s.list_uploaded_parts(owner="o1", cloud_media_id=rec["cloud_media_id"])
     assert [p["part_number"] for p in got] == [1]
+
+
+# --- parts/uploaded after completion (dev 500: NoSuchUpload on an already-verified generated MP4) ----------
+class _NoSuchUpload(Exception):
+    """Shape of botocore's ClientError for ListParts on a completed/aborted MPU (matched by error code)."""
+    def __init__(self):
+        super().__init__("NoSuchUpload")
+        self.response = {"Error": {"Code": "NoSuchUpload", "Message": "The specified upload does not exist."}}
+
+
+class _RealisticMPUS3(_MPUS3):
+    """Like real S3: once an MPU is completed (or aborted) its upload id is GONE and ListParts raises."""
+    def __init__(self):
+        super().__init__()
+        self.gone = set()
+        self.list_calls = 0
+
+    def complete_multipart_upload(self, Bucket, Key, UploadId, MultipartUpload):
+        out = super().complete_multipart_upload(Bucket, Key, UploadId, MultipartUpload)
+        self.gone.add(UploadId)
+        return out
+
+    def get_paginator(self, _name):
+        s3 = self
+        inner = super().get_paginator(_name)
+
+        class _P:
+            def paginate(self, Bucket, Key, UploadId):
+                s3.list_calls += 1
+                if UploadId in s3.gone:
+                    raise _NoSuchUpload()
+                yield from inner.paginate(Bucket=Bucket, Key=Key, UploadId=UploadId)
+        return _P()
+
+
+def _real_mpu_store():
+    return m.MediaStore(m.MediaStoreConfig(table="t", bucket="b"), ddb=_DDB(), s3=_RealisticMPUS3())
+
+
+def test_reinitiate_of_verified_content_reconciles_as_fully_uploaded_without_s3():
+    """Exact dev failure: a backup re-initiates an already cloud_verified generated MP4, gets the old (completed)
+    upload_id back, then asks which parts exist. Must report ALL parts present (so the client PUTs nothing) and
+    must not call ListParts on the dead upload. The follow-up complete is an idempotent no-op."""
+    s = _real_mpu_store(); s3 = s._s3
+    p1, p2 = b"X" * 1000, b"Y" * 500
+    shas = [_part_sha_b64(p1), _part_sha_b64(p2)]
+    rec, _ = s.initiate_multipart(owner="o1", content_sha256="a" * 64, size_bytes=1500, part_shas_b64=shas,
+                                  media_kind="generated")
+    s3.put_part(rec["upload_id"], 1, p1, shas[0]); s3.put_part(rec["upload_id"], 2, p2, shas[1])
+    done = s.complete_multipart(owner="o1", cloud_media_id=rec["cloud_media_id"])
+    assert done["state"] == m.STATE_CLOUD_VERIFIED
+
+    again, created = s.initiate_multipart(owner="o1", content_sha256="a" * 64, size_bytes=1500, part_shas_b64=shas,
+                                          media_kind="generated")
+    assert not created and again["state"] == m.STATE_CLOUD_VERIFIED
+    calls_before = s3.list_calls
+    parts = s.list_uploaded_parts(owner="o1", cloud_media_id=rec["cloud_media_id"])
+    assert [p["part_number"] for p in parts] == [1, 2]
+    assert [p["checksum_sha256"] for p in parts] == shas
+    assert s3.list_calls == calls_before, "must not call ListParts on a completed upload"
+    again2 = s.complete_multipart(owner="o1", cloud_media_id=rec["cloud_media_id"])
+    assert again2["state"] == m.STATE_CLOUD_VERIFIED and again2["verified_at"] == done["verified_at"]
+
+
+def test_expired_multipart_upload_raises_gone_not_a_crash():
+    s = _real_mpu_store(); s3 = s._s3
+    shas = [_part_sha_b64(b"X" * 1000)]
+    rec, _ = s.initiate_multipart(owner="o1", content_sha256="b" * 64, size_bytes=1000, part_shas_b64=shas)
+    s3.gone.add(rec["upload_id"])   # aborted / expired by S3 while still `uploading`
+    with pytest.raises(m.MultipartUploadGone):
+        s.list_uploaded_parts(owner="o1", cloud_media_id=rec["cloud_media_id"])
+    assert s.get("o1", rec["cloud_media_id"])["state"] == m.STATE_UPLOADING   # never marked verified
+
+
+def test_other_list_parts_errors_still_propagate():
+    s = _real_mpu_store(); s3 = s._s3
+    shas = [_part_sha_b64(b"X" * 1000)]
+    rec, _ = s.initiate_multipart(owner="o1", content_sha256="c" * 64, size_bytes=1000, part_shas_b64=shas)
+
+    class _Denied(Exception):
+        response = {"Error": {"Code": "AccessDenied"}}
+
+    def boom(_name):
+        class _P:
+            def paginate(self, **_kw):
+                raise _Denied()
+                yield  # pragma: no cover
+        return _P()
+    s3.get_paginator = boom
+    with pytest.raises(_Denied):
+        s.list_uploaded_parts(owner="o1", cloud_media_id=rec["cloud_media_id"])
