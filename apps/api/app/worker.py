@@ -78,7 +78,8 @@ def _served_model_id(diag: dict) -> str:
         served = (calls[-1] or {}).get("served_by")
         if served:
             return str(served)
-    return _FALLBACK_MODEL if diag.get("any_fallback") else _PRIMARY_MODEL
+    primary, fallback = _planner_models()
+    return fallback if diag.get("any_fallback") else primary
 
 
 def _evidence_diag(env: dict, plan_dict: dict, order: list) -> dict:
@@ -171,8 +172,14 @@ def _quota_release_job(job: dict, *, incurred_usd: float = 0.0) -> None:
             q.release_slot(uid, job_id)
     except Exception:  # noqa: BLE001
         pass
-_PRIMARY_MODEL = os.environ.get("STORY_EDIT_PLANNER_MODEL", "us.anthropic.claude-opus-4-6-v1")
-_FALLBACK_MODEL = os.environ.get("STORY_LLM_FALLBACK_MODEL", "us.anthropic.claude-sonnet-4-6")
+
+
+def _planner_models() -> tuple[str, str]:
+    """(primary, fallback) edit-plan model ids from the ACTIVE provider route (e.g. gpt-5.1 / gemini-*), used
+    only when the gateway did not report a served model. Never an obsolete Anthropic identifier."""
+    from model_gateway.provider import served_model_ids
+    p, f = served_model_ids("edit_plan")
+    return (p or "unknown", f or p or "unknown")
 
 
 def _emit_ai_metrics(diag: dict, *, op_type: str, stage: str = "edit_plan", story_user_id: str | None = None) -> None:
@@ -245,35 +252,20 @@ def _effective_prompt_version() -> str:
 
 
 def _build_engine():
-    """Mirror apps/api/app/deps.get_edit_planner_engine so the worker runs the IDENTICAL model path
-    (direct OpenAI/Gemini in STORY_MODEL_PROVIDER=direct, else Opus primary -> Sonnet fallback)."""
-    model = os.environ.get("STORY_EDIT_PLANNER_MODEL", "us.anthropic.claude-opus-4-6-v1")
-    if (os.environ.get("STORY_MODEL_PROVIDER", "bedrock") or "bedrock").strip().lower() == "direct":
-        from model_gateway.provider import make_gateway
-        gw = make_gateway("edit_plan")
-    else:
-        from model_gateway import BedrockModelGateway, FallbackModelGateway
-        fb = os.environ.get("STORY_LLM_FALLBACK_MODEL", "us.anthropic.claude-sonnet-4-6")
-        primary = BedrockModelGateway(model_id=model)
-        gw = primary if (not fb or fb == model) else FallbackModelGateway(primary, BedrockModelGateway(model_id=fb))
-    return RealEditPlannerEngine(gw, executability_repair_attempts=2)
+    """Mirror apps/api/app/deps.get_edit_planner_engine so the worker runs the IDENTICAL model path (the
+    provider router; direct OpenAI/Gemini). Uses the same provider-mode validation as the API."""
+    from edit_planner import MODEL_ID as _EP_MODEL
+    from model_gateway.provider import routed_gateway
+    return RealEditPlannerEngine(routed_gateway("edit_plan", _EP_MODEL), executability_repair_attempts=2)
 
 
 def _build_coverage_engine():
     """Mirror apps/api/app/deps.get_story_coverage_v2_engine so the worker runs the IDENTICAL two-call
-    Coverage path (direct OpenAI/Gemini in STORY_MODEL_PROVIDER=direct, else Opus->Sonnet). Frozen
-    prompts/contract untouched."""
-    from story_coverage_v2 import RealStoryCoverageV2Engine
-    model = os.environ.get("STORY_COVERAGE_MODEL", "us.anthropic.claude-opus-4-6-v1")
-    if (os.environ.get("STORY_MODEL_PROVIDER", "bedrock") or "bedrock").strip().lower() == "direct":
-        from model_gateway.provider import make_gateway
-        gw = make_gateway("story_coverage")
-    else:
-        from model_gateway import BedrockModelGateway, FallbackModelGateway
-        fb = os.environ.get("STORY_LLM_FALLBACK_MODEL", "us.anthropic.claude-sonnet-4-6")
-        primary = BedrockModelGateway(model_id=model)
-        gw = primary if (not fb or fb == model) else FallbackModelGateway(primary, BedrockModelGateway(model_id=fb))
-    return RealStoryCoverageV2Engine(gw, model_id=model)
+    Coverage path. Frozen prompts/contract untouched."""
+    from story_coverage_v2 import RealStoryCoverageV2Engine, DEFAULT_COVERAGE_MODEL
+    from model_gateway.provider import routed_gateway
+    return RealStoryCoverageV2Engine(routed_gateway("story_coverage", DEFAULT_COVERAGE_MODEL),
+                                     model_id=DEFAULT_COVERAGE_MODEL)
 
 
 def _validator_error_codes(errs: list[str]) -> list[str]:
@@ -669,7 +661,7 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                               {"env": _ENV, "service": "worker", "op_type": _op, "error_category": _ec})
                 if _ec == "throttle":
                     _emit_metrics({"BedrockThrottles": 1.0},
-                                  {"env": _ENV, "service": "worker", "model_id": _PRIMARY_MODEL})
+                                  {"env": _ENV, "service": "worker", "model_id": _planner_models()[0]})
             except Exception:  # noqa: BLE001
                 pass
         store.fail(job_id, cat, detail, token)

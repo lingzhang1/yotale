@@ -2,8 +2,8 @@ import XCTest
 @testable import Story
 
 // P1-D §14 — offline tests for the PURE Create-UX decision logic: Video Type seeding (Highlights default,
-// historical custom != Full Story), the independent Recommended/Custom duration seed, and the default-ON
-// EditorialTypeFlag with override precedence. The full on-device matrix (type switch updates the estimate,
+// historical custom != Full Story), the independent Recommended/Custom duration seed, and the
+// (flag-free) standard editorial behavior. The full on-device matrix (type switch updates the estimate,
 // chip insertion, More Options expand/collapse, Revise inherit, Explore switch, async submit/resume) runs
 // via StoryCreationCoordinatorTests + ⌘U; these cover the deterministic units without a SwiftUI host.
 final class CreateUXP1DTests: XCTestCase {
@@ -139,27 +139,5 @@ final class CreateUXP1DTests: XCTestCase {
     func testVideoTypeWireValuesMatchContract() {
         XCTAssertEqual(V.VideoType.highlights.wire, "highlights")
         XCTAssertEqual(V.VideoType.full.wire, "full")
-    }
-
-    // MARK: - EditorialTypeFlag default-ON + override precedence (§11)
-
-    func testFlagDefaultsOnWithNoOverride() {
-        // No env override possible in-test; clear any UserDefaults override -> baseline must be ON.
-        EditorialTypeFlag.setOverride(nil)
-        XCTAssertTrue(EditorialTypeFlag.enabled, "P1-D: Editing v2 is the product default")
-    }
-
-    func testUserDefaultsOverrideForcesOff() {
-        EditorialTypeFlag.setOverride(false)
-        XCTAssertFalse(EditorialTypeFlag.enabled, "an explicit override must win over the default")
-        EditorialTypeFlag.setOverride(nil)   // restore baseline; a cleared override must not persist
-        XCTAssertTrue(EditorialTypeFlag.enabled)
-    }
-
-    func testOverrideCanBeClearedToAvoidStaleContamination() {
-        EditorialTypeFlag.setOverride(true)
-        EditorialTypeFlag.setOverride(nil)   // §11: a stale dev toggle must be clearable, not sticky
-        XCTAssertNil(UserDefaults.standard.object(forKey: EditorialTypeFlag.key))
-        XCTAssertTrue(EditorialTypeFlag.enabled)
     }
 }

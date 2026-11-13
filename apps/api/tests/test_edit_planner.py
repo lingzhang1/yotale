@@ -57,6 +57,16 @@ def _good_plan():
     ]}
 
 
+
+def _strict_validate(plan, inputs):
+    """validate_plan HARD errors PLUS the OBJECTIVE directive misses (opening/ending/ordering/...). Objective
+    misses are no longer terminal failures (permanent creative-freedom v2), but these tests assert the
+    deterministic detection of every directive violation, so they inspect hard + objective together."""
+    moments = {str(m["id"]).lower(): m for m in inputs.moments}
+    _hard, obj = _validate_directives_split(plan, inputs, moments)
+    return validate_plan(plan, inputs) + list(obj)
+
+
 def test_engine_valid_plan_to_contract():
     eng = RealEditPlannerEngine(FakeModelGateway(response=_good_plan()))
     plan = eng.generate(_inputs())
@@ -233,10 +243,10 @@ def test_structural_repair_fixes_opening_order_only():
     s_m1, s_m2 = gp["segments"][0], gp["segments"][1]
     bad = {**gp, "segments": [{**s_m2, "order": 0}, {**s_m1, "order": 1}]}
     inp = _inputs(revision_context=_rev({"opening": M1}))
-    errs = validate_plan(bad, inp)
+    errs = _strict_validate(bad, inp)
     assert errs and _errors_are_order_only(errs)
     fixed = repair_directive_placement(bad, inp)
-    assert fixed is not None and validate_plan(fixed, inp) == []
+    assert fixed is not None and _strict_validate(fixed, inp) == []
     assert str(fixed["segments"][0]["asset_id"]).lower() == M1.lower()
     key = lambda p: sorted((str(s["asset_id"]).lower(), s["source_start_seconds"], s["source_end_seconds"],
                             s["output_duration_seconds"]) for s in p["segments"])
@@ -247,10 +257,10 @@ def test_structural_repair_opening_plus_adjacency():
     bad = _good_plan()  # M1 then M2
     # require M2 opening AND M1 immediately after M2 -> reorder must produce [M2, M1]
     inp = _inputs(revision_context=_rev({"opening": M2, "order_adjacent": [[M1, M2]]}))
-    errs = validate_plan(bad, inp)
+    errs = _strict_validate(bad, inp)
     assert errs and _errors_are_order_only(errs)
     fixed = repair_directive_placement(bad, inp)
-    assert fixed is not None and validate_plan(fixed, inp) == []
+    assert fixed is not None and _strict_validate(fixed, inp) == []
     order = [str(s["asset_id"]).lower() for s in fixed["segments"]]
     assert order == [M2.lower(), M1.lower()]
 
@@ -1139,7 +1149,7 @@ def test_directive_must_include_satisfied():
 def test_directive_must_include_violated():
     plan = _good_plan()
     plan["segments"] = [s for s in plan["segments"] if s["asset_id"] != M2]  # drop M2
-    errs = validate_plan(plan, _inputs(revision_context=_ctx({"must_include": [M2]})))
+    errs = _strict_validate(plan, _inputs(revision_context=_ctx({"must_include": [M2]})))
     assert any("must_include" in e and "appears in no segment" in e for e in errs)
 
 
@@ -1151,17 +1161,17 @@ def test_directive_exclude_violated():
 
 def test_directive_opening_satisfied_and_violated():
     plan = _good_plan()  # order 0 is M1
-    ok = validate_plan(plan, _inputs(revision_context=_ctx({"opening": M1})))
+    ok = _strict_validate(plan, _inputs(revision_context=_ctx({"opening": M1})))
     assert [e for e in ok if "opening" in e] == []
-    bad = validate_plan(plan, _inputs(revision_context=_ctx({"opening": M2})))
+    bad = _strict_validate(plan, _inputs(revision_context=_ctx({"opening": M2})))
     assert any("opening" in e and "first segment must be" in e for e in bad)
 
 
 def test_directive_ending_satisfied_and_violated():
     plan = _good_plan()  # last is M2
-    ok = validate_plan(plan, _inputs(revision_context=_ctx({"ending": M2})))
+    ok = _strict_validate(plan, _inputs(revision_context=_ctx({"ending": M2})))
     assert [e for e in ok if "ending" in e] == []
-    bad = validate_plan(plan, _inputs(revision_context=_ctx({"ending": M1})))
+    bad = _strict_validate(plan, _inputs(revision_context=_ctx({"ending": M1})))
     assert any("ending" in e and "last segment must be" in e for e in bad)
 
 
@@ -1172,15 +1182,15 @@ def test_directive_id_case_insensitive():
     unenforced, so every "new version" came back as the same default edit."""
     plan = _good_plan()  # order 0 is M1 (lowercase), order 1/last is M2 (lowercase)
     # opening named in UPPERCASE must resolve to the same Moment -> satisfied (no opening error).
-    ok = validate_plan(plan, _inputs(revision_context=_ctx({"opening": M1.upper()})))
+    ok = _strict_validate(plan, _inputs(revision_context=_ctx({"opening": M1.upper()})))
     assert [e for e in ok if "opening" in e] == []
     # opening=M2 (uppercase) is NOT the first segment -> must be flagged, and must NOT be treated as an
     # "unknown Moment" (the old case-sensitive bug flagged it "not in the eligible source set").
-    bad = validate_plan(plan, _inputs(revision_context=_ctx({"opening": M2.upper()})))
+    bad = _strict_validate(plan, _inputs(revision_context=_ctx({"opening": M2.upper()})))
     assert any("opening" in e and "first segment must be" in e for e in bad)
     assert not any("not in the eligible source set" in e for e in bad)
     # exclude in uppercase still catches a used Moment.
-    exc = validate_plan(plan, _inputs(revision_context=_ctx({"exclude": [M2.upper()]})))
+    exc = _strict_validate(plan, _inputs(revision_context=_ctx({"exclude": [M2.upper()]})))
     assert any("exclude" in e and "must NOT be used" in e for e in exc)
 
 
@@ -1242,9 +1252,9 @@ def test_order_after_satisfied_and_violated():
     a, b, c = str(uuid4()), str(uuid4()), str(uuid4())
     base = _inputs3(a, b, c)
     # plan order a,b,c : "c after a" holds; "a after c" fails
-    ok = validate_plan(_plan3(a, b, c), _with_rc(base, {"order_after": [[c, a]]}))
+    ok = _strict_validate(_plan3(a, b, c), _with_rc(base, {"order_after": [[c, a]]}))
     assert [e for e in ok if "order_after" in e] == []
-    bad = validate_plan(_plan3(a, b, c), _with_rc(base, {"order_after": [[a, c]]}))
+    bad = _strict_validate(_plan3(a, b, c), _with_rc(base, {"order_after": [[a, c]]}))
     assert any("must come after" in e for e in bad)
 
 
@@ -1252,9 +1262,9 @@ def test_order_adjacent_satisfied_and_violated():
     a, b, c = str(uuid4()), str(uuid4()), str(uuid4())
     base = _inputs3(a, b, c)
     # a,b,c : b immediately after a holds; c immediately after a fails (c is 2 later)
-    ok = validate_plan(_plan3(a, b, c), _with_rc(base, {"order_adjacent": [[b, a]]}))
+    ok = _strict_validate(_plan3(a, b, c), _with_rc(base, {"order_adjacent": [[b, a]]}))
     assert [e for e in ok if "order_adjacent" in e] == []
-    bad = validate_plan(_plan3(a, b, c), _with_rc(base, {"order_adjacent": [[c, a]]}))
+    bad = _strict_validate(_plan3(a, b, c), _with_rc(base, {"order_adjacent": [[c, a]]}))
     assert any("immediately follow" in e for e in bad)
 
 
@@ -1294,8 +1304,8 @@ def test_opening_plus_adjacent_use_moment5_to_start_moment2_follow():
     base = _inputs3(a, b, c)
     rc = {"opening": a, "order_adjacent": [[b, a]]}
     # plan a,b,c satisfies both; plan b,a,c violates opening
-    assert validate_plan(_plan3(a, b, c), _with_rc(base, rc)) == []
-    bad = validate_plan(_plan3(b, a, c), _with_rc(base, rc))
+    assert _strict_validate(_plan3(a, b, c), _with_rc(base, rc)) == []
+    bad = _strict_validate(_plan3(b, a, c), _with_rc(base, rc))
     assert any("opening" in e for e in bad)
 
 
@@ -2006,36 +2016,17 @@ def test_repair_errors_non_visual_classification():
 # ============================================================================
 # Creative Freedom AMENDMENT v2 — creative directives as strong editorial
 # objectives, not terminal failures. Cost-aware repair. Safety/privacy hard.
-# All behind flags, default OFF. These tests FLIP the flags per-case.
+# Permanent accepted behavior (no feature flags); tests run with NO flag env injected.
 # ============================================================================
 from edit_planner import (  # noqa: E402
     assess_creative_intent,
     _validate_directives_split,
     _exclude_is_safety,
-    _objective_directives_on,
 )
-
-
-def _obj_env(monkeypatch, **extra):
-    monkeypatch.setenv("STORY_EDITPLAN_OBJECTIVE_DIRECTIVES", "1")
-    monkeypatch.setenv("STORY_EDITPLAN_BEST_VALID_RETENTION", "1")
-    for k, v in extra.items():
-        monkeypatch.setenv(k, v)
-
-
-def test_v2_flags_default_off_is_legacy(monkeypatch):
-    # With no flags set, an unmet opening directive is STILL a hard validation error (unchanged behavior).
-    monkeypatch.delenv("STORY_EDITPLAN_OBJECTIVE_DIRECTIVES", raising=False)
-    assert _objective_directives_on() is False
-    bad = _good_plan()  # M1 then M2; require M2 opening
-    inp = _inputs(revision_context=_rev({"opening": M2}))
-    errs = validate_plan(bad, inp)
-    assert any("directive opening:" in e for e in errs)   # hard in legacy mode
 
 
 def test_v2_unmet_opening_is_objective_not_hard(monkeypatch):
     # Flag ON: a mis-ordered opening is NOT a hard error — validate_plan passes; the miss is an OBJECTIVE.
-    _obj_env(monkeypatch)
     bad = _good_plan()  # M1 then M2
     inp = _inputs(revision_context=_rev({"opening": M2}))
     assert validate_plan(bad, inp) == []                  # technically valid -> shippable
@@ -2048,14 +2039,12 @@ def test_v2_unmet_opening_is_objective_not_hard(monkeypatch):
 
 def test_v2_reference_to_unknown_moment_stays_hard(monkeypatch):
     # An unknown/unowned Moment reference is a HARD error even in objective mode (integrity).
-    _obj_env(monkeypatch)
     inp = _inputs(revision_context=_rev({"opening": str(uuid4())}))
     errs = validate_plan(_good_plan(), inp)
     assert any("not in the eligible source set" in e for e in errs)
 
 
 def test_v2_safety_exclude_is_hard_creative_exclude_is_objective(monkeypatch):
-    _obj_env(monkeypatch)
     plan = _good_plan()  # uses M1 and M2
     ms = {str(m["id"]).lower(): m for m in _inputs().moments}
     # Creative exclude (explicitly marked) of a used Moment -> OBJECTIVE, not hard.
@@ -2072,7 +2061,6 @@ def test_v2_safety_exclude_is_hard_creative_exclude_is_objective(monkeypatch):
 
 def test_v2_missing_exclude_marker_defaults_to_safety(monkeypatch):
     # Owner principle 3: a missing marker must NOT be treated as creative — fail safe.
-    _obj_env(monkeypatch)
     directives = {"exclude": [M2]}  # no marker at all
     assert _exclude_is_safety(directives, M2) is True
     plan = _good_plan()
@@ -2081,7 +2069,6 @@ def test_v2_missing_exclude_marker_defaults_to_safety(monkeypatch):
 
 
 def test_v2_contradiction_stays_hard(monkeypatch):
-    _obj_env(monkeypatch)
     inp = _inputs(revision_context=_rev({"order_after": [[M1, M2], [M2, M1]]}))
     errs = validate_plan(_good_plan(), inp)
     assert any("directive conflict:" in e for e in errs)
@@ -2091,7 +2078,6 @@ def test_v2_approx_duration_soft_but_runaway_hard(monkeypatch):
     # OWNER POLICY (2026-10-25): duration is NEVER a block, so even a very large overshoot ships. The former
     # runaway guard is removed — a playable cut of any length validates. Moments are long enough that the big
     # cut is TECHNICALLY valid (source windows within bounds), isolating the length axis.
-    _obj_env(monkeypatch, STORY_EDITPLAN_APPROX_DURATION_SOFT="1")
     inp = _target12_inputs(
         revision_context={"mode": "explore", "duration_target_source": "ai_recommended"},
         moments=[
@@ -2115,7 +2101,6 @@ def test_v2_approx_duration_soft_but_runaway_hard(monkeypatch):
 def test_v2_exact_duration_also_never_blocks_on_length(monkeypatch):
     # Even an EXPLICIT user-exact duration no longer blocks on length — a playable overshoot ships. (The user
     # asked for a length as an AIM; the pipeline gives them the best playable cut, never an error.)
-    _obj_env(monkeypatch, STORY_EDITPLAN_APPROX_DURATION_SOFT="1")
     inp = _target12_inputs(revision_context={"mode": "revise", "duration_target_source": "user_exact"},
                            moments=_target12_inputs().moments + [
                                {"id": "M3", "duration_seconds": 9.0, "useful_segments": [[0.0, 8.5]]}])
@@ -2132,7 +2117,6 @@ def test_v2_exact_duration_also_never_blocks_on_length(monkeypatch):
 def test_v2_47p5s_mis_ordered_directive_ships_via_reorder(monkeypatch):
     # The 47.5s class: model returns valid segments but wrong order for opening+adjacency. In objective mode the
     # engine reorders deterministically (0 extra model calls) and ships a FULLY satisfied plan.
-    _obj_env(monkeypatch)
     gp = _good_plan()
     s_m1, s_m2 = gp["segments"][0], gp["segments"][1]
     wrong = {**gp, "segments": [{**s_m2, "order": 0}, {**s_m1, "order": 1}]}  # M2 first
@@ -2149,7 +2133,6 @@ def test_v2_47p5s_mis_ordered_directive_ships_via_reorder(monkeypatch):
 def test_v2_partial_ships_with_disclosure_no_extra_calls(monkeypatch):
     # Objective that a reorder CANNOT satisfy (must_include of a Moment the model simply didn't place) -> the
     # plan is technically valid, so it SHIPS with a partial disclosure and ZERO extra model calls (cost policy).
-    _obj_env(monkeypatch)
     plan = _good_plan()  # uses M1, M2
     M3 = str(uuid4())
     inp = _inputs(
@@ -2167,7 +2150,6 @@ def test_v2_partial_ships_with_disclosure_no_extra_calls(monkeypatch):
 def test_v2_best_valid_retained_not_discarded(monkeypatch):
     # First call returns a VALID plan but with a HARD error nowhere; a (hypothetical) later regression must not
     # discard it. Here: initial valid plan with an unmet objective -> retained + shipped, never invalid.
-    _obj_env(monkeypatch)
     plan = _good_plan()
     M3 = str(uuid4())
     inp = _inputs(
@@ -2180,7 +2162,6 @@ def test_v2_best_valid_retained_not_discarded(monkeypatch):
 
 def test_v2_revise_zero_repair_budget(monkeypatch):
     # Revise with a HARD-valid first plan: budget is 0 repairs, ships immediately.
-    _obj_env(monkeypatch)
     eng = RealEditPlannerEngine(FakeModelGateway(response=_good_plan()))
     eng.generate(_inputs(revision_context={"mode": "revise", "base_plan": _good_plan(),
                                             "allow_broad_replan": True}))
@@ -2190,7 +2171,6 @@ def test_v2_revise_zero_repair_budget(monkeypatch):
 
 def test_v2_technical_error_still_fails_when_unrecoverable(monkeypatch):
     # A HARD technical error with no valid candidate anywhere still fails honestly (speed unrenderable).
-    _obj_env(monkeypatch)
     bad = _good_plan()
     bad["segments"][0]["speed"] = 4.0   # out of renderer range -> HARD, unrecoverable here (Fake repeats it)
     eng = RealEditPlannerEngine(FakeModelGateway(response=bad))
@@ -2206,7 +2186,6 @@ def test_v2_technical_error_still_fails_when_unrecoverable(monkeypatch):
 
 def test_v2_directed_explore_enforces_directive_reference(monkeypatch):
     # An explore request with a directive referencing an UNKNOWN Moment is a HARD error regardless of mode.
-    _obj_env(monkeypatch)
     inp = _inputs(revision_context={"mode": "explore", "directives": {"opening": str(uuid4())}})
     errs = validate_plan(_good_plan(), inp)
     assert any("not in the eligible source set" in e for e in errs)
@@ -2214,7 +2193,6 @@ def test_v2_directed_explore_enforces_directive_reference(monkeypatch):
 
 def test_v2_directed_explore_scores_objectives(monkeypatch):
     # In explore mode, an unmet opening is an OBJECTIVE (scored), not a hard error — same as revise.
-    _obj_env(monkeypatch)
     bad = _good_plan()  # M1 then M2; ask for M2 opening
     inp = _inputs(revision_context={"mode": "explore", "directives": {"opening": M2}})
     assert validate_plan(bad, inp) == []                       # technically valid -> shippable
@@ -2226,7 +2204,6 @@ def test_v2_directed_explore_no_continuity_gate(monkeypatch):
     # The revise continuity gate must NOT apply to explore: a plan with a totally different clip set from a
     # (hypothetical) base ships. Explore carries no base_plan and is not a targeted revise, so even a plan
     # that shares nothing with a prior version is accepted. model_calls stays 1, final executable.
-    _obj_env(monkeypatch)
     plan = _good_plan()
     inp = _inputs(revision_context={"mode": "explore",
                                     "directives": {"opening": M1},
@@ -2246,7 +2223,6 @@ def test_v2_directed_explore_no_continuity_gate(monkeypatch):
 def test_v2_directed_explore_ships_meaningfully_different(monkeypatch):
     # Representative fixture: an explore whose model output selects/orders a genuinely different set than the
     # parent (M1 opening + a 3rd moment) ships as a valid, complete plan at 1 call.
-    _obj_env(monkeypatch)
     M3 = str(uuid4())
     plan = {"target_duration_seconds": 18.0, "feasible": True, "segments": [
         {"order": 0, "asset_id": M1, "source_start_seconds": 1.0, "source_end_seconds": 9.0,

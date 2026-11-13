@@ -142,7 +142,6 @@ class FakeJobStore:
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("STORY_JOBS_API_ENABLED", "1")
     monkeypatch.setenv("STORY_ENVIRONMENT", "development")
     monkeypatch.setenv("STORY_REQUIRE_AUTH", "0")
     app = create_app()
@@ -265,7 +264,6 @@ def test_14_invalid_token_never_falls_back(client):
 
 
 def test_14b_production_fails_closed(monkeypatch):
-    monkeypatch.setenv("STORY_JOBS_API_ENABLED", "1")
     monkeypatch.setenv("STORY_ENVIRONMENT", "production")
     monkeypatch.setenv("STORY_REQUIRE_AUTH", "0")
     app = create_app()

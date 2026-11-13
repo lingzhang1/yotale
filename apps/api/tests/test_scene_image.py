@@ -49,7 +49,6 @@ class _FakeClient:
 
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
-    monkeypatch.setenv("STORY_SCENE_IMAGES", "1")
     main_mod._SCENE_IMAGE_CACHE = None
     main_mod._SCENE_IMAGE_CLIENT = None
     main_mod._SCENE_IMAGE_CLIENT_FACTORY = None
@@ -61,13 +60,6 @@ def _client(fake=None):
     if fake is not None:
         main_mod._SCENE_IMAGE_CLIENT_FACTORY = lambda: fake
     return TestClient(create_app())
-
-
-def test_flag_off_returns_404(monkeypatch):
-    monkeypatch.delenv("STORY_SCENE_IMAGES", raising=False)
-    c = TestClient(create_app())
-    r = c.post("/v1/scene-image", json={"query": "city skyline"})
-    assert r.status_code == 404
 
 
 def test_returns_metadata_only_with_attribution_and_hotlink():
@@ -244,13 +236,6 @@ def test_track_fires_only_for_unsplash_host():
     r = c.post("/v1/scene-image/track", json={"download_location": "https://evil.example/internal"})
     assert r.status_code == 204
     assert len(fake.track_calls) == 1
-
-
-def test_track_flag_off_404(monkeypatch):
-    monkeypatch.delenv("STORY_SCENE_IMAGES", raising=False)
-    c = TestClient(create_app())
-    r = c.post("/v1/scene-image/track", json={"download_location": "https://api.unsplash.com/x"})
-    assert r.status_code == 404
 
 
 # --- Secret parsing: owner's real Unsplash secret shape (3 hyphenated keys) ------------------------------

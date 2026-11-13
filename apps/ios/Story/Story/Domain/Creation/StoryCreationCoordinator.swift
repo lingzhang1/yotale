@@ -408,10 +408,8 @@ final class StoryCreationCoordinator {
         pendingDirectedByCustomize = false
         // P1-C: resolve the attempt's editorial TYPE once, here, at the Original-create boundary. Explicit
         // Story selection -> that type; no selection -> Highlights DEFAULT (never model-inferred, never derived
-        // from a custom duration). nil when the flag is OFF (v5.2 behavior).
-        pendingEditorialType = EditorialTypeFlag.enabled
-            ? ResolvedEditorial.fromLegacy(story.editorialMode).typeForNewAttempt.rawValue
-            : nil
+        // from a custom duration).
+        pendingEditorialType = ResolvedEditorial.fromLegacy(story.editorialMode).typeForNewAttempt.rawValue
         beginRun(for: story, outputFormat: outputFormat, targetSeconds: targetSeconds, music: music)
     }
 
@@ -527,10 +525,8 @@ final class StoryCreationCoordinator {
         pendingOperationType = "another_version"
         // P1-C: Explore allows type SWITCHING. Use the explicitly requested type when given; otherwise RETAIN
         // the parent output's type (all four H/F transitions supported). Directed Explore stays Explore. A
-        // legacy parent with no stamped type + no request -> Highlights default. Flag-gated.
-        pendingEditorialType = EditorialTypeFlag.enabled
-            ? (requestedEditorialType ?? parent.editorialType ?? EditorialType.defaultType).rawValue
-            : nil
+        // legacy parent with no stamped type + no request -> Highlights default.
+        pendingEditorialType = (requestedEditorialType ?? parent.editorialType ?? EditorialType.defaultType).rawValue
         // When the user reached this via the Customize sheet and typed Creative Direction for THIS operation,
         // fold those directives + soft instruction onto the explore context so the planner strongly pursues
         // them (owner decision 2026-10-22: the operation STAYS mode=explore — a meaningfully-different NEW
@@ -559,8 +555,8 @@ final class StoryCreationCoordinator {
         pendingOperationType = "revision"
         pendingDirectedByCustomize = false
         // P1-C: Revise INHERITS the base output's editorial type (never re-infers). A legacy base with no
-        // stamped type stays nil (preserve historical semantics — not silently Full Story). Flag-gated.
-        pendingEditorialType = EditorialTypeFlag.enabled ? base.editorialType?.rawValue : nil
+        // stamped type stays nil (preserve historical semantics — not silently Full Story).
+        pendingEditorialType = base.editorialType?.rawValue
         lastDiversity = nil
         beginRun(for: story, outputFormat: outputFormat, targetSeconds: targetSeconds, music: music)
     }
@@ -640,7 +636,7 @@ final class StoryCreationCoordinator {
                 hasBasePlan: Self.revisionHasBasePlan(pendingRevisionContext))
             : nil
         let wantMultimodal: Bool = {
-            let base = requested.requiresMultimodal && StoryMultimodalPlanning.enabled
+            let base = requested.requiresMultimodal
             guard base, let scope = reviseScope else { return base }
             return scope.sendsSheets   // targeted text-light revise -> no sheets; full/visual -> sheets
         }()
@@ -736,17 +732,10 @@ final class StoryCreationCoordinator {
             // critique is CONDITIONAL, not automatic — while the ORIGINAL create keeps its existing gated
             // behavior. Images, prior-version context/diversity, mandatory deterministic validation and the
             // worker's bounded repair are all preserved; only the automatic critique pass is dropped for
-            // Explore. An explicit opt-in (critiqueExploreEnabled, default false) can still force it.
-            let critique: Bool = {
-                guard wantMultimodal && StoryMultimodalPlanning.critiqueRevisionEnabled else { return false }
-                if pendingOperationType == "another_version" {
-                    return StoryMultimodalPlanning.critiqueExploreEnabled   // conditional; default OFF
-                }
-                // Phase 2: a TARGETED revise (Path B) runs critique OFF by default — it is a bounded change,
-                // not a creative re-edit. Only a full re-edit (Path C) keeps the original revise behavior.
-                if let scope = reviseScope, scope != .fullReedit { return false }
-                return true   // original create / full-reedit revision: unchanged
-            }()
+            // Explore (Explore always plans in ONE call; there is no switch to turn the critique on for it).
+            let critique: Bool = StoryMultimodalPlanning.critiqueApplies(
+                wantMultimodal: wantMultimodal, critiqueEnabled: StoryMultimodalPlanning.critiqueRevisionEnabled,
+                isExplore: pendingOperationType == "another_version", reviseScope: reviseScope)
 
             // P0 EVIDENCE ACCOUNTING — assemble the reconciling census (stages 1-10) from the eligibility
             // census (build) + the visual-budget miss reasons + the R6-unrestorable set, plus build provenance.
@@ -758,7 +747,7 @@ final class StoryCreationCoordinator {
                 sheetMissReasons: sheetMissReasons, restoreUnavailableIds: Set(restoreUnavailableIds))
             let provenance = BuildProvenance.current(
                 requestedApproach: requested.rawValue,
-                multimodalEnabled: StoryMultimodalPlanning.enabled,
+                multimodalEnabled: true,
                 extractionPolicy: MomentFrameExtractor.extractionPolicy)
             MediaEngineV1.beacon("evidence-accounting reconciles=\(evidenceAccounting.reconciles) "
                 + "linked=\(evidenceAccounting.linkedCount) eligible=\(evidenceAccounting.eligibleCount) "
@@ -999,8 +988,8 @@ final class StoryCreationCoordinator {
         // source in/out nudges toward motion-settle / audio-onset points, then re-validates; on ANY failure
         // (or when disabled) the ORIGINAL executable plan is used unchanged. Narrative selection, order,
         // output durations, speed, transitions and music alignment are all preserved. A straight cut remains
-        // a valid result. Gate: StoryCreativeRefinement.enabled (default false until device-accepted).
-        if StoryCreativeRefinement.enabled {
+        // a valid result. Always runs (deterministic, no model call; a no-op when it has nothing to improve).
+        do {
             let sourceDur: (String) -> Double? = { aid in
                 renderMedia.first { $0.momentId.uuidString.lowercased() == aid.lowercased() }?.durationSeconds
             }

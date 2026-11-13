@@ -39,20 +39,10 @@ jobs:
       AWS_REGION: us-east-1
       ENVIRONMENT: beta
       ECR_REPO: story-beta-api
-      # Beta runs quota + throttle in ENFORCE (owner-confirmed 2026-10-23). The CDK stack reads these from
-      # process.env (default "observe"); setting them here encodes beta's enforce posture in the pipeline so a
-      # deploy never silently reverts live beta to observe. Changing beta's quota/throttle posture is an
-      # explicit edit to these two lines, not a side effect of an unrelated deploy.
-      STORY_QUOTA_MODE: enforce
-      STORY_THROTTLE_MODE: enforce
-      # Beta quota caps. user_daily_gens is a genuine PER-UTC-DAY allowance (resets daily; the gens counter
-      # lives in a gens#YYYY-MM-DD attribute). NOTE: "gens" counts EVERY paid AI op (asset-understanding,
-      # scene/creative, guide, coverage, director, scene-image, edit-plan), NOT just finished videos — so a
-      # bulk import of N clips spends N. Raised to 500/day (owner 2026-11-02) because a 37-video import +
-      # browsing exhausted 100/day and 429'd all scene-image calls. USER_MONTHLY_USD stays 50; the $60 GLOBAL
-      # breaker stays the aggregate safety cap. The CDK stack reads these from process.env (defaults 500/8/60).
-      STORY_QUOTA_USER_DAILY_GENS: "500"
-      STORY_QUOTA_USER_MONTHLY_USD: "50"
+      # Beta's operational policy (quota/throttle ENFORCE, $50 per-user monthly, 500 gens/day, $60 global) is
+      # defined ONCE, in infrastructure/cdk/lib/story-api-stack.ts, and asserted by release/release.json via
+      # scripts/release_config_gate.py. It is intentionally NOT repeated here: a second definition is exactly how
+      # beta could silently deploy as "observe". Changing it is a reviewed CDK + release.json edit.
     steps:
       - uses: actions/checkout@v4
 
@@ -103,6 +93,17 @@ jobs:
       - name: Write release manifest
         run: bash scripts/release-manifest.sh "$ENVIRONMENT" "${{ steps.image.outputs.digest }}" worker.zip
 
+      - name: Pre-deploy release configuration gate (synth + validate; any violation blocks the deploy)
+        run: |
+          # Synthesizes ONLY (no AWS writes). The deploy step below deploys THIS EXACT cloud assembly (--app), so the
+          # gated template is, byte for byte, the one that gets deployed - no second synth that could differ.
+          CTX='-c imageDigest=${{ steps.image.outputs.digest }} -c cognitoUserPoolId=${{ vars.BETA_COGNITO_USER_POOL_ID }} -c cognitoAppClientId=${{ vars.BETA_COGNITO_APP_CLIENT_ID }} -c observability=true -c alarmDestination=alerts@yotale.ai'
+          ( cd infrastructure/cdk && npm ci || npm install )
+          ( cd infrastructure/cdk && npx cdk synth -q -c environment=beta $CTX --output "$RUNNER_TEMP/cdk-pre" )
+          python3 scripts/release_config_gate.py pre --environment beta \
+            --template "$RUNNER_TEMP/cdk-pre/story-beta-api.template.json" \
+            --worker-asset infrastructure/cdk/.worker-asset --require-clean-asset
+
       - name: CDK deploy (beta) by digest, through the SCOPED cfn-exec role
         working-directory: infrastructure/cdk
         run: |
@@ -118,14 +119,16 @@ jobs:
           #  - observability + alarmDestination: deploy the single authoritative monitoring stack (owned by
           #    the observability thread) into beta, alarming to alerts@yotale.ai. createBudget is left UNSET
           #    (=false) — the account-level $100 beta budget is owned by B0's org-foundation, not duplicated here.
-          npx cdk deploy -c environment=beta --require-approval never \
-            -c imageDigest="${{ steps.image.outputs.digest }}" \
-            -c cognitoUserPoolId="${{ vars.BETA_COGNITO_USER_POOL_ID }}" \
-            -c cognitoAppClientId="${{ vars.BETA_COGNITO_APP_CLIENT_ID }}" \
-            -c observability=true \
-            -c alarmDestination=alerts@yotale.ai \
-            -c editplanV2=true \
+          npx cdk deploy story-beta-api --app "$RUNNER_TEMP/cdk-pre" --require-approval never \
             --role-arn "${{ vars.CFN_EXEC_ROLE_ARN }}"
+
+      - name: Post-deploy verification (effective running configuration must equal the intended release)
+        run: |
+          # Read-only AWS inspection: running API digest + image build tag, deployed worker zip BUILD_SHA and
+          # bundled prompts, live env vars judged by the SAME rules as the pre-deploy gate. No AI inference.
+          # An unreadable deployment is a FAILURE (promotion blocked), never a pass.
+          python3 scripts/release_config_gate.py post --environment beta \
+            --expected-sha "${GITHUB_SHA::12}" --expected-digest "${{ steps.image.outputs.digest }}"
 
       - name: Upload release manifest artifact
         uses: actions/upload-artifact@v4

@@ -197,7 +197,7 @@ struct StoryHomeView: View {
                 // Story Guide — the persistent StoryGuide creative map (renders as soon as the
                 // Guide exists, independent of Coverage) + optional Coverage/2 overlay (state tags +
                 // represented-possibility affordances). Advisory, never a checklist.
-                if StoryGuideFeatures.guideV2Enabled, guideV2 != nil {
+                if guideV2 != nil {
                     // AI shooting script (story_guide/2): cinematic scene cards with lazy reference images.
                     StoryGuideV2Section(
                         guide: guideV2, coverage: coverage, isLoading: coverageLoading,
@@ -443,10 +443,10 @@ struct StoryHomeView: View {
         let coordinator = StoryGuideCoordinator(context: context)
         if let existing = coordinator.guide(for: story.id) { guide = existing }  // show at once if present
         coverageLoading = (guide == nil)
-        // Guide v2 (AI shooting script): when enabled, prefer the scene-based Guide. It persists into the SAME
-        // model row, so Coverage fingerprinting + R7 sync are unchanged. A v2 failure (incl. the backend route
-        // gated off) falls back to the v1 creative-map path below — never a fabricated Guide.
-        if StoryGuideFeatures.guideV2Enabled {
+        // Guide v2 (AI shooting script) is the standard path: prefer the scene-based Guide. It persists into the
+        // SAME model row, so Coverage fingerprinting + R7 sync are unchanged. A v2 failure falls back to the v1
+        // creative-map path below — never a fabricated Guide.
+        do {
             if let existingV2 = coordinator.guideV2(for: story.id) { guideV2 = existingV2 }
             coverageLoading = (guideV2 == nil && guide == nil)
             if let gv2 = await coordinator.ensureGuideV2(for: story) {

@@ -66,7 +66,10 @@ RENDERER_SPEED_MAX = 2.0
 # schema change. v4 is PRESERVED verbatim on disk and remains reachable (STORY_EDIT_PLAN_VERSION=4), so a
 # production surface that has NOT yet approved v5 can still pin v4. Dev-default != production approval.
 # Any value other than a directory that exists under prompts/edit_plan/ falls back to the default.
-_EDIT_PLAN_DEFAULT = "5"
+# v5.3 is the ACCEPTED NORMAL planner (editorial evidence + editorial type). STORY_EDIT_PLAN_VERSION is a
+# deliberate, documented EMERGENCY ROLLBACK override only (e.g. "5.2"); it must be set identically on the API
+# and the worker and is checked by scripts/release_config_gate.py. Never required for a normal deployment.
+_EDIT_PLAN_DEFAULT = "5.3"
 _EDIT_PLAN_VERSION = os.environ.get("STORY_EDIT_PLAN_VERSION", _EDIT_PLAN_DEFAULT).strip() or _EDIT_PLAN_DEFAULT
 _PROMPT_BASE = Path(__file__).resolve().parent.parent.parent / "prompts" / "edit_plan"
 if not (_PROMPT_BASE / _EDIT_PLAN_VERSION / "system.md").is_file():
@@ -158,32 +161,14 @@ ROUND_SNAP_ABS = 0.15
 
 
 # ---------------------------------------------------------------------------
-# EDITPLAN CREATIVE-FREEDOM v2 FEATURE FLAGS (owner-approved amendment v2, 2026-10-22).
-# Each is INDEPENDENTLY reversible and defaults OFF, so importing/deploying this module is a pure no-op
-# until a flag is flipped. The amendment turns imperfectly-satisfied CREATIVE directives from terminal
-# validation failures into strong editorial OBJECTIVES: a technically-valid, meaningful plan ships (with an
-# honest disclosure of material unmet instructions) instead of burning repeated Opus calls and returning an
-# "Adjust instructions" error. Technical/integrity/ownership/renderer-safety/privacy rules stay HARD.
+# EDITPLAN CREATIVE-FREEDOM v2 (owner-accepted; permanent behavior, no feature flags).
+# Imperfectly-satisfied CREATIVE directives are strong editorial OBJECTIVES (scored + disclosed), never terminal
+# validation failures: a technically-valid, meaningful plan ships (with an honest disclosure of material unmet
+# instructions) instead of burning repeated model calls and returning an "Adjust instructions" error. The best
+# technically-valid candidate across the attempt chain is always retained, and for an APPROXIMATE (not
+# user-exact) target the duration band is a runaway guard, not a hard reject. Technical/integrity/ownership/
+# renderer-safety/privacy rules stay HARD.
 # See specs implementation-plan/milestone-editplan-validation-creative-freedom-amendment-v2.md.
-def _flag(name: str) -> bool:
-    return (os.environ.get(name, "") or "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _objective_directives_on() -> bool:
-    # Opening/ending/inclusion/ordering become OBJECTIVES (scored, disclosed) rather than hard errors.
-    return _flag("STORY_EDITPLAN_OBJECTIVE_DIRECTIVES")
-
-
-def _best_valid_retention_on() -> bool:
-    # Retain the best technically-valid candidate across the whole attempt chain; ship it rather than fail.
-    return _flag("STORY_EDITPLAN_BEST_VALID_RETENTION")
-
-
-def _approx_duration_soft_on() -> bool:
-    # For an APPROXIMATE (not user-exact) target, the duration band is a runaway guard, not a hard reject.
-    return _flag("STORY_EDITPLAN_APPROX_DURATION_SOFT")
-
-
 # When the approximate-duration band is soft, we still refuse a RUNAWAY plan (a safety/quality guard, not an
 # editorial nicety): generous beyond the normal overshoot band so a longer-but-watchable video still ships.
 DURATION_RUNAWAY_GUARD = 1.00   # reject only if >+100% of an APPROXIMATE target (degenerate/runaway)
@@ -971,13 +956,10 @@ def validate_plan(plan: dict, inputs: EditPlanInputs) -> list[str]:
         plan.setdefault("_duration_delta_fraction", round(diag_delta, 3))
     # DIRECTIVES. Split into HARD (references to unknown/unowned Moments, safety/privacy excludes, internal
     # contradictions) and OBJECTIVE (opening/ending/inclusion/ordering/adjacency/creative-exclude). HARD always
-    # fails validation. OBJECTIVE fails validation ONLY when the objective-directives flag is OFF (legacy); when
-    # ON, objective misses are scored + disclosed by assess_creative_intent, never a terminal failure. The model
-    # is still never trusted to self-certify — the hard gate is deterministic throughout.
-    hard_d, obj_d = _validate_directives_split(plan, inputs, moments)
+    # fails validation. OBJECTIVE misses are scored + disclosed by assess_creative_intent, never a terminal
+    # failure. The model is still never trusted to self-certify — the hard gate is deterministic throughout.
+    hard_d, _obj_d = _validate_directives_split(plan, inputs, moments)
     errs.extend(hard_d)
-    if not _objective_directives_on():
-        errs.extend(obj_d)
     return errs
 
 
@@ -1024,8 +1006,8 @@ def _exclude_is_safety(directives: dict, mid: str) -> bool:
             return False
     if mid in _idset("exclude_creative"):
         return False
-    # No resolvable marker -> conservative default: SAFETY (fail-safe). Opt into creative handling explicitly.
-    return not _flag("STORY_EDITPLAN_EXCLUDE_DEFAULT_CREATIVE")
+    # No resolvable marker -> conservative default: SAFETY (fail-safe). Creative handling must be explicit.
+    return True
 
 
 def _validate_directives(plan: dict, inputs: EditPlanInputs, moments: dict) -> list[str]:
@@ -1243,8 +1225,8 @@ def assess_creative_intent(plan: dict, inputs: EditPlanInputs) -> dict:
                 present += 1
         present += len(_pairs(directives.get("order_after")))
         present += len(_pairs(directives.get("order_adjacent")))
-    # Approximate-duration objective counts as present when the band would otherwise bind (soft mode on).
-    _approx_present = _approx_duration_soft_on() and _duration_target_source(inputs) != "user_exact"
+    # Approximate-duration objective counts as present when the band would otherwise bind.
+    _approx_present = _duration_target_source(inputs) != "user_exact"
     if _approx_present:
         present += 1
 
@@ -2013,11 +1995,9 @@ class RealEditPlannerEngine:
 
         def _consider_best(p: dict, attempt: str) -> None:
             nonlocal best_valid, best_sat, best_from
-            if not _best_valid_retention_on():
-                return
             if validate_plan(p, inputs) or p.get("feasible") is False:
                 return
-            sat = assess_creative_intent(p, inputs)["satisfaction"] if _objective_directives_on() else 1.0
+            sat = assess_creative_intent(p, inputs)["satisfaction"]
             # First valid wins; replace ONLY by a strictly-higher satisfaction (never a worse candidate).
             if best_valid is None or sat > best_sat:
                 import copy as _c
@@ -2034,7 +2014,7 @@ class RealEditPlannerEngine:
         def _placement_errors() -> list[str]:
             moments_l = {str(m["id"]).lower(): m for m in inputs.moments}
             _h, _o = _validate_directives_split(plan, inputs, moments_l)
-            pool = list(errs) + (_o if _objective_directives_on() else [])
+            pool = list(errs) + _o
             return [e for e in pool if any(str(e).startswith(p) for p in _ORDER_REPAIRABLE_PREFIXES)]
 
         _place = _placement_errors()
@@ -2056,22 +2036,18 @@ class RealEditPlannerEngine:
         # exception of 1 when a HARD technical defect would otherwise leave the result unrenderable. Repairs
         # carry ONLY the HARD errors — the model is never asked to chase editorial objectives.
         def _hard_only(es: list[str]) -> list[str]:
-            # In objective mode, `errs` already contains only hard errors (objectives are excluded upstream),
-            # so this is the identity; in legacy mode we repair everything as before.
+            # `errs` already contains only hard errors (objectives are excluded upstream): identity.
             return list(es)
 
         _mode = (rc.get("mode") or "").strip().lower()
         _is_revise = _mode == "revise"
-        if _objective_directives_on():
-            # Create / Create Another Version: at most 1. Revise: 0, exception 1 to recover an unrenderable
-            # HARD defect. (errs here are HARD-only by construction.)
-            if _is_revise:
-                max_repairs = 1 if errs else 0   # the exception: only if a HARD defect remains
-            else:
-                max_repairs = min(1, self._exec_repairs) if self._exec_repairs else 1
-            max_repairs = min(max_repairs, 1)   # never >=2 under v2
+        # Create / Create Another Version: at most 1. Revise: 0, exception 1 to recover an unrenderable
+        # HARD defect. (errs here are HARD-only by construction.)
+        if _is_revise:
+            max_repairs = 1 if errs else 0   # the exception: only if a HARD defect remains
         else:
-            max_repairs = self._exec_repairs     # legacy behavior unchanged
+            max_repairs = min(1, self._exec_repairs) if self._exec_repairs else 1
+        max_repairs = min(max_repairs, 1)   # never >=2 under v2
 
         diag["repair_budget"] = max_repairs
         _repairs_done = 0
@@ -2202,8 +2178,8 @@ class RealEditPlannerEngine:
             fitted, frep = fit_plan_duration(plan, inputs, protected_ids=_protected)
             if frep.get("applied"):
                 f_errs = validate_plan(fitted, inputs)
-                sat_before = assess_creative_intent(plan, inputs)["satisfaction"] if _objective_directives_on() else 1.0
-                sat_after = assess_creative_intent(fitted, inputs)["satisfaction"] if _objective_directives_on() else 1.0
+                sat_before = assess_creative_intent(plan, inputs)["satisfaction"]
+                sat_after = assess_creative_intent(fitted, inputs)["satisfaction"]
                 if not f_errs and sat_after >= sat_before - 1e-9:
                     plan = fitted
                     frep["adopted"] = True
@@ -2223,53 +2199,38 @@ class RealEditPlannerEngine:
         # instructions, so the device renders a SUCCESS (with a concise disclosure) rather than an "Adjust
         # instructions" error. Complete = valid + every present objective satisfied; Partial = valid + some
         # objective unmet. The result is ALWAYS a playable plan either way.
-        if _objective_directives_on():
-            cre = assess_creative_intent(plan, inputs)
+        cre = assess_creative_intent(plan, inputs)
+        if _dur_fit_unmet:
+            # Honest reporting: the cut still runs materially long after the deterministic fit (only
+            # payoff / directive / music-anchored shots remain). The video ships; the miss is disclosed.
+            fr = diag["duration_fit"]
+            cre = dict(cre, material_unmet=list(cre["material_unmet"]) + [{
+                "code": "approx_duration",
+                "detail": f"plan {fr['after_s']:.1f}s vs target {fr['target_s']:.1f}s"}])
+        diag["creative_satisfaction"] = cre["satisfaction"]
+        diag["creative_objective_count"] = cre["objective_count"]
+        if cre["material_unmet"]:
+            diag["material_unmet"] = cre["material_unmet"]
+            diag["final"] = "executable"
+            diag["completion"] = "partial"
+            _codes = sorted({m["code"] for m in cre["material_unmet"]} - {"approx_duration"})
+            _parts = ["Your video is ready."]
+            if _codes:
+                _parts.append("A few of your creative requests couldn't all be applied: " + "; ".join(_codes) + ".")
             if _dur_fit_unmet:
-                # Honest reporting: the cut still runs materially long after the deterministic fit (only
-                # payoff / directive / music-anchored shots remain). The video ships; the miss is disclosed.
-                fr = diag["duration_fit"]
-                cre = dict(cre, material_unmet=list(cre["material_unmet"]) + [{
-                    "code": "approx_duration",
-                    "detail": f"plan {fr['after_s']:.1f}s vs target {fr['target_s']:.1f}s"}])
-            diag["creative_satisfaction"] = cre["satisfaction"]
-            diag["creative_objective_count"] = cre["objective_count"]
-            if cre["material_unmet"]:
-                diag["material_unmet"] = cre["material_unmet"]
-                diag["final"] = "executable"
-                diag["completion"] = "partial"
-                _codes = sorted({m["code"] for m in cre["material_unmet"]} - {"approx_duration"})
-                _parts = ["Your video is ready."]
-                if _codes:
-                    _parts.append("A few of your creative requests couldn't all be applied: " + "; ".join(_codes) + ".")
-                if _dur_fit_unmet:
-                    _parts.append(_duration_disclosure(diag["duration_fit"]))
-                if _continuity_disclosure:
-                    _parts.append(_continuity_disclosure)
-                diag["partial_disclosure"] = " ".join(_parts)
-            elif _continuity_disclosure:
-                # No unmet creative objective, but a noop/wholesale continuity signal MUST be disclosed so an
-                # unchanged (or wholesale-changed) revise is never shown as a plain successful revision.
-                diag["final"] = "executable"
-                diag["completion"] = "partial"
-                diag["partial_disclosure"] = _continuity_disclosure
-            else:
-                diag["final"] = "executable"
-                diag["completion"] = "complete"
-            diag["used_fallback"] = bool(getattr(self._gw, "last_fallback", False))
-            self.last_diagnostics = diag
-            return _to_contract(plan, inputs)
-
-        # Objective-directives flag OFF (legacy path): still honor the never-mislead rule for a noop/wholesale
-        # revise — ship, but disclose honestly rather than claiming a clean success.
-        if _continuity_disclosure:
+                _parts.append(_duration_disclosure(diag["duration_fit"]))
+            if _continuity_disclosure:
+                _parts.append(_continuity_disclosure)
+            diag["partial_disclosure"] = " ".join(_parts)
+        elif _continuity_disclosure:
+            # No unmet creative objective, but a noop/wholesale continuity signal MUST be disclosed so an
+            # unchanged (or wholesale-changed) revise is never shown as a plain successful revision.
+            diag["final"] = "executable"
             diag["completion"] = "partial"
             diag["partial_disclosure"] = _continuity_disclosure
-        if _dur_fit_unmet:   # legacy path: same honest, non-blocking duration note
-            diag["completion"] = "partial"
-            diag["partial_disclosure"] = " ".join(
-                p for p in ("Your video is ready.", _duration_disclosure(diag["duration_fit"]), _continuity_disclosure) if p)
-        diag["final"] = "executable"
+        else:
+            diag["final"] = "executable"
+            diag["completion"] = "complete"
         diag["used_fallback"] = bool(getattr(self._gw, "last_fallback", False))
         self.last_diagnostics = diag
         return _to_contract(plan, inputs)

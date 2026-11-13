@@ -75,13 +75,8 @@ final class SceneVideoTests: XCTestCase {
         withEnv("bogus") { XCTAssertEqual(StoryGuideFeatures.referenceMediaMode, .image) }
     }
 
-    func testReferenceVideoEnabledRequiresSceneImagesAndVideoMode() {
-        withEnv("video") {
-            // referenceVideoEnabled also gates on sceneImagesEnabled (the master kill-switch); when scene
-            // images are on (default) and mode is video, video is enabled.
-            XCTAssertEqual(StoryGuideFeatures.referenceVideoEnabled,
-                           StoryGuideFeatures.sceneImagesEnabled)
-        }
+    func testReferenceVideoEnabledOnlyInVideoMode() {
+        withEnv("video") { XCTAssertTrue(StoryGuideFeatures.referenceVideoEnabled) }
         withEnv("image") {
             XCTAssertFalse(StoryGuideFeatures.referenceVideoEnabled, "image mode never enables video")
         }

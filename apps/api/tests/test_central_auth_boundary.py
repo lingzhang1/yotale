@@ -75,7 +75,6 @@ class CountingIdentityStore(IdentityStore):
 
 def _app(env="beta", require="0"):
     import os
-    os.environ["STORY_JOBS_API_ENABLED"] = "1"
     os.environ["STORY_ENVIRONMENT"] = env
     os.environ["STORY_REQUIRE_AUTH"] = require
     os.environ["STORY_EPIDEMIC_MODE"] = "prototyping"
@@ -92,7 +91,7 @@ def _restore_env():
     """Snapshot/restore the env vars these tests mutate so running this module does not leak
     STORY_ENVIRONMENT=beta (etc.) into sibling test modules (order-independent suite)."""
     import os
-    keys = ["STORY_ENVIRONMENT", "STORY_REQUIRE_AUTH", "STORY_JOBS_API_ENABLED",
+    keys = ["STORY_ENVIRONMENT", "STORY_REQUIRE_AUTH", 
             "STORY_EPIDEMIC_MODE", "STORY_COGNITO_USER_POOL_ID", "STORY_COGNITO_APP_CLIENT_ID",
             "STORY_DOCS_PUBLIC"]
     saved = {k: os.environ.get(k) for k in keys}
@@ -145,10 +144,13 @@ def test_real_envs_fail_closed_even_with_require_auth_0(env):
     assert c.get("/v1/stories").status_code == 401
 
 
-def test_development_optional_window_allows_missing_token():
+def test_development_optional_window_allows_missing_token(monkeypatch):
+    # Hermetic: the explicit mock engine, never a live provider (this test is about AUTH, not inference).
+    monkeypatch.setenv("STORY_CREATIVE_INTENT_MOCK", "1")
     c = TestClient(_app(env="development", require="0"))
     r = c.post("/v1/creative-intent", json={"raw_text": "x"})
     assert r.status_code != 401
+    assert r.status_code == 200, r.text
 
 
 def test_development_require_auth_1_fails_closed():

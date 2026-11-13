@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "_comment": "Release INTENT only. Accepted product features are code (no switches). Infra identity lives in CDK / ios xcconfig and is cross-checked, not copied. Verified by scripts/release_config_gate.py (pre-deploy in CI + deploy workflows, post-deploy after cdk deploy). EMERGENCY ROLLBACK: set planner.emergency_override (e.g. \"5.2\") AND add a matching approved_overrides entry in the SAME reviewed PR; CDK then pins API and worker identically on every deploy until it is cleared.",
+  "planner": {
+    "version": "5.3",
+    "emergency_override": null
+  },
+  "required_everywhere": {
+    "STORY_REFERENCE_MEDIA_MODE": "image",
+    "STORY_MUSIC_PROVIDER": "mcp",
+    "STORY_EPIDEMIC_MODE": "prototyping"
+  },
+  "environments": {
+    "development": {
+      "require_auth": "0",
+      "quota_mode": "observe",
+      "throttle_mode": "observe",
+      "user_monthly_usd": "8",
+      "evidence_persist": "1",
+      "xcconfig": "Development"
+    },
+    "beta": {
+      "require_auth": "1",
+      "quota_mode": "enforce",
+      "throttle_mode": "enforce",
+      "user_monthly_usd": "50",
+      "evidence_persist": "1",
+      "xcconfig": "Beta"
+    },
+    "gamma": {
+      "require_auth": "1",
+      "quota_mode": "enforce",
+      "throttle_mode": "enforce"
+    },
+    "production": {
+      "require_auth": "1",
+      "quota_mode": "enforce",
+      "throttle_mode": "enforce"
+    }
+  },
+  "approved_overrides": [],
+  "approved_degradations": []
+}

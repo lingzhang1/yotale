@@ -19,10 +19,14 @@ enum StoryAuthConfig {
     /// Developer credentials are provisioned, the UI keeps the Apple button disabled / "unavailable in this
     /// build" rather than showing a nonfunctional button (owner directive, Phase 3).
     static var appleSignInAvailable: Bool {
-        // Feature flag (NOT part of the baked backend environment): resolve via the durable launch-config
-        // chain (scheme env → persisted → nil). Defaults OFF so the Apple button stays hidden until the
-        // Apple IdP is actually provisioned.
-        (StoryLaunchConfig.value("STORY_APPLE_SIGNIN_AVAILABLE") ?? "0") == "1"
+        // BAKED per build configuration (Development.xcconfig / Beta.xcconfig → Info.plist), exactly like the
+        // rest of the environment identity: no Xcode Run argument, no persisted UserDefaults. Anything other
+        // than an explicit "1" (including an unresolved `$(...)` token) is OFF. scripts/release_config_gate.py
+        // requires the value to be an explicit 0/1 and, when 1, the SignInWithApple IdP to exist on that
+        // environment's Cognito pool (neither dev nor beta has one today, so both bake 0).
+        let raw = (Bundle.main.infoDictionary?["StoryAppleSignInAvailable"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw == "1"
     }
 
     static var domainHost: String { "\(domainPrefix).auth.\(region).amazoncognito.com" }

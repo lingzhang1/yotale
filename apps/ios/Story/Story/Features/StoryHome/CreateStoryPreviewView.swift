@@ -473,7 +473,7 @@ struct CreateStoryPreviewView: View {
                     desiredFeeling: story.intentDesiredFeeling, styleTags: story.intentStyleTags),
                 initialExplicitSound: SoundPreference(rawValue: story.soundPreferenceExplicit ?? ""),
                 initialEditingApproach: story.effectiveEditingApproach,
-                visualFirstAvailable: StoryMultimodalPlanning.enabled,
+                visualFirstAvailable: true,
                 numbering: StoryMomentNumbering(story: story.moments),
                 momentForId: { id in story.moments.first { $0.id == id } },
                 initialCreativeDirection: story.creativeDirectionText ?? "",

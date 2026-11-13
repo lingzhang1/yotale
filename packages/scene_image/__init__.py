@@ -34,14 +34,9 @@ from dataclasses import dataclass
 BASE = "https://api.unsplash.com"
 SECRET_ENV = "UNSPLASH_SECRET_ID"            # Secrets Manager id; default below
 DEFAULT_SECRET_ID = "Unsplash-API-Key"
-FLAG_ENV = "STORY_SCENE_IMAGES"              # must == "1" to enable the endpoint
 APP_UTM = "yotale"                            # utm_source for attribution links (Unsplash requirement)
 QUERY_MAX_LEN = 120                           # bounded — a scene composition phrase, not free search
 PROVIDER_TIMEOUT_SECONDS = 4.0                # bounded provider call; never hang the request
-
-
-class SceneImageDisabledError(RuntimeError):
-    """The endpoint is not enabled (STORY_SCENE_IMAGES != '1')."""
 
 
 class SceneImageAuthError(RuntimeError):
@@ -54,10 +49,6 @@ class SceneImageProviderError(RuntimeError):
 
 class SceneImageQueryError(ValueError):
     """The query was empty, too long, or contained disallowed content (URL/email/control chars)."""
-
-
-def enabled() -> bool:
-    return os.environ.get(FLAG_ENV, "").strip() == "1"
 
 
 # Reject anything that could carry personal data / user media references into the provider.
@@ -322,10 +313,10 @@ class UnsplashClient:
 
 
 __all__ = [
-    "BASE", "SECRET_ENV", "DEFAULT_SECRET_ID", "FLAG_ENV", "APP_UTM",
+    "BASE", "SECRET_ENV", "DEFAULT_SECRET_ID", "APP_UTM",
     "QUERY_MAX_LEN", "PROVIDER_TIMEOUT_SECONDS",
-    "SceneImageDisabledError", "SceneImageAuthError", "SceneImageProviderError", "SceneImageQueryError",
-    "enabled", "sanitize_query", "normalize_query", "broadening_candidates", "search_broadening",
+    "SceneImageAuthError", "SceneImageProviderError", "SceneImageQueryError",
+    "sanitize_query", "normalize_query", "broadening_candidates", "search_broadening",
     "NORMALIZED_MAX_WORDS", "MAX_SEARCH_ATTEMPTS",
     "load_key", "SceneImage", "UnsplashClient",
     "MetadataCache",

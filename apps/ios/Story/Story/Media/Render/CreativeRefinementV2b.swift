@@ -1,25 +1,11 @@
 import Foundation
 import AVFoundation
 
-// MARK: - Opt-in flag (DEFAULT ON for the best-results MVP; kill-switch retained)
+// MARK: - Diagnostics breadcrumbs (the former STORY_CREATIVE_REFINEMENT switch was removed in P1-G0)
 
-/// Gate for the V2-b deterministic creative-refinement pre-pass. DEFAULT ON so the MVP ships the extra
-/// refinement pass that improves the result. It is deterministic (no model call) and degrades to a no-op when
-/// it has nothing to improve, so default-ON is safe. Kill-switch without a rebuild: env
-/// `STORY_CREATIVE_REFINEMENT=0` or UserDefaults bool `STORY_CREATIVE_REFINEMENT=false` forces it OFF.
+/// The V2-b deterministic creative-refinement pre-pass ALWAYS runs (it is deterministic, makes no model call and
+/// degrades to a no-op when it has nothing to improve). Only diagnostic breadcrumbs live here now.
 enum StoryCreativeRefinement {
-    static let flagKey = "STORY_CREATIVE_REFINEMENT"
-    private static let _enabledDefault = true
-    /// Default ON. Env/UserDefaults override wins (incident kill-switch).
-    static var enabled: Bool {
-        if ProcessInfo.processInfo.environment[flagKey] == "0" { return false }
-        if ProcessInfo.processInfo.environment[flagKey] == "1" { return true }
-        if UserDefaults.standard.object(forKey: flagKey) != nil {
-            return UserDefaults.standard.bool(forKey: flagKey)
-        }
-        return _enabledDefault
-    }
-    static func setPersistentOverride(_ on: Bool) { UserDefaults.standard.set(on, forKey: flagKey) }
     /// Diagnostic breadcrumb from the last refine() call (validation notes / no-op reasons) — for the device
     /// report, never a user-facing surface.
     static var lastOutcomeNotes: [String] = []

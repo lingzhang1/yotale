@@ -84,6 +84,43 @@ jobs:
       - name: cdk synth (dev context — no deploy, no credentials)
         run: npx cdk synth -c environment=development || true
 
+  release-config-gate:
+    name: Release configuration gate (dev + beta, offline, no AWS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build the Lambda worker asset (BUILD_SHA + bundled prompts are validated)
+        run: |
+          python3 -m pip install --upgrade pip >/dev/null 2>&1 || true
+          bash scripts/build_worker_asset.sh
+      - name: Install CDK deps
+        working-directory: infrastructure/cdk
+        run: npm ci || npm install
+      - name: Synthesize dev + beta and run the pre-deploy gate (a violation FAILS CI)
+        run: |
+          # Beta's release inputs are the SAME identifiers the iOS Beta build bakes (Config/Beta.xcconfig); the
+          # real deploy passes them from GitHub Environment variables and re-runs this gate there.
+          # Read from the repo root BEFORE any `cd` (a $(...) inside the cd'd subshell resolves the path wrongly).
+          xc() { grep "^$1" apps/ios/Story/Config/Beta.xcconfig | head -1 | sed 's/.*= *//'; }
+          BETA_POOL="$(xc STORY_ENV_USER_POOL_ID)"; BETA_CLIENT="$(xc STORY_ENV_APP_CLIENT_ID)"
+          test -n "$BETA_POOL" && test -n "$BETA_CLIENT"
+          DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000000
+          ( cd infrastructure/cdk && npx cdk synth -q -c environment=development -c imageDigest=$DIGEST --output "$RUNNER_TEMP/cdk-development" )
+          ( cd infrastructure/cdk && npx cdk synth -q -c environment=beta -c imageDigest=$DIGEST \
+              -c cognitoUserPoolId="$BETA_POOL" -c cognitoAppClientId="$BETA_CLIENT" \
+              -c observability=true -c alarmDestination=alerts@yotale.ai --output "$RUNNER_TEMP/cdk-beta" )
+          for env in development beta; do
+            python3 scripts/release_config_gate.py pre --environment $env \
+              --template "$RUNNER_TEMP/cdk-$env/story-$env-api.template.json" \
+              --worker-asset infrastructure/cdk/.worker-asset --require-clean-asset
+          done
+
   lint:
     name: Lint (ruff Python)
     runs-on: ubuntu-latest

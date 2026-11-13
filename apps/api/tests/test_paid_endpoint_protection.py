@@ -82,7 +82,6 @@ class FakeVerifier(CognitoJwtVerifier):
 
 def _app(env="development", require="0"):
     import os
-    os.environ["STORY_JOBS_API_ENABLED"] = "1"
     os.environ["STORY_ENVIRONMENT"] = env
     os.environ["STORY_REQUIRE_AUTH"] = require
     os.environ["STORY_EPIDEMIC_MODE"] = "prototyping"  # so music routes are not flag-404'd before auth
@@ -127,9 +126,11 @@ def test_production_rejects_missing_token_on_paid_sync_endpoint():
     assert r.status_code == 401
 
 
-def test_dev_optional_accepts_missing_token():
-    # In dev optional-auth, a missing token reaches the handler (which may then fail for its OWN reasons,
-    # e.g. a model/engine error) — but NOT with 401. We assert it is not an auth rejection.
+def test_dev_optional_accepts_missing_token(monkeypatch):
+    # In dev optional-auth, a missing token reaches the handler — NOT a 401. Hermetic: the explicit mock
+    # engine is used so this never calls (or needs credentials for) a live provider.
+    monkeypatch.setenv("STORY_CREATIVE_INTENT_MOCK", "1")
     c = TestClient(_app())
     r = c.post("/v1/creative-intent", json={"raw_text": "x"})
     assert r.status_code != 401
+    assert r.status_code == 200, r.text

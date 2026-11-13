@@ -264,7 +264,6 @@ def _model_plan(segs):
 
 
 def test_engine_ships_fitted_plan_and_records_it(monkeypatch):
-    monkeypatch.setenv("STORY_EDITPLAN_OBJECTIVE_DIRECTIVES", "1")
     ms = [_moment(20, peak=10) for _ in range(5)]
     eng = RealEditPlannerEngine(FakeModelGateway(response=_model_plan([_seg(i, m, 2, 18) for i, m in enumerate(ms)])))
     out = eng.generate(_inputs(ms, 50))
@@ -276,7 +275,6 @@ def test_engine_ships_fitted_plan_and_records_it(monkeypatch):
 
 
 def test_engine_preserves_opening_ending_and_ordering_directives(monkeypatch):
-    monkeypatch.setenv("STORY_EDITPLAN_OBJECTIVE_DIRECTIVES", "1")
     ms = [_moment(20, peak=10) for _ in range(5)] + [_moment(20) for _ in range(3)]
     segs = [_seg(i, m, 2, 18) for i, m in enumerate(ms)]
     rc = {"mode": "explore", "directives": {"opening": ms[0]["id"], "ending": ms[7]["id"],
@@ -293,7 +291,6 @@ def test_engine_preserves_opening_ending_and_ordering_directives(monkeypatch):
 
 
 def test_engine_discloses_readably_when_cut_still_runs_long(monkeypatch):
-    monkeypatch.setenv("STORY_EDITPLAN_OBJECTIVE_DIRECTIVES", "1")
     ms = [_moment(12, peak=6, event=(0, 12)) for _ in range(6)]
     eng = RealEditPlannerEngine(FakeModelGateway(response=_model_plan(
         [_seg(i, m, 0, 12, native="keep") for i, m in enumerate(ms)])))

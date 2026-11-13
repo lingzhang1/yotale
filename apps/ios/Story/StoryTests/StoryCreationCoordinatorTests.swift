@@ -892,7 +892,6 @@ final class StoryCreationCoordinatorTests: XCTestCase {
     // not a DTO unit test: v5.3 must carry request-level editorial_type and, per Moment (local AND cloud-only),
     // the editorial candidates, events and sampled_frame_ms, with the untrusted `evidence` string stripped.
     func test_p1f_v53Request_carriesEditorialTypeAndRichAUFields_forLocalAndCloudOnlyMoments() async throws {
-        EditorialTypeFlag.setOverride(nil)   // a leaked override from another test must not decide this one
         let video = try await SyntheticMedia.makeVideo(seconds: 8)
         defer { try? FileManager.default.removeItem(at: video) }
         let s = newStory()
@@ -933,6 +932,5 @@ final class StoryCreationCoordinatorTests: XCTestCase {
             XCTAssertNil(vc["evidence"], "the untrusted model evidence string must not reach the planner")
             XCTAssertNotNil(ed["narrative_candidates"])
         }
-        XCTAssertTrue(EditorialTypeFlag.enabled, "premise: the accepted default (flag ON) is what sends these fields")
     }
 }

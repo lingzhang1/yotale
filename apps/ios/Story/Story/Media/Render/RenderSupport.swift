@@ -484,12 +484,10 @@ enum EditPlanRequestBuilder {
             ].merging(Self.evidenceField(understanding)) { _, new in new }
             // EditPlan v5.3 (flag-gated, additive): forward the Rich AU v2 editorial candidates, timestamped
             // events, and server-minted sampled_frame_ms so the planner can plan Highlights vs Full Story. All
-            // ADVISORY (backend treats intervals/peaks as hints, never clip bounds). Only when the P1 flag is ON
-            // — flag OFF keeps the v5.2 moment payload byte-identical. The untrusted model `evidence` string is
-            // dropped here too (defense-in-depth; the backend also strips it).
-            if EditorialTypeFlag.enabled {
-                for (k, v) in Self.editorialV53Fields(from: understanding) { momentObj[k] = v }
-            }
+            // ADVISORY (backend treats intervals/peaks as hints, never clip bounds). Always sent (the backend strips
+            // them itself on an explicit v5.2 rollback). The untrusted model `evidence` string is dropped here
+            // too (defense-in-depth; the backend also strips it).
+            for (k, v) in Self.editorialV53Fields(from: understanding) { momentObj[k] = v }
             moments.append(.object(momentObj))
             // includedMedia is the LOCAL render set: only Moments whose bytes are on disk NOW. A cloud-only
             // eligible Moment is in moments[] (planner) but NOT here — R6 restores it before render.
@@ -533,7 +531,7 @@ enum EditPlanRequestBuilder {
             musicAnalysis: musicAnalysis,
             soundPreference: story.effectiveSoundPreference.rawValue,   // immersive|balanced|music_led → native_audio bias
             editorialMode: story.editorialMode,                        // highlights|full|custom → selection breadth (nil = infer)
-            editorialType: EditorialTypeFlag.enabled ? editorialType : nil, // v5.3 resolved type; nil when flag OFF => v5.2 byte-identical
+            editorialType: editorialType,                                  // v5.3 resolved type (nil only for a legacy Revise base)
             revisionContext: revisionContext)                          // Creative Revision Foundation: Explore/Revise version-aware context (nil = unchanged)
 
         var finalBuild = Build(request: req, includedMedia: included, excludedMomentIds: excluded)

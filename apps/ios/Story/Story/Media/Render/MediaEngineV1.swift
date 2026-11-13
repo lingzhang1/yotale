@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreMedia
 import Foundation
+import os
 
 // MediaEngineV1 — R-a feasibility spike (Milestone R-a).
 //
@@ -239,21 +240,16 @@ struct BuiltComposition {
 }
 
 struct MediaEngineV1 {
-    /// Fire-and-forget diagnostic beacon: GET /health?music=<note>. Lands in the App Runner ACCESS log so the
-    /// no-music investigation can read the device-side music state server-side (no console/dev-mode needed).
-    /// Best-effort, non-blocking — never affects the render.
-    ///
-    /// Release-boundary safety: these diagnostic beacons are OFF BY DEFAULT and make NO network call on
-    /// the normal generation path. They fire ONLY when the launch/env flag `STORY_DIAG_BEACONS == "1"`
-    /// is set (a dev/debug session), so a production/beta build emits nothing. Keeps the instrumentation
-    /// available for on-device diagnosis without adding chatter to normal use.
+    /// Device-local structured diagnostic breadcrumb (P1-G0). Writes to the unified log (subsystem
+    /// `ai.yotale.story`, category `diag`; dynamic text is private) — read it with Console.app or
+    /// `log stream --predicate 'subsystem == "ai.yotale.story"'`. It makes NO network call, needs NO environment
+    /// switch, and can never change product behavior. (Previously a `STORY_DIAG_BEACONS`-gated
+    /// `GET /health?music=` request into the server access log; a missing log line was easy to misread as
+    /// "the feature is off".) Whether a capability is active is answered by the release gate / `BUILD_SHA`,
+    /// not by the presence of a log line.
+    private static let diagLog = Logger(subsystem: "ai.yotale.story", category: "diag")
     static func beacon(_ note: String) {
-        guard ProcessInfo.processInfo.environment["STORY_DIAG_BEACONS"] == "1" else { return }
-        var comps = URLComponents(url: StoryBackend.baseURL.appendingPathComponent("health"),
-                                  resolvingAgainstBaseURL: false)
-        comps?.queryItems = [URLQueryItem(name: "music", value: String(note.prefix(180)))]
-        guard let url = comps?.url else { return }
-        URLSession.shared.dataTask(with: url).resume()
+        diagLog.notice("\(String(note.prefix(180)), privacy: .private)")
     }
 
     /// Build the AVMutableComposition + video composition from the plan. (Export is a separate call so a unit
