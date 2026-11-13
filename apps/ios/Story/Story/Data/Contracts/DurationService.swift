@@ -152,9 +152,15 @@ final class DurationService {
         return decoded
     }
 
-    /// Stable fingerprint of the duration-recommendation inputs (creative intent + moments snapshot +
-    /// requested scope + prompt version), stripping volatile provenance keys so a reopen with unchanged
-    /// semantic content hashes identically (same lesson as the MusicPlan cache).
+    /// Stable fingerprint of the Story's FOOTAGE as the recommendation sees it — the moments[] snapshot (Moment
+    /// ids, durations to 0.1 s, AU useful segments / summary / evidence) + requested scope + prompt version —
+    /// with volatile provenance keys stripped (same lesson as the MusicPlan cache).
+    ///
+    /// The creative intent is deliberately NOT part of the key. It carries the Story's last chosen
+    /// target_duration_seconds, so keying on it made every Customize open after a create miss the cache and ask
+    /// the model again — which returned different ranges for the same 37 Moments (beta 2026-11-12: 120–150 s,
+    /// then 80–110 s), so the number shown moved and differed from what had been sent. The recommendation now
+    /// stays put until the footage changes. `creativeIntent` is kept in the signature for call-site stability.
     static func durationFingerprint(creativeIntent: JSONValue, moments: [JSONValue],
                                     requestedScope: String?,
                                     promptVersion: String = "duration_recommendation/1") -> String {
@@ -164,7 +170,14 @@ final class DurationService {
             switch v {
             case .object(let d):
                 var out: [String: JSONValue] = [:]
-                for (k, val) in d where !volatileKeys.contains(k.lowercased()) { out[k] = strip(val) }
+                for (k, val) in d where !volatileKeys.contains(k.lowercased()) {
+                    // a local probe vs cloud metadata can differ by milliseconds for the same file
+                    if k == "duration_seconds", case .number(let n) = val {
+                        out[k] = .number((n * 10).rounded() / 10)
+                    } else {
+                        out[k] = strip(val)
+                    }
+                }
                 return .object(out)
             case .array(let a): return .array(a.map(strip))
             default: return v
@@ -174,7 +187,7 @@ final class DurationService {
         func canon(_ v: JSONValue) -> String {
             (try? enc.encode(strip(v))).flatMap { String(data: $0, encoding: .utf8) } ?? ""
         }
-        let joined = [promptVersion, requestedScope ?? "", canon(creativeIntent),
+        let joined = [promptVersion, requestedScope ?? "", "footage",
                       canon(.array(moments))].joined(separator: "|")
         let digest = SHA256.hash(data: Data(joined.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()

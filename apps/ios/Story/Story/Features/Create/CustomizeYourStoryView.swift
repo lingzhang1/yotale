@@ -33,7 +33,7 @@ struct CustomizeYourStoryView: View {
     /// when none), the SOFT creative-direction text, the chip ids, and the parsed MUSIC intent — so the caller
     /// persists the draft, forwards directives + soft_direction to the edit planner, and routes an explicit
     /// music preference to MusicPlan (owner Music-Routing §1).
-    let onCreate: (Double, SoundPreference, String, EditingApproach, ResolvedDirectives?, String, [UUID], ParsedMusicIntent, MomentSequence) -> Void
+    let onCreate: (Double, SoundPreference, String, EditingApproach, ResolvedDirectives?, String, [UUID], ParsedMusicIntent, MomentSequence, DurationChoice) -> Void
     let onCancel: () -> Void
 
     enum LengthChoice: Hashable { case highlights, full, custom
@@ -70,7 +70,10 @@ struct CustomizeYourStoryView: View {
     /// Independent duration control (P1-D §8). Recommended is TYPE-AWARE (Highlights → highlights range,
     /// Full Story → recommended range); Custom is an explicit length for EITHER type. Highlights/Full are
     /// NEVER reintroduced as duration choices (§8).
-    enum DurationChoice: Hashable { case recommended, custom }
+    enum DurationChoice: String, Hashable { case recommended, custom
+        /// Persisted as `story.durationChoiceExplicit`.
+        var wire: String { rawValue }
+    }
 
     /// PURE seed for the primary Video Type. OWNER DECISION (P1-D, 2026-10-26, "option B"): the sheet ALWAYS
     /// opens on Highlights — the product default — regardless of the Story's persisted `editorialMode`. The
@@ -87,8 +90,14 @@ struct CustomizeYourStoryView: View {
     /// on Custom with the previous length (hidden under the collapsed More options), so choosing Full Story
     /// (card: "About 90s") still submitted the old 50s. A target equal to a recommended point (±1s) was a
     /// Recommended pick and reopens as Recommended, which then follows the chosen Video Type.
+    ///
+    /// `savedChoice` (the Story's persisted `durationChoiceExplicit`) wins when present: a previous Recommended
+    /// pick reopens as Recommended even when today's recommendation points differ from the ones it was picked
+    /// from (beta: a 67.5 s Recommended pick reopened as Custom 67.5 s under a 53 s card, and 67.5 s was sent).
+    /// The point comparison remains only for Stories created before the choice was persisted.
     static func seedDurationChoice(editorialMode: String?, explicitTarget: Double?,
-                                   recommendedPoints: [Double] = []) -> DurationChoice {
+                                   recommendedPoints: [Double] = [], savedChoice: String? = nil) -> DurationChoice {
+        if let saved = DurationChoice(rawValue: (savedChoice ?? "").lowercased()) { return saved }
         if (editorialMode ?? "").lowercased() == "custom" { return .custom }
         guard let t = explicitTarget else { return .recommended }
         return recommendedPoints.contains(where: { abs($0.rounded() - t.rounded()) <= 1 }) ? .recommended : .custom
@@ -179,8 +188,9 @@ struct CustomizeYourStoryView: View {
          momentForId: @escaping (UUID) -> MomentModel? = { _ in nil },
          initialCreativeDirection: String = "", initialReferenceChipIds: [UUID] = [],
          initialExplicitTargetSeconds: Double? = nil, initialEditorialMode: String? = nil,
+         initialDurationChoice: String? = nil,
          initialMomentSequence: MomentSequence? = nil,
-         onCreate: @escaping (Double, SoundPreference, String, EditingApproach, ResolvedDirectives?, String, [UUID], ParsedMusicIntent, MomentSequence) -> Void,
+         onCreate: @escaping (Double, SoundPreference, String, EditingApproach, ResolvedDirectives?, String, [UUID], ParsedMusicIntent, MomentSequence, DurationChoice) -> Void,
          onCancel: @escaping () -> Void) {
         self.rec = rec; self.inferredSound = inferredSound; self.initialExplicitSound = initialExplicitSound
         self.initialEditingApproach = initialEditingApproach; self.visualFirstAvailable = visualFirstAvailable
@@ -198,7 +208,8 @@ struct CustomizeYourStoryView: View {
         _videoType = State(initialValue: Self.seedVideoType(editorialMode: initialEditorialMode))
         _durationChoice = State(initialValue: Self.seedDurationChoice(
             editorialMode: initialEditorialMode, explicitTarget: initialExplicitTargetSeconds,
-            recommendedPoints: [rec.highlightsPointSeconds, rec.recommendedPointSeconds].compactMap { $0 }))
+            recommendedPoints: [rec.highlightsPointSeconds, rec.recommendedPointSeconds].compactMap { $0 },
+            savedChoice: initialDurationChoice))
         // Default sound: the user's explicit choice if any, else the inferred recommendation, else balanced.
         _sound = State(initialValue: initialExplicitSound ?? inferredSound ?? .balanced)
         // Default approach: the Story's current approach (defaults to .storytelling). If Visual-first is not
@@ -565,7 +576,7 @@ struct CustomizeYourStoryView: View {
                 }
 
                 onCreate(p1dChosenSeconds, sound, p1dMode, approach, finalDirectives,
-                         effectiveSoft, snapshotChips.map(\.id), music, snapshotSequence)
+                         effectiveSoft, snapshotChips.map(\.id), music, snapshotSequence, durationChoice)
             }
         }
     }

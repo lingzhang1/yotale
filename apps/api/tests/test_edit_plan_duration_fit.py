@@ -147,7 +147,7 @@ def test_trim_never_goes_below_half_the_planned_shot():
 
 # ---------------------------------------------------------------------------- drops and repetition
 
-def test_excessively_long_plan_drops_longest_low_value_shots_and_keeps_payoffs():
+def test_excessively_long_plan_drops_low_value_shots_and_keeps_payoffs():
     pay = [_moment(20, peak=10) for _ in range(3)]
     scenic = [_moment(20) for _ in range(6)]
     order = [pay[0]] + scenic[:3] + [pay[1]] + scenic[3:] + [pay[2]]
@@ -158,9 +158,8 @@ def test_excessively_long_plan_drops_longest_low_value_shots_and_keeps_payoffs()
     kept = {s["asset_id"] for s in f["segments"]}
     assert {m["id"] for m in pay} <= kept
     assert f["segments"][0]["asset_id"] == pay[0]["id"] and f["segments"][-1]["asset_id"] == pay[2]["id"]
-    first_drop = rep["dropped"][0]
-    assert first_drop["planned_out_s"] == max(s["output_duration_seconds"] for s in p["segments"]
-                                      if s["asset_id"] in {m["id"] for m in scenic})   # longest first
+    assert all(d["asset_id"] in {m["id"] for m in scenic} for d in rep["dropped"])   # only no-payoff filler
+    assert rep["after_s"] >= 28 * 0.9 - 1e-6                                      # a drop never undershoots
     _assert_shrunk_valid(p, f, inp)
 
 
@@ -405,3 +404,57 @@ def test_ducked_audio_is_not_snapped():
     f, rep = fit_plan_duration(p, _inputs(ms, 80))
     assert rep["within_band"]                                         # free to trim precisely to the target
     assert abs(delivered_total_seconds(f["segments"]) - 80) <= 1
+
+
+# ---------------------------------------------------------------------------- beta regressions (2026-11-12)
+
+def test_trim_never_takes_a_shot_below_one_second_or_the_ending_below_two():
+    # Beta job 47eaff2f: the ending shot was trimmed 1.57 s -> 0.79 s and the iOS audio mix crashed (its 1 s
+    # soundtrack end fade did not fit inside the last shot).
+    ms = [_moment(20) for _ in range(5)] + [_moment(20)]
+    segs = [_seg(i, m, 0, 3.0) for i, m in enumerate(ms[:5])] + [_seg(5, ms[5], 9.96, 13.46)]   # 15 + 3.5 s
+    f, _ = fit_plan_duration(_plan(segs), _inputs(ms, 8))
+    assert all(s["output_duration_seconds"] >= 1.0 - 1e-6 for s in f["segments"])
+    assert f["segments"][-1]["output_duration_seconds"] >= 2.0 - 1e-6
+
+
+def test_short_planner_shots_are_never_lengthened_by_the_floors():
+    ms = [_moment(20) for _ in range(4)]
+    segs = [_seg(0, ms[0], 0, 8), _seg(1, ms[1], 0, 0.6), _seg(2, ms[2], 0, 8), _seg(3, ms[3], 0, 1.5)]
+    f, _ = fit_plan_duration(_plan(segs), _inputs(ms, 10))
+    by = {s["asset_id"]: s["output_duration_seconds"] for s in f["segments"]}
+    assert by[ms[1]["id"]] == pytest.approx(0.6)        # sub-1 s planner shot left exactly as planned
+    assert by[ms[3]["id"]] == pytest.approx(1.5)        # sub-2 s planner ending left exactly as planned
+
+
+def test_drop_lands_closest_to_target_and_never_undershoots():
+    # Beta job 47eaff2f: "longest first" dropped a 21 s shot, taking a 68 s Full Story to 55 s (-19%).
+    pay = [_moment(30, peak=15, event=(14, 16)) for _ in range(2)]
+    fill = [_moment(30) for _ in range(3)]
+    order = [pay[0], fill[0], fill[1], fill[2], pay[1]]
+    p = _plan([_seg(0, pay[0], 14, 16), _seg(1, fill[0], 0, 21), _seg(2, fill[1], 0, 6),
+               _seg(3, fill[2], 0, 6), _seg(4, pay[1], 14, 16)])            # 51 s for 25 s: trims hit the 1/2 floor
+    inp = _inputs(order, 25, "full_story")
+    f, rep = fit_plan_duration(p, inp)
+    total = delivered_total_seconds(f["segments"])
+    assert total >= 25 * 0.9 - 1e-6                     # never more than 10% under
+    assert all(d["planned_out_s"] < 21 for d in rep["dropped"])   # the 21 s shot is not the one dropped
+
+
+def test_no_drop_when_every_option_would_undershoot():
+    ms = [_moment(30, peak=15, event=(14, 16)), _moment(30), _moment(30, peak=15, event=(14, 16))]
+    p = _plan([_seg(0, ms[0], 14, 16), _seg(1, ms[1], 0, 20), _seg(2, ms[2], 14, 16)])   # 24 s for 15 s
+    f, rep = fit_plan_duration(p, _inputs(ms, 15))
+    assert not rep["dropped"]                            # dropping the filler would leave 4 s+ = far under
+    assert delivered_total_seconds(f["segments"]) >= 15 * 0.9 - 1e-6
+
+
+def test_replay_beta_job_47eaff2f_shape():
+    # Full Story, 68 s target, model 78.7 s: 10 shots with a 21 s unannotated filler and a 1.57 s ending.
+    durs = [7.4, 9.1, 8.4, 21.0, 5.6, 8.5, 4.5, 6.1, 3.0, 3.5, 1.57]
+    ms = [_moment(30) for _ in durs]
+    segs = [_seg(i, m, 0, d) for i, (m, d) in enumerate(zip(ms, durs))]
+    f, rep = fit_plan_duration(_plan(segs), _inputs(ms, 68, "full_story"))
+    total = delivered_total_seconds(f["segments"])
+    assert 68 * 0.9 - 1e-6 <= total <= 68 * 1.1 + 1e-6
+    assert f["segments"][-1]["output_duration_seconds"] == pytest.approx(1.57)   # sub-2 s ending never trimmed

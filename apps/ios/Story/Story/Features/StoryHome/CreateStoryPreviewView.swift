@@ -139,6 +139,7 @@ struct CreateStoryPreviewView: View {
     private func acceptDuration(_ seconds: Double) {
         durationRec = nil
         story.intentTargetDurationSeconds = (seconds * 10).rounded() / 10
+        story.durationChoiceExplicit = nil   // legacy sheet: provenance unknown -> inferred on reopen
         try? context.save()
         beginMusicFlow()
     }
@@ -151,9 +152,11 @@ struct CreateStoryPreviewView: View {
     /// or navigation keeps what the user typed.
     private func acceptCustomize(seconds: Double, sound: SoundPreference, mode: String, approach: EditingApproach,
                                  directives: ResolvedDirectives?, soft: String, chipIds: [UUID],
-                                 music: ParsedMusicIntent, sequence: MomentSequence) {
+                                 music: ParsedMusicIntent, sequence: MomentSequence,
+                                 durationChoice: CustomizeYourStoryView.DurationChoice) {
         durationRec = nil
         story.intentTargetDurationSeconds = (seconds * 10).rounded() / 10
+        story.durationChoiceExplicit = durationChoice.wire   // Recommended pick vs typed Custom length
         story.soundPreferenceExplicit = sound.rawValue   // explicit choice; never overwritten by inference
         story.editorialMode = mode                        // highlights|full|custom -> edit-plan request breadth
         story.editingApproachExplicit = approach.rawValue // storytelling|visual_first -> planning path
@@ -482,12 +485,13 @@ struct CreateStoryPreviewView: View {
                 // (explicit custom seconds or the editorial mode) instead of silently resetting.
                 initialExplicitTargetSeconds: story.intentTargetDurationSeconds,
                 initialEditorialMode: story.editorialMode,
+                initialDurationChoice: story.durationChoiceExplicit,
                 // The arranged storyboard (ordered ids + policy) round-trips from its own persisted field.
                 initialMomentSequence: MomentSequence.fromJSON(story.momentSequenceJSON),
-                onCreate: { seconds, sound, mode, approach, directives, soft, chipIds, music, sequence in
+                onCreate: { seconds, sound, mode, approach, directives, soft, chipIds, music, sequence, choice in
                     acceptCustomize(seconds: seconds, sound: sound, mode: mode, approach: approach,
                                     directives: directives, soft: soft, chipIds: chipIds, music: music,
-                                    sequence: sequence) },
+                                    sequence: sequence, durationChoice: choice) },
                 onCancel: { durationRec = nil; userBackedOut = true })
                 .presentationDetents([.large])
                 // Force a FRESH view identity each time the sheet opens. CustomizeYourStoryView seeds its
