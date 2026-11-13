@@ -144,10 +144,13 @@ def test_real_envs_fail_closed_even_with_require_auth_0(env):
     assert c.get("/v1/stories").status_code == 401
 
 
-def test_development_optional_window_allows_missing_token():
+def test_development_optional_window_allows_missing_token(monkeypatch):
+    # Hermetic: the explicit mock engine, never a live provider (this test is about AUTH, not inference).
+    monkeypatch.setenv("STORY_CREATIVE_INTENT_MOCK", "1")
     c = TestClient(_app(env="development", require="0"))
     r = c.post("/v1/creative-intent", json={"raw_text": "x"})
     assert r.status_code != 401
+    assert r.status_code == 200, r.text
 
 
 def test_development_require_auth_1_fails_closed():

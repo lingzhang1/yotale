@@ -106,11 +106,14 @@ jobs:
         run: |
           # Beta's release inputs are the SAME identifiers the iOS Beta build bakes (Config/Beta.xcconfig); the
           # real deploy passes them from GitHub Environment variables and re-runs this gate there.
+          # Read from the repo root BEFORE any `cd` (a $(...) inside the cd'd subshell resolves the path wrongly).
           xc() { grep "^$1" apps/ios/Story/Config/Beta.xcconfig | head -1 | sed 's/.*= *//'; }
+          BETA_POOL="$(xc STORY_ENV_USER_POOL_ID)"; BETA_CLIENT="$(xc STORY_ENV_APP_CLIENT_ID)"
+          test -n "$BETA_POOL" && test -n "$BETA_CLIENT"
           DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000000
           ( cd infrastructure/cdk && npx cdk synth -q -c environment=development -c imageDigest=$DIGEST --output "$RUNNER_TEMP/cdk-development" )
           ( cd infrastructure/cdk && npx cdk synth -q -c environment=beta -c imageDigest=$DIGEST \
-              -c cognitoUserPoolId="$(xc STORY_ENV_USER_POOL_ID)" -c cognitoAppClientId="$(xc STORY_ENV_APP_CLIENT_ID)" \
+              -c cognitoUserPoolId="$BETA_POOL" -c cognitoAppClientId="$BETA_CLIENT" \
               -c observability=true -c alarmDestination=alerts@yotale.ai --output "$RUNNER_TEMP/cdk-beta" )
           for env in development beta; do
             python3 scripts/release_config_gate.py pre --environment $env \
