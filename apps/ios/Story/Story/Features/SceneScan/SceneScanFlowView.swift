@@ -456,7 +456,8 @@ struct SceneScanFlowView: View {
                     creativeIntent: captureContext.directorIntent(),
                     sceneUnderstanding: su,
                     targetDurationSeconds: captureContext.targetDurationSeconds,
-                    selectedOpportunity: selectedOpportunity)   // nil for the direct flow; survives rescan
+                    selectedOpportunity: selectedOpportunity,   // nil for the direct flow; survives rescan
+                    contentLanguage: ContentLanguageResolver.requestValue(for: captureContext))
                 let ms = Int(Date().timeIntervalSince(start) * 1000)
                 await MainActor.run {
                     stopPlanningStages()

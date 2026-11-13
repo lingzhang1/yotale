@@ -30,6 +30,7 @@ from contracts.schemas.ai_contracts import (
     CoverageMapping, CoverageStoryIdeaV2, CoverageSufficiency, DimensionCoverage,
     MaterialScopeEvidence, StoryCoverageContractV2, StoryJudgment, SufficiencyStatus,
 )
+from language_policy import apply_language_suffix
 from model_gateway import (
     ModelGateway, ProviderError, StructuredOutputError, StructuredRequest, StructuredResult,
 )
@@ -71,6 +72,7 @@ class CoverageV2Input:
     moment_understandings: list[dict[str, Any]]  # completed MU dicts (observed+story_context+useful_segments)
     pending_count: int = 0
     story_guide_version: str = "story_guide/1"
+    content_language: str | None = None          # 'en' | 'zh-Hans' | None (None => prompts unchanged)
 
 
 # ---------------------------------------------------------------------------
@@ -120,9 +122,10 @@ class RealStoryCoverageMapper:
                    "moments": [self._compact_mu(m) for m in inp.moment_understandings]}
         user = ("Map the understood material onto this StoryGuide. One dimension_coverage entry per "
                 "Guide dimension (by id). Purpose > literal possibility. Return ONLY the CoverageMapping.\n\n"
-                + _json.dumps(payload))
+                + _json.dumps(payload, ensure_ascii=False))
         req = StructuredRequest(task="story_coverage.map", schema=self._schema(gids, pids),
-                                prompt_version=MAPPER_PROMPT_VERSION, system=self._system,
+                                prompt_version=MAPPER_PROMPT_VERSION,
+                                system=apply_language_suffix(self._system, inp.content_language),
                                 user_content=user, max_repair_attempts=2, max_tokens=8192, temperature=0.0)
         try:
             res = self._gw.generate_structured(req)
@@ -225,16 +228,17 @@ class RealStoryJudgmentEngine:
             "target_story_guide_dimension_id": {"type": ["string", "null"]}}, "required": ["title", "description"]}},
         "required": ["sufficiency", "story_idea"]}
 
-    def judge(self, evidence: dict[str, Any]) -> StoryJudgment:
+    def judge(self, evidence: dict[str, Any], content_language: str | None = None) -> StoryJudgment:
         import json as _json
         assert_no_guide_leakage(evidence)  # firewall again at the call site
         user = ("Judge this Story from the semantic evidence AND the factual material-scope evidence.\n\n"
-                + _json.dumps(evidence)
+                + _json.dumps(evidence, ensure_ascii=False)
                 + "\n\nmaterial_scope_evidence is neutral FACT, not a quota. Decide sufficiency "
                   "independently, then whether ONE genuinely NEW opportunity is worth surfacing (else "
                   "null). Return ONLY the StoryJudgment.")
         req = StructuredRequest(task="story_judgment.decide", schema=self._SCHEMA,
-                                prompt_version=JUDGE_PROMPT_VERSION, system=self._system,
+                                prompt_version=JUDGE_PROMPT_VERSION,
+                                system=apply_language_suffix(self._system, content_language),
                                 user_content=user, max_repair_attempts=2, max_tokens=1200, temperature=0.0)
         try:
             res = self._gw.generate_structured(req)
@@ -280,7 +284,10 @@ class RealStoryCoverageV2Engine:
     def compute(self, inp: CoverageV2Input) -> StoryCoverageContractV2:
         mapping, _gids = self._mapper.map(inp)
         evidence = build_judge_evidence(inp, mapping)
-        judgment = self._judge.judge(evidence)
+        if inp.content_language is None:
+            judgment = self._judge.judge(evidence)
+        else:
+            judgment = self._judge.judge(evidence, content_language=inp.content_language)
         return compose(inp, mapping, judgment)
 
 

@@ -19,11 +19,11 @@ enum StoryDirectorServiceError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach Story. Check your connection and try again."
-        case .unavailable: return "Story is thinking hard. Please try again."
-        case .badStatus(let c): return "Unexpected response (\(c)). Please try again."
-        case .encoding: return "Couldn't prepare the request. Please try again."
-        case .decoding: return "Story returned something unexpected. Please try again."
+        case .transport: return L10n.t("Couldn't reach Story. Check your connection and try again.")
+        case .unavailable: return L10n.t("Story is thinking hard. Please try again.")
+        case .badStatus(let c): return L10n.t("Unexpected response (\(c)). Please try again.")
+        case .encoding: return L10n.t("Couldn't prepare the request. Please try again.")
+        case .decoding: return L10n.t("Story returned something unexpected. Please try again.")
         }
     }
 }
@@ -38,7 +38,8 @@ struct StoryDirectorService {
     func initialize(creativeIntent: CreativeIntentContractDTO,
                     sceneUnderstanding: SceneUnderstandingContractDTO?,
                     targetDurationSeconds: Double?,
-                    selectedOpportunity: SelectedOpportunityDTO? = nil) async throws -> DirectorOutputDTO {
+                    selectedOpportunity: SelectedOpportunityDTO? = nil,
+                    contentLanguage: String? = nil) async throws -> DirectorOutputDTO {
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/director/initialize"))
         StoryBackend.authorize(&req)  // P0 auth seam: bearer token when signed in
         req.httpMethod = "POST"
@@ -63,6 +64,7 @@ struct StoryDirectorService {
                 let oppData = try encoder.encode(opp)
                 body["selected_opportunity"] = try JSONSerialization.jsonObject(with: oppData)
             }
+            if let lang = contentLanguage { body["content_language"] = lang }   // omitted = backend default
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
         } catch {
             throw StoryDirectorServiceError.encoding(error)

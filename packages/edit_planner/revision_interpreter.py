@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from language_policy import contains_cjk_or_fullwidth
+
 # v1 is FROZEN and preserved verbatim below as _SYSTEM_V1 / "revision_interpret/1". v2 is the candidate that
 # fixes interpreter OVERREACH (inventing exclude directives from inclusion/ordering-only instructions). The
 # active version is PROMPT_VERSION; callers may override per-call. Do NOT edit v1 in place.
@@ -115,6 +117,36 @@ _SYSTEM_V2 = (
 
 _SYSTEMS = {PROMPT_VERSION_V1: _SYSTEM_V1, "revision_interpret/2": _SYSTEM_V2}
 
+# Runtime-appended ONLY when the instruction contains Han / full-width characters (an ASCII-only instruction gets
+# the unchanged prompt, byte-identical). The prompt files / prompt_version strings are untouched. The directive
+# model, schema and anti-overreach rules are exactly the English ones; this only teaches the model how Chinese
+# phrasing maps onto them.
+CHINESE_GUIDANCE = (
+    "CHINESE / MIXED-LANGUAGE INSTRUCTIONS (runtime directive): the instruction may be written in Chinese or mix "
+    "Chinese and English. Everything above applies unchanged.\n"
+    "- Moment references: 片段N, 第N个片段, 第N段, 镜头N, 第N个镜头 and a bare number all mean Moment number N. "
+    "Chinese numerals (一二三四五六七八九十, 十一…, 两 = 2) and full-width digits (０-９, e.g. ３) are Moment "
+    "numbers too: always output them as plain Arabic integers.\n"
+    "- Chinese equivalents of the rules: 从…开始 / 以…开头 / 先放 / 第一个放 => opening. 以…结尾 / 最后放 / 最后一个放 "
+    "=> ending. 不要用 / 不要使用 / 去掉 / 删掉 / 不用 / 跳过 / 排除 / 别用 => exclude. 必须包含 / 要有 / 加入 / "
+    "一定要用 => must_include. 紧接着 / 紧跟在…后面 / 接在…后面 => order_adjacent [[N,M]]. …之后 / 放在…后面 => "
+    "order_after [[N,M]]. 只用 / 只保留 / 除了…都不要 => an explicit restriction (same rule as 'use only').\n"
+    "- Pacing/style/mood in Chinese (节奏更快, 更有电影感, 更舒缓, 配合音乐节拍) is NOT a hard directive: copy the "
+    "phrase VERBATIM into soft_direction — do NOT translate it. Likewise put any clause you cannot map into "
+    "`unsupported` VERBATIM in its original language.\n"
+    "- Naming a Moment to use, open with, end with or order NEVER implies excluding others, in any language. "
+    "Worked example: '从片段3开始，不要使用片段7' => opening=3, exclude=[7] (opening does not imply any other "
+    "exclusion; the exclusion is only because 不要使用 was stated).\n"
+    "Return ONLY the structured object, with every JSON key exactly as specified."
+)
+
+
+def system_for_instruction(system: str, instruction: str) -> str:
+    """`system` unchanged for an ASCII-only instruction; with the Chinese guidance appended otherwise."""
+    if contains_cjk_or_fullwidth(instruction):
+        return system + "\n\n" + CHINESE_GUIDANCE
+    return system
+
 
 class RevisionInterpretation:
     """Resolved result: directive dict (keyed by STABLE id, ready for revision_context.directives), the soft
@@ -149,6 +181,12 @@ _OMISSION_WORDS = ("exclude", "remove", "drop", "skip", "without", "leave out", 
                    "dont use", "no moment", "not moment", "take out", "get rid")
 _RESTRICTION_WORDS = ("only", "except", "nothing but", "just moment", "just the", "exclusively",
                       "limit to", "restrict to")
+# Chinese equivalents (substring match; Chinese has no word boundaries). Added alongside — the English tuples
+# above are untouched, so an English instruction is judged exactly as before.
+_OMISSION_WORDS_ZH = ("不要", "不用", "别用", "去掉", "去除", "删掉", "删除", "跳过", "排除", "剔除", "移除",
+                      "拿掉", "舍弃", "丢掉", "不使用", "不想要", "不需要", "略过", "不选")
+_RESTRICTION_WORDS_ZH = ("只用", "只要", "只保留", "只留", "只使用", "仅用", "仅使用", "仅保留", "除了", "唯独",
+                         "限定", "限于")
 
 
 def exclude_is_supported(instruction: str) -> bool:
@@ -157,7 +195,8 @@ def exclude_is_supported(instruction: str) -> bool:
     unsupported interpreter overreach. Deliberately narrow: it answers only 'could an exclude be legitimate
     here', not 'which Moments'. 'use only A, B, C' is a legitimate restriction and passes."""
     low = (instruction or "").lower()
-    return any(w in low for w in _OMISSION_WORDS) or any(w in low for w in _RESTRICTION_WORDS)
+    return (any(w in low for w in _OMISSION_WORDS) or any(w in low for w in _RESTRICTION_WORDS)
+            or any(w in low for w in _OMISSION_WORDS_ZH) or any(w in low for w in _RESTRICTION_WORDS_ZH))
 
 
 def ground_directives(result: "RevisionInterpretation") -> list[str]:
@@ -187,7 +226,7 @@ def interpret_revision(instruction: str, numbered: list[dict], gateway,
     num_to_id = {int(m["number"]): m["id"] for m in numbered if "number" in m and "id" in m}
 
     pv = prompt_version or PROMPT_VERSION
-    system = _SYSTEMS.get(pv, _SYSTEM_V2)
+    system = system_for_instruction(_SYSTEMS.get(pv, _SYSTEM_V2), instruction)
     req = StructuredRequest(
         task=TASK, schema=SCHEMA, prompt_version=pv, system=system,
         user_content=_build_user(instruction, numbered), max_repair_attempts=1,
@@ -254,5 +293,5 @@ def interpret_revision(instruction: str, numbered: list[dict], gateway,
                                   raw=data, instruction=instruction)
 
 
-__all__ = ["PROMPT_VERSION", "PROMPT_VERSION_V1", "TASK", "SCHEMA", "RevisionInterpretation",
+__all__ = ["CHINESE_GUIDANCE", "system_for_instruction", "PROMPT_VERSION", "PROMPT_VERSION_V1", "TASK", "SCHEMA", "RevisionInterpretation",
            "interpret_revision", "ground_directives", "exclude_is_supported"]

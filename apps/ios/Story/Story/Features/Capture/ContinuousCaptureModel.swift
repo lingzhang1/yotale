@@ -573,7 +573,8 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
                 creativeIntent: captureContext.directorIntent(),
                 sceneUnderstanding: su,
                 targetDurationSeconds: captureContext.targetDurationSeconds,
-                selectedOpportunity: nil)
+                selectedOpportunity: nil,
+                contentLanguage: ContentLanguageResolver.requestValue(for: captureContext))
             // The user may have started recording or dismissed while we were thinking — if so,
             // this response is stale and must NOT reopen an overlay (Phase 2).
             guard gen == aiGeneration else { return }

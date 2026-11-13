@@ -31,6 +31,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
+from language_policy import contains_han
+
 BASE = "https://api.unsplash.com"
 SECRET_ENV = "UNSPLASH_SECRET_ID"            # Secrets Manager id; default below
 DEFAULT_SECRET_ID = "Unsplash-API-Key"
@@ -102,6 +104,11 @@ def normalize_query(raw) -> str | None:
     Never raises. URL/email tokens are REMOVED (privacy) rather than failing the whole query; control
     chars, digits and punctuation become spaces; filler words are dropped; long phrases are truncated."""
     if raw is None:
+        return None
+    if contains_han(str(raw)):
+        # Stock-photo search is English-keyword only. A query that still carries Han characters would reach the
+        # provider as garbage (the old behaviour silently stripped the Han and sent a half-query) -> treat as
+        # unusable so the caller takes the existing graceful text-only path (status "invalid_query"). Never raises.
         return None
     q = _CONTROL_RE.sub(" ", str(raw))
     q = _TOKEN_URL_RE.sub(" ", q)

@@ -16,11 +16,14 @@ struct StoryGuideRequestDTO: Encodable {
     let creativeIntent: JSONValue
     let scope: JSONValue
     let sourceCreativeIntentVersion: String?
+    /// Language of Story-specific generated text ("en" | "zh-Hans"); nil = backend default. See ContentLanguageResolver.
+    var contentLanguage: String? = nil
     enum CodingKeys: String, CodingKey {
         case storyId = "story_id"
         case creativeIntent = "creative_intent"
         case scope
         case sourceCreativeIntentVersion = "source_creative_intent_version"
+        case contentLanguage = "content_language"
     }
 }
 
@@ -114,7 +117,9 @@ struct StoryGuideRefineRequestDTO: Encodable {
     let userInstruction: String?
     let eventContext: String?
     let sourceCreativeIntentVersion: String?
+    var contentLanguage: String? = nil
     enum CodingKeys: String, CodingKey {
+        case contentLanguage = "content_language"
         case storyId = "story_id"
         case creativeIntent = "creative_intent"
         case scope

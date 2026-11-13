@@ -19,6 +19,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from contracts.schemas.ai_contracts import StoryGuideContract
+from language_policy import apply_language_suffix
 from model_gateway import (
     ModelGateway,
     ProviderError,
@@ -77,6 +78,7 @@ class GuideInput:
     creative_intent: dict[str, Any]
     scope: dict[str, Any]                       # {target_duration_seconds?, format?}
     source_creative_intent_version: str | None = None
+    content_language: str | None = None         # 'en' | 'zh-Hans' | None (None => prompt unchanged)
 
 
 class GuideUnavailableError(RuntimeError):
@@ -241,13 +243,14 @@ class RealStoryGuideV2Engine:
         import json as _json
         payload = {"creative_intent": inp.creative_intent, "scope": inp.scope}
         user = ("Produce the shooting script for THIS Story.\n\nCREATIVE INTENT + SCOPE:\n"
-                + _json.dumps(payload)
+                + _json.dumps(payload, ensure_ascii=False)
                 + "\n\nScale the number of scenes to scope, use THIS event's own arc and vocabulary, honor "
                   "explicit constraints, and keep each scene concrete and event-specific. If the context is "
                   "too thin to personalize honestly, give 1-2 gentle general scenes and invite more detail — "
                   "never fabricate specifics. Return ONLY the shooting script.")
         return StructuredRequest(
-            task=TASK_V2, schema=self._schema, prompt_version=PROMPT_VERSION_V2, system=self._system,
+            task=TASK_V2, schema=self._schema, prompt_version=PROMPT_VERSION_V2,
+            system=apply_language_suffix(self._system, inp.content_language),
             user_content=user, max_repair_attempts=2,
             max_tokens=GUIDE_V2_MAX_TOKENS, temperature=GUIDE_V2_TEMPERATURE,
         )
@@ -375,6 +378,7 @@ class RefineInput:
     user_instruction: str | None = None        # one-time "Update Guide" instruction
     event_context: str | None = None           # persistent, editable event context
     source_creative_intent_version: str | None = None
+    content_language: str | None = None        # 'en' | 'zh-Hans' | None (None => prompt unchanged)
 
 
 def _max_scene_ordinal(scenes: list[dict[str, Any]]) -> int:
@@ -570,7 +574,7 @@ class RealStoryGuideRefineEngine:
             "user_update": inp.user_instruction or "",
         }
         user = ("Refine THIS Story's shooting script.\n\nCURRENT STATE + UPDATE:\n"
-                + _json.dumps(payload)
+                + _json.dumps(payload, ensure_ascii=False)
                 + "\n\nRULES:\n"
                   "• PRESERVE by default. Return every scene that is still relevant — keep its exact id. "
                   "Scenes you do not mention are KEPT unchanged, so you do not need to re-list a scene you are "
@@ -587,7 +591,8 @@ class RealStoryGuideRefineEngine:
                   "intact. Do not replace the whole script unless the user explicitly asks to.\n"
                   "Honor the newest update; never fabricate. Return the updated active script + the change log.")
         return StructuredRequest(
-            task=TASK_REFINE, schema=self._schema, prompt_version=PROMPT_VERSION_REFINE, system=self._system,
+            task=TASK_REFINE, schema=self._schema, prompt_version=PROMPT_VERSION_REFINE,
+            system=apply_language_suffix(self._system, inp.content_language),
             user_content=user, max_repair_attempts=2,
             max_tokens=GUIDE_REFINE_MAX_TOKENS, temperature=GUIDE_REFINE_TEMPERATURE,
         )
