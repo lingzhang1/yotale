@@ -51,7 +51,7 @@ enum AULog {
 
 /// Durable AU diagnostics: the last 80 events (local time, privacy-safe) in UserDefaults, so the reason a
 /// background run ended survives suspension, a detached debugger and relaunch. Printed at launch as AU_DIAG lines
-/// and shown on Story Home in DEBUG builds. Also mirrored to the unified log.
+/// (Xcode console). Also mirrored to the unified log.
 enum AUDiag {
     private static let key = "au.diag.v1"
     private static let limit = 80

@@ -13,12 +13,6 @@ struct AUProgressStatusView: View {
 
     @Environment(\.modelContext) private var context
     @Query private var jobs: [AssetUnderstandingJobModel]
-    @State private var showDiag = false
-    #if DEBUG
-    private let diagEnabled = true
-    #else
-    private let diagEnabled = false
-    #endif
 
     var body: some View {
         let snapshot = AssetUnderstandingQueue.snapshot(context: context, momentIds: momentIds)
@@ -28,15 +22,6 @@ struct AUProgressStatusView: View {
                 .font(StoryTheme.body(11))
                 .foregroundStyle(foreground)
                 .multilineTextAlignment(.center)
-                .onTapGesture { if diagEnabled { showDiag.toggle() } }   // DEBUG: tap for the AU event log
-            if diagEnabled && showDiag {
-                Text(AUDiag.lines().suffix(25).joined(separator: "\n"))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(foreground)
-                    .multilineTextAlignment(.leading)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
             if AUQueueStatusMapper.offersRetry(snapshot) {
                 Button("Retry") {
                     let q = AssetUnderstandingQueue(context: context)
