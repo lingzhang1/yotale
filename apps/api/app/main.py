@@ -983,6 +983,8 @@ def create_app() -> FastAPI:
             parts = store.list_uploaded_parts(owner=principal.story_user_id, cloud_media_id=cloud_media_id)
         except _media.MediaNotFound:
             raise HTTPException(status_code=404, detail="media not found")
+        except _media.MultipartUploadGone:
+            raise HTTPException(status_code=409, detail="multipart upload no longer exists")
         except _media.MediaVerificationError as e:
             raise HTTPException(status_code=409, detail=str(e))
         return {"uploaded_parts": parts}

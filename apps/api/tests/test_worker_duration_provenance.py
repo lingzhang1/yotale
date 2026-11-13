@@ -123,3 +123,20 @@ def test_worker_provenance_defaults_to_unknown_for_old_envelopes(monkeypatch, tm
     _plan, diag = s.completed
     assert diag["worker_build_sha"] == "unknown"
     assert "api_build_sha" not in diag
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("etype,mode", [("highlights", "highlights"), ("full_story", "full")])
+def test_worker_persists_editorial_type_on_the_job(monkeypatch, tmp_path, etype, mode):
+    """The job record must PROVE which editorial type was planned, after the staged request is deleted."""
+    _bake(monkeypatch, tmp_path, "deadbeef1234")
+    s = _setup(monkeypatch)
+    body = json.loads(s.envelope["body"])
+    body.update(editorial_type=etype, editorial_mode=mode)
+    s.envelope["body"] = json.dumps(body)
+    assert worker._run_one(s, "J1") == "completed", s.failed
+    _plan, diag = s.completed
+    assert diag["editorial"] == {"requested": etype, "effective": etype, "applied": True,
+                                 "legacy_mode": mode, "prompt_version": edit_planner.PROMPT_VERSION}

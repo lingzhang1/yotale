@@ -130,3 +130,24 @@ def test_evidence_diag_safe_without_device_fields():
     assert out["evidence_stage11_selected_distinct"] == 1
     assert out["evidence_stage12_cut_without_sheet"] == 0
     assert "evidence_funnel_consistent" not in out   # no device census -> no cross-check
+
+
+# --- editorial type diagnostics: prove Highlights vs Full Story after the staged request is deleted ---------
+def test_editorial_diag_records_highlights_and_full_story_when_v53_active():
+    h = W._editorial_diag({"editorial_type": "highlights", "editorial_mode": "highlights"}, "edit_plan/5.3", True)
+    assert h == {"requested": "highlights", "effective": "highlights", "applied": True,
+                 "legacy_mode": "highlights", "prompt_version": "edit_plan/5.3"}
+    f = W._editorial_diag({"editorial_type": "full_story", "editorial_mode": "full"}, "edit_plan/5.3", True)
+    assert f["requested"] == "full_story" and f["effective"] == "full_story" and f["applied"] is True
+
+
+def test_editorial_diag_reports_not_applied_on_v52_rollback():
+    d = W._editorial_diag({"editorial_type": "full_story"}, "edit_plan/5.2", False)
+    assert d["requested"] == "full_story" and d["effective"] is None and d["applied"] is False
+
+
+def test_editorial_diag_absent_or_unknown_type_is_never_guessed():
+    assert W._editorial_diag({}, "edit_plan/5.3", True)["requested"] is None
+    assert W._editorial_diag({"editorial_type": None}, "edit_plan/5.3", True)["applied"] is False
+    odd = W._editorial_diag({"editorial_type": "<script>", "editorial_mode": "weird"}, "edit_plan/5.3", True)
+    assert odd["requested"] == "unrecognized" and odd["applied"] is False and odd["legacy_mode"] is None
