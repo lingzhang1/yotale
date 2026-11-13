@@ -19,8 +19,10 @@ import Foundation
 ///    or MISMATCHED (e.g. a beta API with a dev Cognito pool), resolution FAILS CLOSED (fatalError at launch)
 ///    rather than silently selecting development. A release build therefore cannot run against the wrong
 ///    backend: it runs against the fully-consistent baked environment or it does not run.
-///  • DEBUG build: developer flexibility is preserved — the legacy `StoryLaunchConfig` chain (scheme env →
-///    persisted → dev default) still applies, so attached dev runs and scheme toggles behave exactly as before.
+///  • DEBUG build: per field, an Xcode scheme env row (attached launch only) → the value baked from
+///    Development.xcconfig → the built-in development default. Nothing is persisted between launches, so a
+///    Debug build can never silently stick to a backend a past scheme pointed at. Switch stage by switching
+///    SCHEME (Story = dev, Story (Beta) = beta). The launch log line `STORY_ENVIRONMENT` reports what is used.
 ///
 /// These are NON-SECRET identifiers (pool id, public client id, hosted domain, API URL) — never credentials.
 enum StoryEnvironmentKind: String { case development, beta, gamma, production }
@@ -71,19 +73,57 @@ struct StoryEnvironment: Equatable {
     }
 
     #if DEBUG
+    /// One DEBUG key, resolved: a scheme env row (attached launch) → the baked Development.xcconfig value →
+    /// the built-in development default. Returns the value and where it came from.
+    private static func debugValue(_ envKey: String, baked bakedKey: String, fallback: String) -> (String, String) {
+        if let v = StoryLaunchConfig.value(envKey) { return (v, "scheme") }
+        if let v = baked(bakedKey) { return (v, "xcconfig") }
+        return (fallback, "default")
+    }
+
+    /// Per-field source of the DEBUG resolution (for the launch log).
+    private(set) static var debugSources: [String: String] = [:]
+
     private static func debugResolved() -> StoryEnvironment {
         let d = developmentDefault
-        let api = StoryLaunchConfig.value("STORY_API_BASE_URL").flatMap(URL.init(string:)) ?? d.apiBaseURL
+        let api = debugValue("STORY_API_BASE_URL", baked: "StoryEnvApiBaseURL", fallback: d.apiBaseURL.absoluteString)
+        let region = debugValue("STORY_COGNITO_REGION", baked: "StoryEnvCognitoRegion", fallback: d.cognitoRegion)
+        let pool = debugValue("STORY_COGNITO_USER_POOL_ID", baked: "StoryEnvUserPoolId", fallback: d.userPoolId)
+        let client = debugValue("STORY_COGNITO_APP_CLIENT_ID", baked: "StoryEnvAppClientId", fallback: d.appClientId)
+        let domain = debugValue("STORY_COGNITO_DOMAIN_PREFIX", baked: "StoryEnvDomainPrefix", fallback: d.domainPrefix)
+        let redirect = debugValue("STORY_COGNITO_REDIRECT_URI", baked: "StoryEnvRedirectURI", fallback: d.redirectURI)
+        debugSources = ["api": api.1, "region": region.1, "pool": pool.1, "client": client.1,
+                        "domain": domain.1, "redirect": redirect.1]
         return StoryEnvironment(
             kind: StoryEnvironmentKind(rawValue: baked("StoryBuildEnv") ?? "development") ?? .development,
-            apiBaseURL: api,
-            cognitoRegion: StoryLaunchConfig.value("STORY_COGNITO_REGION") ?? d.cognitoRegion,
-            userPoolId: StoryLaunchConfig.value("STORY_COGNITO_USER_POOL_ID") ?? d.userPoolId,
-            appClientId: StoryLaunchConfig.value("STORY_COGNITO_APP_CLIENT_ID") ?? d.appClientId,
-            domainPrefix: StoryLaunchConfig.value("STORY_COGNITO_DOMAIN_PREFIX") ?? d.domainPrefix,
-            redirectURI: StoryLaunchConfig.value("STORY_COGNITO_REDIRECT_URI") ?? d.redirectURI)
+            apiBaseURL: URL(string: api.0) ?? d.apiBaseURL,
+            cognitoRegion: region.0,
+            userPoolId: pool.0,
+            appClientId: client.0,
+            domainPrefix: domain.0,
+            redirectURI: redirect.0)
     }
     #endif
+
+    /// ONE line, logged at launch, describing the backend this build ACTUALLY uses — the values every network
+    /// and auth call reads (`StoryEnvironment.current`), not an intermediate layer. Grep `STORY_ENVIRONMENT`.
+    /// `source` is `baked` for Beta/TestFlight/Release builds (xcconfig only). A DEBUG build reports, per
+    /// field that did not come from the xcconfig, where it came from (`scheme` row or built-in `default`).
+    static func launchSummary(_ env: StoryEnvironment = current) -> String {
+        #if DEBUG
+        let build = "debug"
+        let nonXcconfig = debugSources.filter { $0.value != "xcconfig" }.sorted { $0.key < $1.key }
+        let source = nonXcconfig.isEmpty ? "xcconfig"
+            : "xcconfig+" + nonXcconfig.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
+        #else
+        let build = "release"
+        let source = "baked"
+        #endif
+        let consistent = (try? env.assertConsistent()) != nil ? "ok" : "MIXED"
+        return "STORY_ENVIRONMENT kind=\(env.kind.rawValue) build=\(build) source=\(source) "
+            + "api=\(env.apiBaseURL.host ?? env.apiBaseURL.absoluteString) pool=\(env.userPoolId) "
+            + "client=\(env.appClientId.prefix(6))… domain=\(env.domainPrefix) consistency=\(consistent)"
+    }
 
     #if !DEBUG
     private static func releaseResolvedOrDie() -> StoryEnvironment {
