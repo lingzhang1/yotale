@@ -54,13 +54,18 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         private(set) var lastSheets: [MomentContactSheet] = []
         private(set) var lastEvidenceAccounting: [String: Any]?
         private(set) var lastBuildProvenance: [String: Any]?
+        private(set) var lastOperationId: String?
+        /// Runs inside submit, BEFORE it returns — lets a test observe what was durably recorded pre-submit.
+        var onSubmit: (() -> Void)?
         init(_ b: Behavior) { behavior = b }
 
         func submit(_ request: EditPlanRequestDTO, operationId: String, owner: String,
                     approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
                     critiqueRevision: Bool, evidenceAccounting: [String: Any]?,
                     buildProvenance: [String: Any]?) async throws -> String {
+            onSubmit?()
             submitCount += 1
+            lastOperationId = operationId
             lastRequest = request
             lastSheets = sheets
             lastEvidenceAccounting = evidenceAccounting
@@ -932,5 +937,154 @@ final class StoryCreationCoordinatorTests: XCTestCase {
             XCTAssertNil(vc["evidence"], "the untrusted model evidence string must not reach the planner")
             XCTAssertNotNil(ed["narrative_candidates"])
         }
+    }
+}
+
+// MARK: - Killed DURING PREPARATION (dev 2026-11-13): the attempt is recorded at create start and resumes
+
+extension StoryCreationCoordinatorTests {
+
+    /// The attempt is durably recorded as "preparing" — with its operation id, type and editorial type — BEFORE
+    /// anything is submitted, so a kill during on-device preparation leaves something to resume.
+    func test_preparing_attemptIsRecordedBeforeSubmit() async throws {
+        let s = newStory()
+        let m1 = momentWithFile(s, rel: "media/prep-rec-1.mov", dur: 8); completeAU(m1, useful: [(0, 5)])
+        let plan = validPlan([m1])
+        let jobClient = FakeJobClient(.ok(plan))
+        var seenAtSubmit: (phase: String, opId: String, type: String, editorial: String?)?
+        jobClient.onSubmit = { [unowned self] in
+            let sid = s.id
+            let rows = (try? self.ctx.fetch(FetchDescriptor<PendingOperationModel>(
+                predicate: #Predicate { $0.storyId == sid }))) ?? []
+            if let r = rows.first { seenAtSubmit = (r.phase, r.operationId, r.operationType, r.editorialTypeRaw) }
+        }
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(plan)),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx,
+                                             jobClient: jobClient)
+        coord.create(for: s)
+        await awaitSettled(coord)
+        guard case .completed = coord.state else { return XCTFail("expected .completed, got \(coord.state)") }
+        let seen = try XCTUnwrap(seenAtSubmit, "a pending row must already exist when the job is submitted")
+        XCTAssertEqual(seen.phase, "preparing")
+        XCTAssertEqual(seen.opId, jobClient.lastOperationId, "the recorded id is the one the server receives")
+        XCTAssertEqual(seen.type, "original")
+        XCTAssertNotNil(seen.editorial, "the attempt's editorial type is recorded up front")
+        XCTAssertFalse(coord.hasRecoverablePendingOperation(storyId: s.id), "a saved create leaves nothing behind")
+    }
+
+    /// A failure BEFORE submit (nothing sent) must not leave a resumable row, or every foreground would re-run
+    /// a failing attempt.
+    func test_preparing_failureBeforeSubmitLeavesNothingToResume() async throws {
+        let s = newStory()   // no Moments -> the request cannot be built (missing prerequisite)
+        let jobClient = FakeJobClient(.failUnavailable)
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .fail(.unavailable)),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx,
+                                             jobClient: jobClient)
+        coord.create(for: s)
+        await awaitSettled(coord)
+        guard case .failed = coord.state else { return XCTFail("expected .failed, got \(coord.state)") }
+        XCTAssertEqual(jobClient.submitCount, 0)
+        XCTAssertFalse(coord.hasRecoverablePendingOperation(storyId: s.id))
+        let sid = s.id
+        let rows = try ctx.fetch(FetchDescriptor<PendingOperationModel>(predicate: #Predicate { $0.storyId == sid }))
+        XCTAssertTrue(rows.isEmpty, "the preparing row of a failed pre-submit attempt is removed")
+    }
+
+    /// Reopen after a kill during preparation: the attempt is resumable, re-runs from preparation and submits
+    /// exactly ONCE with the SAME operation id (server idempotency => never a duplicate inference).
+    func test_preparing_resumeReRunsAndSubmitsOnceWithSameOperationId() async throws {
+        let s = newStory()
+        let m1 = momentWithFile(s, rel: "media/prep-res-1.mov", dur: 8); completeAU(m1, useful: [(0, 5)])
+        let plan = validPlan([m1])
+        let opId = "op-prep-\(UUID().uuidString)"
+        let row = PendingOperationModel(storyId: s.id, operationId: opId, jobId: nil, operationType: "original",
+                                        editorialTypeRaw: "full_story", phase: "preparing", outputFormat: "vertical")
+        ctx.insert(row); s.planOperationId = opId; try ctx.save()
+        let jobClient = FakeJobClient(.ok(plan))
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(plan)),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx,
+                                             jobClient: jobClient)
+        XCTAssertTrue(coord.hasRecoverablePendingOperation(storyId: s.id), "a recent preparing attempt is resumable")
+        XCTAssertTrue(coord.resumePendingOperation(for: s))
+        await awaitSettled(coord)
+        guard case .completed(let out) = coord.state else { return XCTFail("expected .completed, got \(coord.state)") }
+        XCTAssertEqual(jobClient.submitCount, 1, "exactly one submit")
+        XCTAssertEqual(jobClient.lastOperationId, opId, "resubmits under the ORIGINAL operation id")
+        XCTAssertEqual(jobClient.lastRequest?.editorialType, "full_story", "keeps the attempt's recorded editorial type")
+        XCTAssertEqual(out.operationType, "original")
+        XCTAssertEqual(s.generatedOutputs.count, 1, "exactly one version")
+        XCTAssertFalse(coord.hasRecoverablePendingOperation(storyId: s.id))
+    }
+
+    /// A pre-submit REVISE resumes with its exact instructions (they exist nowhere else before submit).
+    func test_preparing_reviseResumeUsesStoredRevisionContext() async throws {
+        let s = newStory()
+        let m1 = momentWithFile(s, rel: "media/prep-rev-1.mov", dur: 8); completeAU(m1, useful: [(0, 5)])
+        let plan = validPlan([m1])
+        let c0 = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(plan)),
+                                          renderer: FakeRenderer(.ok(okResult())), context: ctx,
+                                          jobClient: FakeJobClient(.ok(plan)))
+        c0.create(for: s); await awaitSettled(c0)
+        guard case .completed(let base) = c0.state else { return XCTFail("base create failed") }
+
+        let rc = RevisionContextBuilder.revise(base: base, directives: ResolvedDirectives(),
+                                               softDirection: "make the ending slower")
+        let rcJSON = String(data: try JSONEncoder().encode(rc), encoding: .utf8)
+        let opId = "op-prep-rev-\(UUID().uuidString)"
+        let row = PendingOperationModel(storyId: s.id, operationId: opId, jobId: nil, operationType: "revision",
+                                        baseVersionId: (base.versionId ?? base.id).uuidString,
+                                        phase: "preparing", outputFormat: "vertical")
+        row.revisionContextJSON = rcJSON
+        ctx.insert(row); s.planOperationId = opId; s.planJobId = nil; try ctx.save()
+
+        let jobClient = FakeJobClient(.ok(plan))
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(plan)),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx,
+                                             jobClient: jobClient)
+        XCTAssertTrue(coord.resumePendingOperation(for: s))
+        await awaitSettled(coord)
+        guard case .completed(let out) = coord.state else { return XCTFail("expected .completed, got \(coord.state)") }
+        let sent = try XCTUnwrap(jobClient.lastRequest?.revisionContext, "a revise must carry its context")
+        guard case .object(let o) = sent else { return XCTFail("revision_context is not an object") }
+        XCTAssertEqual(o["mode"], .string("revise"))
+        XCTAssertEqual(o["soft_direction"], .string("make the ending slower"), "the user's instruction survived the kill")
+        XCTAssertEqual(out.operationType, "revision")
+        XCTAssertEqual(jobClient.submitCount, 1)
+    }
+
+    /// Resuming submits paid AI, so a preparing attempt older than the window is discarded, never resumed.
+    func test_preparing_expiredAttemptIsDiscardedNotResumed() async throws {
+        let s = newStory()
+        let opId = "op-prep-old-\(UUID().uuidString)"
+        let old = Date().addingTimeInterval(-(StoryCreationCoordinator.preparingResumeWindow + 60))
+        let row = PendingOperationModel(storyId: s.id, operationId: opId, jobId: nil, operationType: "original",
+                                        phase: "preparing", outputFormat: "vertical", createdAt: old, updatedAt: old)
+        ctx.insert(row); try ctx.save()
+        let jobClient = FakeJobClient(.failUnavailable)
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .fail(.unavailable)),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx,
+                                             jobClient: jobClient)
+        XCTAssertFalse(coord.hasRecoverablePendingOperation(storyId: s.id))
+        XCTAssertFalse(coord.resumePendingOperation(for: s))
+        XCTAssertEqual(jobClient.submitCount, 0, "nothing is submitted for an expired attempt")
+        let sid = s.id
+        XCTAssertTrue(try ctx.fetch(FetchDescriptor<PendingOperationModel>(
+            predicate: #Predicate { $0.storyId == sid })).isEmpty, "the expired row is removed")
+    }
+
+    /// The shared resumability rule, pinned (coordinator, app recovery and the Result banner all use it).
+    func test_preparing_isResumableRule() {
+        let now = Date()
+        func row(_ phase: String, job: String? = nil, age: TimeInterval = 0) -> PendingOperationModel {
+            PendingOperationModel(storyId: UUID(), operationId: "op-rule-\(UUID().uuidString)", jobId: job,
+                                  operationType: "original", phase: phase,
+                                  createdAt: now.addingTimeInterval(-age), updatedAt: now.addingTimeInterval(-age))
+        }
+        XCTAssertTrue(StoryCreationCoordinator.isResumable(row("preparing"), now: now))
+        XCTAssertFalse(StoryCreationCoordinator.isResumable(
+            row("preparing", age: StoryCreationCoordinator.preparingResumeWindow + 1), now: now))
+        XCTAssertTrue(StoryCreationCoordinator.isResumable(row("planning", job: "j"), now: now), "unchanged: a job resumes")
+        XCTAssertFalse(StoryCreationCoordinator.isResumable(row("submitting"), now: now), "unchanged: no job, no bytes")
+        XCTAssertFalse(StoryCreationCoordinator.isResumable(row("abandoned"), now: now))
     }
 }

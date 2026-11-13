@@ -475,6 +475,7 @@ struct StoryResultView: View {
     /// Human-readable stage for a persisted phase — the REAL stage, no percentage, no ETA (owner rule).
     private func stageLabel(_ phase: String?) -> String {
         switch phase {
+        case "preparing": return "Preparing your moments…"
         case "submitted", "planning": return "Planning your edit…"
         case "plan_ready", "rendering": return "Rendering your video…"
         default: return "Working…"
