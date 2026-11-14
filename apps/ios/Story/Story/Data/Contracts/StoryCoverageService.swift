@@ -111,6 +111,16 @@ struct StoryCoverageV2Service: StoryCoverageV2Computing {
     /// the existing queued/running/completed job is recovered WITHOUT launching new inference; changed
     /// evidence -> new id -> new job. Polling never triggers inference (it only reads status).
     func compute(_ request: StoryCoverageV2RequestDTO) async throws -> StoryCoverageV2DTO {
+        // An older backend rejects the unknown `content_language` field (422); retry once without it.
+        do { return try await computeOnce(request) }
+        catch StoryCoverageServiceError.badStatus(let code) where code == 422 && request.contentLanguage != nil {
+            var legacy = request
+            legacy.contentLanguage = nil
+            return try await computeOnce(legacy)
+        }
+    }
+
+    private func computeOnce(_ request: StoryCoverageV2RequestDTO) async throws -> StoryCoverageV2DTO {
         let bodyData: Data
         do { bodyData = try StoryContractCoding.encoder().encode(request) }
         catch { throw StoryCoverageServiceError.decoding(error) }

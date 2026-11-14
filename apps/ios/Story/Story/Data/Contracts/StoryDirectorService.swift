@@ -40,6 +40,23 @@ struct StoryDirectorService {
                     targetDurationSeconds: Double?,
                     selectedOpportunity: SelectedOpportunityDTO? = nil,
                     contentLanguage: String? = nil) async throws -> DirectorOutputDTO {
+        // An older backend rejects the unknown `content_language` field (422); retry once without it.
+        do {
+            return try await initializeOnce(creativeIntent: creativeIntent, sceneUnderstanding: sceneUnderstanding,
+                                            targetDurationSeconds: targetDurationSeconds,
+                                            selectedOpportunity: selectedOpportunity, contentLanguage: contentLanguage)
+        } catch StoryDirectorServiceError.badStatus(let code) where code == 422 && contentLanguage != nil {
+            return try await initializeOnce(creativeIntent: creativeIntent, sceneUnderstanding: sceneUnderstanding,
+                                            targetDurationSeconds: targetDurationSeconds,
+                                            selectedOpportunity: selectedOpportunity, contentLanguage: nil)
+        }
+    }
+
+    private func initializeOnce(creativeIntent: CreativeIntentContractDTO,
+                                sceneUnderstanding: SceneUnderstandingContractDTO?,
+                                targetDurationSeconds: Double?,
+                                selectedOpportunity: SelectedOpportunityDTO?,
+                                contentLanguage: String?) async throws -> DirectorOutputDTO {
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/director/initialize"))
         StoryBackend.authorize(&req)  // P0 auth seam: bearer token when signed in
         req.httpMethod = "POST"

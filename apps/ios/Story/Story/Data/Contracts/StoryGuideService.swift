@@ -77,7 +77,19 @@ final class StoryGuideV2Service: StoryGuideV2Generating {
         self.session = session
     }
 
+    /// A backend that predates `content_language` rejects the unknown field with 422 (strict request model).
+    /// Retry ONCE without it so a not-yet-deployed backend keeps working (the output language then follows the
+    /// Story text, as before). Any other failure is unchanged.
     func generate(_ request: StoryGuideRequestDTO) async throws -> StoryGuideV2DTO {
+        do { return try await send(request) }
+        catch StoryGuideServiceError.badStatus(let code) where code == 422 && request.contentLanguage != nil {
+            var legacy = request
+            legacy.contentLanguage = nil
+            return try await send(legacy)
+        }
+    }
+
+    private func send(_ request: StoryGuideRequestDTO) async throws -> StoryGuideV2DTO {
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/story-guide-v2"))
         StoryBackend.authorize(&req)
         req.httpMethod = "POST"
@@ -145,7 +157,17 @@ final class StoryGuideRefineService: StoryGuideRefining {
         self.session = session
     }
 
+    /// Retry once without `content_language` when an older backend rejects it with 422 (see StoryGuideV2Service).
     func refine(_ request: StoryGuideRefineRequestDTO) async throws -> StoryGuideRefinementResultDTO {
+        do { return try await send(request) }
+        catch StoryGuideServiceError.badStatus(let code) where code == 422 && request.contentLanguage != nil {
+            var legacy = request
+            legacy.contentLanguage = nil
+            return try await send(legacy)
+        }
+    }
+
+    private func send(_ request: StoryGuideRefineRequestDTO) async throws -> StoryGuideRefinementResultDTO {
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/story-guide-refine"))
         StoryBackend.authorize(&req)
         req.httpMethod = "POST"
