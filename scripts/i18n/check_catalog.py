@@ -123,6 +123,8 @@ def main():
     sk_to_key = {}
     for k, v in cat.items():
         sk_to_key.setdefault(skeleton_of_key(k), k)
+        if v.get("shouldTranslate") is False:      # symbol-only keys Xcode extracts ("", "•••", "←" ...)
+            continue
         loc = v.get("localizations", {})
         zh = loc.get("zh-Hans")
         if not zh:
@@ -173,7 +175,7 @@ def main():
 
     for p, l, s in missing:
         problems.append(f"missing key: {p}:{l}  {s!r}")
-    unused = sorted(set(cat) - used)
+    unused = sorted(k for k in set(cat) - used if cat[k].get("shouldTranslate") is not False)
     print(f"catalog keys: {len(cat)}  used-by-scan: {len(used)}  missing: {len(missing)}  unused: {len(unused)}")
     for p in problems:
         print("PROBLEM", p)

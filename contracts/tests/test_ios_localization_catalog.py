@@ -37,6 +37,8 @@ def test_no_internal_terms_leak_into_chinese_ui():
     s = json.loads(CATALOG.read_text(encoding="utf8"))["strings"]
     banned = ["must_include", "order_after", "EditPlan", "Edit Planner", "contact sheet", "AU "]
     for k, v in s.items():
+        if v.get("shouldTranslate") is False:
+            continue
         loc = v["localizations"]["zh-Hans"]
         val = (loc.get("stringUnit") or loc["variations"]["plural"]["other"]["stringUnit"])["value"]
         for b in banned:

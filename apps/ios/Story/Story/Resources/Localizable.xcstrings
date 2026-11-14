@@ -2,7 +2,7 @@
   "sourceLanguage" : "en",
   "strings" : {
     "" : {
-
+      "shouldTranslate" : false
     },
     " · %lld need a retry" : {
       "extractionState" : "manual",
@@ -348,7 +348,7 @@
       }
     },
     "%lld" : {
-
+      "shouldTranslate" : false
     },
     "%lld added" : {
       "extractionState" : "manual",
@@ -786,10 +786,10 @@
       }
     },
     "•••" : {
-
+      "shouldTranslate" : false
     },
     "←" : {
-
+      "shouldTranslate" : false
     },
     "← Back" : {
       "extractionState" : "manual",
@@ -858,7 +858,7 @@
       }
     },
     "✦" : {
-
+      "shouldTranslate" : false
     },
     "✦ Let Story choose" : {
       "extractionState" : "manual",
