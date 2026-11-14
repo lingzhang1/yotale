@@ -175,8 +175,8 @@ struct HomeView: View {
                     .font(StoryTheme.body(15)).foregroundStyle(StoryTheme.cream.opacity(0.5))
             }
             .padding(.bottom, 18)
-            Text(title).font(StoryTheme.display(18)).foregroundStyle(StoryTheme.cream)
-            Text(sub).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.45))
+            Text(LocalizedStringKey(title)).font(StoryTheme.display(18)).foregroundStyle(StoryTheme.cream)
+            Text(LocalizedStringKey(sub)).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
