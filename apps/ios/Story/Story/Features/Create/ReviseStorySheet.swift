@@ -212,7 +212,7 @@ struct ReviseStorySheet: View {
                 switch outcome.kind {
                 case .serviceFailure:
                     retryable = true
-                    clarification = (outcome.blocking.first ?? L10n.t("Couldn't interpret that right now.")) + musicSuffix
+                    clarification = (outcome.blocking.first.map { ServerMessageLocalizer.present($0) } ?? L10n.t("Couldn't interpret that right now.")) + musicSuffix
                     return
                 case .clarify:
                     clarification = clarificationText(outcome, numbering: n) + musicSuffix
@@ -251,9 +251,9 @@ struct ReviseStorySheet: View {
             return L10n.t("\(list) couldn't be matched (this Story has \(numbering.count)). Reposition it with “Arrange”, or rephrase.")
         }
         if !o.unresolved.isEmpty {
-            return L10n.t("I couldn’t apply: “\(o.unresolved.joined(separator: "”, “"))”. Try rephrasing it, or use “Arrange” to set the order.")
+            return L10n.t("I couldn’t apply: “\(ServerMessageLocalizer.presentUnresolved(o.unresolved).joined(separator: "”, “"))”. Try rephrasing it, or use “Arrange” to set the order.")
         }
-        if let b = o.blocking.first { return b }
+        if let b = o.blocking.first { return ServerMessageLocalizer.present(b) }
         return L10n.t("Please rephrase your instruction so I can apply it.")
     }
 

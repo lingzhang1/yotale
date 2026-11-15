@@ -41,6 +41,25 @@ final class ChineseInstructionParsingTests: XCTestCase {
         XCTAssertEqual(parse("从第十二个片段开始"), ["opening12"])
     }
 
+    // 瞬间 is the UI's name for a Moment (copy pass v2). The inserted chip text and what users type must parse.
+    func testShunjianReferenceForms() {
+        XCTAssertEqual(parse("从瞬间 8 开始"), ["opening8"])        // exact zh chip text ("Start with Moment %lld")
+        XCTAssertEqual(parse("从瞬间8开始"), ["opening8"])
+        XCTAssertEqual(parse("从瞬间８开始"), ["opening8"])
+        XCTAssertEqual(parse("从第8个瞬间开始"), ["opening8"])
+        XCTAssertEqual(parse("从第三个瞬间开始"), ["opening3"])
+        XCTAssertEqual(parse("用瞬间 5 结尾"), ["ending5"])
+        XCTAssertEqual(parse("去掉瞬间 4"), ["exclude4"])
+        XCTAssertEqual(parse("从瞬间 8 开始，去掉瞬间 4，更有电影感一点"), ["opening8", "exclude4"])
+    }
+
+    // "瞬间" is also ordinary prose; only digits after a bare 瞬间 count as a Moment number.
+    func testShunjianProseIsNotAReference() {
+        XCTAssertEqual(parse("那一瞬间十分感人"), [])
+        XCTAssertEqual(parse("多拍一些精彩瞬间"), [])
+        XCTAssertEqual(parse("不要用慢动作，那一瞬间三秒就够"), [])
+    }
+
     // MARK: verbs
 
     func testOpening() {

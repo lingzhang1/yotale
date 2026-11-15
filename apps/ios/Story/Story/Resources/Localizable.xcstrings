@@ -50,6 +50,204 @@
         }
       }
     },
+    "A Moment you mentioned isn't in this Story." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A Moment you mentioned isn't in this Story."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你提到的某个瞬间不在这个故事里。"
+          }
+        }
+      }
+    },
+    "A removed Moment is also used in your ordering." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A removed Moment is also used in your ordering."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一个被去掉的瞬间同时出现在你的顺序要求里。"
+          }
+        }
+      }
+    },
+    "One Moment can't come right after several others." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "One Moment can't come right after several others."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一个瞬间不能同时紧跟在多个瞬间之后。"
+          }
+        }
+      }
+    },
+    "Removing those Moments leaves too little to make a video. Keep at least 2." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Removing those Moments leaves too little to make a video. Keep at least 2."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "去掉这些瞬间后，剩下的素材不够做成影片，请至少保留 2 个。"
+          }
+        }
+      }
+    },
+    "Several Moments can't all come right after the same one." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Several Moments can't all come right after the same one."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多个瞬间不能都紧跟在同一个瞬间之后。"
+          }
+        }
+      }
+    },
+    "The ending Moment has another Moment placed after it." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The ending Moment has another Moment placed after it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结尾的瞬间之后又排了别的瞬间。"
+          }
+        }
+      }
+    },
+    "The opening Moment is also placed after another Moment." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The opening Moment is also placed after another Moment."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开场的瞬间同时被排在了另一个瞬间之后。"
+          }
+        }
+      }
+    },
+    "The ordering in your request contradicts itself." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The ordering in your request contradicts itself."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的顺序要求前后矛盾。"
+          }
+        }
+      }
+    },
+    "The same Moment is asked to be both kept and removed." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The same Moment is asked to be both kept and removed."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同一个瞬间既被要求保留，又被要求去掉。"
+          }
+        }
+      }
+    },
+    "This request has a conflict. Please adjust it and try again." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This request has a conflict. Please adjust it and try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个要求有冲突，请调整后再试。"
+          }
+        }
+      }
+    },
+    "Your request only says which Moments to use or how to order them, but the result would remove some. Say which Moments to remove, or rephrase." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your request only says which Moments to use or how to order them, but the result would remove some. Say which Moments to remove, or rephrase."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的要求只说了用哪些瞬间、怎么排序，但结果会去掉一些瞬间。请说明要去掉哪些，或换种说法。"
+          }
+        }
+      }
+    },
     "· %@" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -155,7 +353,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 仍在分析中。稍等片刻再生成故事吧——你的要求已保存。"
+            "value" : "%@ 还在分析中。稍等一下再制作影片，你的要求已保存。"
           }
         }
       }
@@ -166,7 +364,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法匹配 %1$@（这个故事共有 %2$lld 个片段）。请通过“排序片段”选择片段，或换种说法。"
+            "value" : "找不到 %1$@（这个故事共有 %2$lld 个瞬间）。请用“调整顺序”选择瞬间，或换种说法。"
           }
         }
       }
@@ -177,7 +375,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法匹配 %1$@（这个故事共有 %2$lld 个片段）。请用“排序”调整位置，或换种说法。"
+            "value" : "找不到 %1$@（这个故事共有 %2$lld 个瞬间）。请用“调整顺序”调整位置，或换种说法。"
           }
         }
       }
@@ -188,7 +386,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 既在你排好的顺序中，又被要求去掉。请把它从顺序中移除，或不要去掉它。"
+            "value" : "%@ 既在你排好的顺序里，又被要求去掉。请把它移出顺序，或者保留它。"
           }
         }
       }
@@ -199,7 +397,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 在你的片段顺序中，但你的文字要求去掉它。请把它从顺序中移除，或修改文字。"
+            "value" : "%@ 在你的瞬间顺序里，但文字要求去掉它。请把它移出顺序，或修改文字。"
           }
         }
       }
@@ -210,7 +408,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 仍在分析中。稍等片刻再生成故事吧——你的要求已保存。"
+            "value" : "%@ 还在分析中。稍等一下再制作影片，你的要求已保存。"
           }
         }
       }
@@ -221,7 +419,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 不在你选中的片段里。请在“排序”中添加，或删掉这处提及。"
+            "value" : "%@ 不在你选中的瞬间里。请在“调整顺序”中添加它，或删掉这处提及。"
           }
         }
       }
@@ -232,7 +430,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 不在你的顺序中，而顺序已设为“只使用选中的片段”。请在“排序片段”中添加它、更改该设置，或修改文字。"
+            "value" : "%@ 不在你的顺序里，而你选择了“只用选中的瞬间”。请在“调整顺序”中添加它、更改这个设置，或修改文字。"
           }
         }
       }
@@ -254,7 +452,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 将作为开场"
+            "value" : "%@ 作为开场"
           }
         }
       }
@@ -265,7 +463,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ 将作为开场，%2$@ 将作为结尾"
+            "value" : "%1$@ 作为开场，%2$@ 作为结尾"
           }
         }
       }
@@ -298,7 +496,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@。片段 %2$@ 需要按此顺序出现；剪辑可能会在它们之间穿插其他片段，并在素材允许时保持你的顺序。"
+            "value" : "%1$@。瞬间 %2$@ 会按这个顺序出现；AI 可能在它们之间穿插其他瞬间，素材允许时会保持你的顺序。"
           }
         }
       }
@@ -309,7 +507,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@。片段 %2$@ 将按此顺序排列，视频的其余部分保持不变。如果素材无法完全满足，结果会如实告知，而不会强行处理。"
+            "value" : "%1$@。瞬间 %2$@ 会按这个顺序排列，影片的其他部分保持不变。如果素材无法完全满足，结果会如实说明，不会硬凑。"
           }
         }
       }
@@ -320,7 +518,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@。只会使用片段 %2$@，并按此顺序排列。素材允许时会保持你的顺序；如果无法完全做到，结果会如实呈现，而不会强行处理。"
+            "value" : "%1$@。只使用瞬间 %2$@，并按这个顺序排列。素材允许时会保持你的顺序；如果无法完全做到，会如实呈现结果，不会硬凑。"
           }
         }
       }
@@ -400,7 +598,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%2$@ 中共 %1$lld 个"
+            "value" : "%2$@ · %1$lld 个瞬间"
           }
         }
       }
@@ -411,7 +609,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段库中共 %lld 个"
+            "value" : "共 %lld 个"
           }
         }
       }
@@ -443,7 +641,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld 个片段"
+                  "value" : "%lld 个瞬间"
                 }
               }
             }
@@ -478,7 +676,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld 个片段"
+                  "value" : "%lld 个瞬间"
                 }
               }
             }
@@ -514,7 +712,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld 个片段 →"
+                  "value" : "%lld 个瞬间 →"
                 }
               }
             }
@@ -549,7 +747,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "有 %lld 个片段分析失败"
+                  "value" : "有 %lld 个瞬间分析失败"
                 }
               }
             }
@@ -584,7 +782,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "已选择 %lld 个片段"
+                  "value" : "已选 %lld 个瞬间"
                 }
               }
             }
@@ -632,7 +830,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%lld/%lld 个片段已就绪。"
+            "value" : "已就绪 %lld/%lld 个瞬间。"
           }
         }
       }
@@ -687,7 +885,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld 个场景"
+                  "value" : "共 %lld 个场景"
                 }
               }
             }
@@ -747,7 +945,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%lld–%lld 秒适合你的素材"
+            "value" : "%lld–%lld 秒最适合你的素材"
           }
         }
       }
@@ -830,7 +1028,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "+ 添加片段"
+            "value" : "+ 添加瞬间"
           }
         }
       }
@@ -866,7 +1064,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "✦ 交给 YoTale 选择"
+            "value" : "✦ 交给 YoTale 挑选"
           }
         }
       }
@@ -889,7 +1087,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "简短的精彩集锦时长"
+            "value" : "精简的集锦时长"
           }
         }
       }
@@ -900,7 +1098,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这只是参考，不是清单——拍你觉得对的画面。"
+            "value" : "这只是参考，不是任务清单，拍你觉得对的画面就好。"
           }
         }
       }
@@ -911,7 +1109,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "某个片段"
+            "value" : "某个瞬间"
           }
         }
       }
@@ -922,7 +1120,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "值得拍下的瞬间"
+            "value" : "值得拍下的一幕"
           }
         }
       }
@@ -933,7 +1131,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的要求提到的某个片段在此设备上不可用。请修改要求，或等待同步完成。"
+            "value" : "你提到的某个瞬间在这台设备上不可用。请修改要求，或等同步完成。"
           }
         }
       }
@@ -944,7 +1142,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在生成新版本"
+            "value" : "正在创作新版本"
           }
         }
       }
@@ -955,7 +1153,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你提到的某个片段已不在这个故事中。"
+            "value" : "你提到的某个瞬间已不在这个故事里。"
           }
         }
       }
@@ -966,7 +1164,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个故事已有视频正在生成中。"
+            "value" : "这个故事已有影片正在制作中。"
           }
         }
       }
@@ -977,7 +1175,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个故事已有视频正在生成中，请稍候再试。"
+            "value" : "这个故事已有影片正在制作中，请稍后再试。"
           }
         }
       }
@@ -1043,7 +1241,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "添加 %lld"
+            "value" : "添加 %lld 个"
           }
         }
       }
@@ -1054,7 +1252,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "简单写写这次的活动，你的拍摄脚本就会出现。"
+            "value" : "简单写写这次要拍什么，拍摄指南就会出现。"
           }
         }
       }
@@ -1076,7 +1274,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "添加指令：%@"
+            "value" : "添加要求：%@"
           }
         }
       }
@@ -1087,7 +1285,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "添加片段引用"
+            "value" : "引用瞬间"
           }
         }
       }
@@ -1098,7 +1296,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "添加片段"
+            "value" : "添加瞬间"
           }
         }
       }
@@ -1109,7 +1307,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在下方添加片段，自己安排顺序。"
+            "value" : "在下方添加瞬间，自己安排顺序。"
           }
         }
       }
@@ -1175,7 +1373,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "按当前顺序把所有片段加入序列"
+            "value" : "按当前顺序加入所有瞬间；每个瞬间通常只截取其中一段，而不是完整素材"
           }
         }
       }
@@ -1186,7 +1384,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "添加到 %@"
+            "value" : "存入 %@"
           }
         }
       }
@@ -1197,7 +1395,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "调整指令"
+            "value" : "调整要求"
           }
         }
       }
@@ -1230,7 +1428,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "AI 可在这些片段之间穿插其他片段"
+            "value" : "AI 可以在这些瞬间之间穿插其他瞬间"
           }
         }
       }
@@ -1241,7 +1439,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "由 AI 决定顺序"
+            "value" : "交给 AI 安排"
           }
         }
       }
@@ -1296,7 +1494,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "快好了——正在精心制作你的故事，可能需要一两分钟。"
+            "value" : "快好了，正在精心打磨，可能还需要一两分钟。"
           }
         }
       }
@@ -1340,7 +1538,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在分析片段…"
+            "value" : "正在分析瞬间…"
           }
         }
       }
@@ -1351,7 +1549,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在分析你的片段"
+            "value" : "正在分析你的瞬间"
           }
         }
       }
@@ -1374,7 +1572,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "有什么想加入的吗？"
+            "value" : "想让影片怎么呈现？"
           }
         }
       }
@@ -1440,7 +1638,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "应用支持的部分"
+            "value" : "应用可行部分"
           }
         }
       }
@@ -1451,7 +1649,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "只应用支持的部分？"
+            "value" : "只应用能做到的部分？"
           }
         }
       }
@@ -1473,7 +1671,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在应用你的修改，其余剪辑保持不变。"
+            "value" : "正在应用你的调整，其余部分保持不变。"
           }
         }
       }
@@ -1484,7 +1682,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "排序"
+            "value" : "调整顺序"
           }
         }
       }
@@ -1495,7 +1693,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "排序片段"
+            "value" : "调整顺序"
           }
         }
       }
@@ -1530,7 +1728,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自动备份我的片段"
+            "value" : "自动备份我的瞬间"
           }
         }
       }
@@ -1639,7 +1837,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "备份 %lld 个片段"
+                  "value" : "备份 %lld 个瞬间"
                 }
               }
             }
@@ -1674,7 +1872,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "要将 %lld 个片段备份到你的账号吗？"
+                  "value" : "要把这 %lld 个瞬间备份到你的账号吗？"
                 }
               }
             }
@@ -1688,7 +1886,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "备份尚未备份的片段？"
+            "value" : "备份尚未备份的瞬间？"
           }
         }
       }
@@ -1699,7 +1897,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "备份尚未备份的片段…"
+            "value" : "备份尚未备份的瞬间…"
           }
         }
       }
@@ -1754,7 +1952,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "备份现有片段后，它会与当前账号关联，并从这部手机上其他账号的片段库中移除。"
+            "value" : "备份已有的瞬间后，它会归属当前账号，并从这台手机上其他账号的瞬间中移除。"
           }
         }
       }
@@ -1776,7 +1974,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "均衡声音"
+            "value" : "音乐与原声平衡"
           }
         }
       }
@@ -1799,7 +1997,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "先展示美景"
+            "value" : "美景先行"
           }
         }
       }
@@ -1855,7 +2053,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "用你的片段串起一个有意义的故事，起承转合清晰完整。"
+            "value" : "用你的瞬间讲一个完整的故事，开头、发展、结尾都清晰。"
           }
         }
       }
@@ -1922,7 +2120,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "暂时无法完成这个修改"
+            "value" : "暂时做不到这种调整"
           }
         }
       }
@@ -1955,7 +2153,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "取消移动片段%lld"
+            "value" : "取消移动瞬间 %lld"
           }
         }
       }
@@ -1977,7 +2175,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拍摄"
+            "value" : "灵感拍摄"
           }
         }
       }
@@ -1988,7 +2186,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拍摄片段"
+            "value" : "拍下眼前的精彩"
           }
         }
       }
@@ -1999,7 +2197,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拍摄一个片段，开始建立你的片段库。"
+            "value" : "拍下或导入一些照片、视频，故事就从这里开始。"
           }
         }
       }
@@ -2022,7 +2220,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "顺其自然地拍摄就好——拍摄指南很快就会出现。"
+            "value" : "边走边拍就好，拍摄指南马上就来。"
           }
         }
       }
@@ -2033,7 +2231,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "顺其自然地拍摄就好。这只是参考，不是清单——拍你觉得对的画面。"
+            "value" : "边走边拍就好。拍摄指南只是参考，拍你觉得对的画面。"
           }
         }
       }
@@ -2044,7 +2242,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "记录值得珍藏的瞬间，随时获取 AI 拍摄灵感。"
+            "value" : "打开镜头，让 AI 帮你找到更好的拍法。"
           }
         }
       }
@@ -2132,7 +2330,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在检查方案…"
+            "value" : "正在检查剪辑方案…"
           }
         }
       }
@@ -2155,7 +2353,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "为你的故事选择时长。"
+            "value" : "选择影片时长。"
           }
         }
       }
@@ -2188,7 +2386,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "选择你想让片段如何组合在一起。"
+            "value" : "告诉 AI，你想怎么剪。"
           }
         }
       }
@@ -2210,7 +2408,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "选择想要调整位置的片段，然后拖动排序。视频的其余部分保持不变。"
+            "value" : "选出想调整位置的瞬间，再拖动排序。影片的其他部分保持不变。"
           }
         }
       }
@@ -2221,7 +2419,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "选择想要展示的片段，然后拖动排序。"
+            "value" : "选出想放进影片的瞬间，再拖动排序。"
           }
         }
       }
@@ -2290,7 +2488,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "清除——不限"
+            "value" : "清除，不指定"
           }
         }
       }
@@ -2312,7 +2510,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "清除顺序，由剪辑自动决定排序"
+            "value" : "清空顺序，交给 AI 安排"
           }
         }
       }
@@ -2323,7 +2521,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "清除顺序，保持当前排序"
+            "value" : "清空顺序，保持现有顺序"
           }
         }
       }
@@ -2390,7 +2588,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仅在云端的片段"
+            "value" : "仅存于云端的瞬间"
           }
         }
       }
@@ -2401,7 +2599,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "汇集片段，讲述你的故事，生成一部短片。"
+            "value" : "从一个想法开始，记录沿途的精彩，慢慢拼出你的故事。"
           }
         }
       }
@@ -2477,7 +2675,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "已完成 · %lld 个片段"
+                  "value" : "已完成 · %lld 个瞬间"
                 }
               }
             }
@@ -2537,7 +2735,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "还可以多拍一些"
+            "value" : "可以多拍一些"
           }
         }
       }
@@ -2559,7 +2757,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法准备生成请求，请重试。"
+            "value" : "无法准备制作请求，请重试。"
           }
         }
       }
@@ -2581,7 +2779,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法生成音乐请求，请重试。"
+            "value" : "无法准备音乐请求，请重试。"
           }
         }
       }
@@ -2636,7 +2834,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "未能完成新版本"
+            "value" : "新版本没能完成"
           }
         }
       }
@@ -2647,7 +2845,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "暂时无法理解这条指令。"
+            "value" : "暂时没能理解这条要求。"
           }
         }
       }
@@ -2691,7 +2889,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法用新音乐重新生成视频。"
+            "value" : "没能用新音乐重新制作影片。"
           }
         }
       }
@@ -2713,7 +2911,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法连接 YoTale 分析片段。"
+            "value" : "无法连接 YoTale，暂时不能分析瞬间。"
           }
         }
       }
@@ -2801,7 +2999,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法读取这个视频已保存的剪辑。"
+            "value" : "无法读取这部影片已保存的剪辑。"
           }
         }
       }
@@ -2845,7 +3043,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法修改"
+            "value" : "没能调整影片"
           }
         }
       }
@@ -2856,7 +3054,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法保存这段视频"
+            "value" : "这段视频没能保存"
           }
         }
       }
@@ -2922,7 +3120,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "暂时无法更新——当前指南保持不变，请重试。"
+            "value" : "暂时没能调整，当前指南保持不变，请重试。"
           }
         }
       }
@@ -2944,7 +3142,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已拍到"
+            "value" : "已拍摄"
           }
         }
       }
@@ -2955,7 +3153,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "生成"
+            "value" : "故事创作"
           }
         }
       }
@@ -2966,7 +3164,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "生成 · %lld 秒"
+            "value" : "制作 · %lld 秒"
           }
         }
       }
@@ -2977,7 +3175,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "生成 %lld 秒的故事"
+            "value" : "制作 %lld 秒的影片"
           }
         }
       }
@@ -2988,7 +3186,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "生成另一个版本"
+            "value" : "再创作一个版本"
           }
         }
       }
@@ -2999,7 +3197,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "生成我的故事"
+            "value" : "制作影片"
           }
         }
       }
@@ -3010,7 +3208,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "生成我的视频"
+            "value" : "开始制作"
           }
         }
       }
@@ -3043,7 +3241,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "不加音乐生成"
+            "value" : "不加音乐直接制作"
           }
         }
       }
@@ -3054,7 +3252,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "生成你的视频"
+            "value" : "制作你的影片"
           }
         }
       }
@@ -3065,7 +3263,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "未添加音乐"
+            "value" : "无配乐"
           }
         }
       }
@@ -3076,7 +3274,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在生成新版本。%@ 当前视频仍可使用。"
+            "value" : "正在创作新版本。%@ 当前影片仍可观看。"
           }
         }
       }
@@ -3087,7 +3285,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在生成你的故事…"
+            "value" : "正在制作你的影片…"
           }
         }
       }
@@ -3109,7 +3307,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "生成失败。"
+            "value" : "制作失败。"
           }
         }
       }
@@ -3220,7 +3418,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "删除 %lld 个片段"
+                  "value" : "删除 %lld 个瞬间"
                 }
               }
             }
@@ -3255,7 +3453,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "要从片段库中删除 %lld 个片段吗？"
+                  "value" : "要删除这 %lld 个瞬间吗？"
                 }
               }
             }
@@ -3269,7 +3467,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "描述修改内容"
+            "value" : "说说想怎么改"
           }
         }
       }
@@ -3358,7 +3556,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "双击另一个片段，即可把它放在该片段之前"
+            "value" : "双击另一个瞬间，把它放到那个瞬间前面"
           }
         }
       }
@@ -3369,7 +3567,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "双击，再双击另一个片段，即可把它放在该片段之前"
+            "value" : "双击选中，再双击另一个瞬间，把它放到那个瞬间前面"
           }
         }
       }
@@ -3424,7 +3622,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在从你的账号下载原视频，不会重新生成。"
+            "value" : "正在从你的账号下载原来的影片，不会重新制作。"
           }
         }
       }
@@ -3501,7 +3699,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每首曲目都会带来不同的剪辑效果——YoTale 会根据音乐调整片段和节奏。"
+            "value" : "不同的曲子会剪出不同的影片，YoTale 会根据音乐调整画面和节奏。"
           }
         }
       }
@@ -3523,7 +3721,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "编辑故事详情"
+            "value" : "编辑故事信息"
           }
         }
       }
@@ -3534,7 +3732,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在修改 %@"
+            "value" : "正在调整 %@"
           }
         }
       }
@@ -3545,7 +3743,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "可编辑内容"
+            "value" : "能做哪些调整"
           }
         }
       }
@@ -3578,7 +3776,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "以 %@ 结尾"
+            "value" : "用 %@ 结尾"
           }
         }
       }
@@ -3589,7 +3787,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "以…结尾"
+            "value" : "用某个瞬间结尾"
           }
         }
       }
@@ -3668,7 +3866,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的故事，尽在这里。"
+            "value" : "这个故事的一切，都在这里。"
           }
         }
       }
@@ -3690,7 +3888,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "排除 %@"
+            "value" : "去掉 %@"
           }
         }
       }
@@ -3812,7 +4010,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "即将完成…"
+            "value" : "马上就好…"
           }
         }
       }
@@ -3835,7 +4033,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "跟随音乐"
+            "value" : "跟着音乐走"
           }
         }
       }
@@ -3889,7 +4087,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "已从 %2$lld 个片段中释放 %1$@。"
+                  "value" : "已从 %2$lld 个瞬间中释放 %1$@。"
                 }
               }
             }
@@ -3914,7 +4112,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从已有片段选择"
+            "value" : "从已有瞬间选择"
           }
         }
       }
@@ -3959,7 +4157,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在准备你的片段…"
+            "value" : "正在准备你的瞬间…"
           }
         }
       }
@@ -4040,7 +4238,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请稍候——通常很快就好。"
+            "value" : "请稍候，通常很快就好。"
           }
         }
       }
@@ -4164,7 +4362,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你希望故事听起来是什么感觉？"
+            "value" : "影片想要什么样的感觉和声音？"
           }
         }
       }
@@ -4175,7 +4373,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拍摄方法"
+            "value" : "这样拍"
           }
         }
       }
@@ -4197,7 +4395,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拍摄方法"
+            "value" : "这样拍"
           }
         }
       }
@@ -4208,7 +4406,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法应用：“%@”。请换种说法，或用“排序片段”设置顺序。"
+            "value" : "没能应用“%@”。请换种说法，或用“调整顺序”来设置。"
           }
         }
       }
@@ -4219,7 +4417,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法应用：“%@”。请换种说法，或用“排序”设置顺序。"
+            "value" : "没能应用“%@”。请换种说法，或用“调整顺序”来设置。"
           }
         }
       }
@@ -4230,7 +4428,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "未能完成你的故事。"
+            "value" : "这次没能完成你的影片。"
           }
         }
       }
@@ -4241,7 +4439,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这次未能生成有效的剪辑——问题出在我这边，与你的素材无关。请重试。"
+            "value" : "这次没能剪出可用的版本，问题出在我这边，不是你的素材。请重试。"
           }
         }
       }
@@ -4296,7 +4494,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "沉浸"
+            "value" : "现场感"
           }
         }
       }
@@ -4307,7 +4505,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "沉浸声音"
+            "value" : "突出现场声音"
           }
         }
       }
@@ -4585,7 +4783,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "我们来调整一下你的指令。"
+            "value" : "调整一下你的要求吧。"
           }
         }
       }
@@ -4618,7 +4816,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段库选项"
+            "value" : "更多选项"
           }
         }
       }
@@ -4706,7 +4904,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "看起来不错"
+            "value" : "已有素材"
           }
         }
       }
@@ -4717,7 +4915,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "没问题"
+            "value" : "就这样"
           }
         }
       }
@@ -4728,7 +4926,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "让剪辑跟着音乐节奏"
+            "value" : "剪辑跟着音乐节奏走"
           }
         }
       }
@@ -4740,7 +4938,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "让剪辑跟着音乐节奏"
+            "value" : "剪辑跟着音乐节奏走"
           }
         }
       }
@@ -4762,7 +4960,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "管理存储"
+            "value" : "管理存储空间"
           }
         }
       }
@@ -4808,7 +5006,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "缺少生成视频所需的内容，请检查后重试。"
+            "value" : "缺少制作影片所需的内容，请检查后重试。"
           }
         }
       }
@@ -4819,7 +5017,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段"
+            "value" : "瞬间"
           }
         }
       }
@@ -4830,7 +5028,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段 %lld"
+            "value" : "瞬间 %lld"
           }
         }
       }
@@ -4841,7 +5039,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个故事里没有第 %lld 个片段。"
+            "value" : "这个故事里没有瞬间 %lld。"
           }
         }
       }
@@ -4852,7 +5050,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段已添加"
+            "value" : "已添加瞬间"
           }
         }
       }
@@ -4863,7 +5061,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段分析正忙，稍后将自动重试。"
+            "value" : "瞬间分析繁忙，稍后自动重试。"
           }
         }
       }
@@ -4874,7 +5072,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段分析暂时受限，稍后将自动重试。"
+            "value" : "瞬间分析请求过多，稍后自动重试。"
           }
         }
       }
@@ -4885,7 +5083,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段分析已暂停：已达到使用上限。"
+            "value" : "瞬间分析已暂停：已达使用上限。"
           }
         }
       }
@@ -4896,7 +5094,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段顺序"
+            "value" : "瞬间顺序"
           }
         }
       }
@@ -4907,7 +5105,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段顺序。%@"
+            "value" : "瞬间顺序。%@"
           }
         }
       }
@@ -4918,7 +5116,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段顺序"
+            "value" : "瞬间顺序"
           }
         }
       }
@@ -4929,7 +5127,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段顺序。%@"
+            "value" : "瞬间顺序。%@"
           }
         }
       }
@@ -4940,7 +5138,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "片段"
+            "value" : "瞬间"
           }
         }
       }
@@ -4951,7 +5149,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "氛围"
+            "value" : "影片氛围"
           }
         }
       }
@@ -4962,7 +5160,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "氛围，可选。%@"
+            "value" : "影片氛围，可选。%@"
           }
         }
       }
@@ -4973,7 +5171,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更多旅程、人物与氛围。"
+            "value" : "留下更多旅程细节、人物与真实感受。"
           }
         }
       }
@@ -5040,7 +5238,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "移动片段%lld"
+            "value" : "移动瞬间 %lld"
           }
         }
       }
@@ -5073,7 +5271,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "音乐偏好暂时无法作为明确指令执行，这部分只会作为一般说明参考。"
+            "value" : "音乐偏好暂时不能作为明确要求执行，这部分只作为参考说明。"
           }
         }
       }
@@ -5095,7 +5293,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "此版本未能使用音乐"
+            "value" : "这个版本没能加上音乐"
           }
         }
       }
@@ -5106,7 +5304,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "音乐主导"
+            "value" : "音乐为主"
           }
         }
       }
@@ -5117,7 +5315,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "音乐主导声音"
+            "value" : "以音乐为主"
           }
         }
       }
@@ -5283,7 +5481,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无改动——保持当前顺序。"
+            "value" : "未做改动，保持现有顺序。"
           }
         }
       }
@@ -5305,7 +5503,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法从这个片段中提取画面。"
+            "value" : "无法从这个瞬间中提取画面。"
           }
         }
       }
@@ -5316,7 +5514,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "没有同时具备本地视频和已完成分析的片段，暂时无法生成。"
+            "value" : "没有同时具备本地视频和分析结果的瞬间，暂时无法制作。"
           }
         }
       }
@@ -5327,7 +5525,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "还没有片段"
+            "value" : "还没有瞬间"
           }
         }
       }
@@ -5338,7 +5536,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "还没有片段。去拍一个，或在下方添加照片或视频。"
+            "value" : "还没有瞬间。去拍一段，或在下方导入照片、视频。"
           }
         }
       }
@@ -5349,7 +5547,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "不限"
+            "value" : "不指定"
           }
         }
       }
@@ -5360,7 +5558,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "尚未设置顺序——由剪辑自动决定。"
+            "value" : "还没有设置顺序，将交给 AI 安排。"
           }
         }
       }
@@ -5382,7 +5580,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "还没有选择故事时长，请先选择时长再生成。"
+            "value" : "还没选择时长，请先选好再制作。"
           }
         }
       }
@@ -5404,7 +5602,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "暂时没有推荐——可以切换到“我的音乐”，或不加音乐直接生成。"
+            "value" : "暂时没有推荐，可以切换到“我的音乐”，或不加音乐直接制作。"
           }
         }
       }
@@ -5437,7 +5635,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "此视频不可用"
+            "value" : "这部影片暂不支持"
           }
         }
       }
@@ -5459,7 +5657,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "未拍摄"
+            "value" : "尚未拍摄"
           }
         }
       }
@@ -5547,7 +5745,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "持续的活动背景（可选）"
+            "value" : "活动背景信息（可选）"
           }
         }
       }
@@ -5558,7 +5756,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仅使用这些片段"
+            "value" : "只用这些瞬间"
           }
         }
       }
@@ -5626,7 +5824,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "打开故事板以选择和排序片段"
+            "value" : "打开故事板，选择并排列瞬间"
           }
         }
       }
@@ -5637,7 +5835,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "打开故事板以调整片段位置"
+            "value" : "打开故事板，调整瞬间位置"
           }
         }
       }
@@ -5681,7 +5879,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "可选的灵感——将打开拍摄指引"
+            "value" : "可选的灵感，会打开拍摄指引"
           }
         }
       }
@@ -5703,7 +5901,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "其他场景"
+            "value" : "更多场景"
           }
         }
       }
@@ -5714,7 +5912,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "允许穿插其他片段"
+            "value" : "可穿插其他瞬间"
           }
         }
       }
@@ -5758,7 +5956,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "不想反复输入的活动信息——行程、地点、同行的人。"
+            "value" : "不想每次重复输入的信息，比如行程、地点、和谁一起。"
           }
         }
       }
@@ -5838,7 +6036,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从你已拍摄的片段中挑选"
+            "value" : "从已拍下的瞬间中挑选"
           }
         }
       }
@@ -5849,7 +6047,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "固定场景"
+            "value" : "固定这个场景"
           }
         }
       }
@@ -5871,7 +6069,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在规划你的故事…"
+            "value" : "正在构思剪辑…"
           }
         }
       }
@@ -5904,7 +6102,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请换一种说法描述你的指令，以便我应用。"
+            "value" : "请换种说法描述你的要求，我才能照做。"
           }
         }
       }
@@ -5948,7 +6146,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在准备你的片段…"
+            "value" : "正在准备你的瞬间…"
           }
         }
       }
@@ -5970,7 +6168,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在准备你的故事…"
+            "value" : "正在准备…"
           }
         }
       }
@@ -6024,7 +6222,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "已保护 %lld 个片段（为测试而移动，不计入已释放）。"
+                  "value" : "已保护 %lld 个瞬间（测试用，已移动，不计入释放空间）。"
                 }
               }
             }
@@ -6038,7 +6236,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在合成你的故事…"
+            "value" : "正在剪辑你的影片…"
           }
         }
       }
@@ -6060,7 +6258,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "重新生成"
+            "value" : "重新制作"
           }
         }
       }
@@ -6104,7 +6302,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "可以生成你的故事了。"
+            "value" : "可以把这些瞬间剪成影片了。"
           }
         }
       }
@@ -6126,7 +6324,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最近的片段"
+            "value" : "最近的瞬间"
           }
         }
       }
@@ -6137,7 +6335,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最近的片段"
+            "value" : "最近的瞬间"
           }
         }
       }
@@ -6192,7 +6390,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "推荐时长会根据视频类型调整，你也可以自己设定。"
+            "value" : "推荐时长会根据影片类型调整，你也可以自己设定。"
           }
         }
       }
@@ -6203,7 +6401,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "录制"
+            "value" : "拍摄"
           }
         }
       }
@@ -6271,7 +6469,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从顺序中移除片段%lld"
+            "value" : "从顺序中移除瞬间 %lld"
           }
         }
       }
@@ -6282,7 +6480,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "移除此片段"
+            "value" : "移除这个瞬间"
           }
         }
       }
@@ -6293,7 +6491,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "移除这个片段？"
+            "value" : "移除这个瞬间？"
           }
         }
       }
@@ -6304,7 +6502,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "视频渲染失败，请重试。"
+            "value" : "影片渲染失败，请重试。"
           }
         }
       }
@@ -6315,7 +6513,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在渲染你的视频…"
+            "value" : "正在渲染影片…"
           }
         }
       }
@@ -6403,7 +6601,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "恢复 AI 排序"
+            "value" : "恢复 AI 顺序"
           }
         }
       }
@@ -6414,7 +6612,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "重拍 →"
+            "value" : "再拍一次 →"
           }
         }
       }
@@ -6447,7 +6645,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在恢复你的视频…"
+            "value" : "正在恢复你的影片…"
           }
         }
       }
@@ -6480,7 +6678,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "可以复用已拍摄的片段，也可以从相册导入。"
+            "value" : "可以选用已拍下的瞬间，也可以从相册导入。"
           }
         }
       }
@@ -6491,7 +6689,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "修改"
+            "value" : "调整影片"
           }
         }
       }
@@ -6502,7 +6700,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在修改你的故事…"
+            "value" : "正在调整你的影片…"
           }
         }
       }
@@ -6536,7 +6734,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "为完整故事留出空间"
+            "value" : "为完整故事留足时长"
           }
         }
       }
@@ -6646,7 +6844,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "保存到片段"
+            "value" : "存入瞬间"
           }
         }
       }
@@ -6822,7 +7020,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拍摄"
+            "value" : "去拍摄"
           }
         }
       }
@@ -6833,7 +7031,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拍摄 →"
+            "value" : "去拍摄 →"
           }
         }
       }
@@ -6844,7 +7042,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拍摄片段"
+            "value" : "去拍摄"
           }
         }
       }
@@ -6855,7 +7053,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请先拍摄或添加片段。"
+            "value" : "先拍摄或添加一些瞬间吧。"
           }
         }
       }
@@ -7032,7 +7230,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "登录后即可使用 YoTale 的 AI 功能"
+            "value" : "登录后即可使用 AI 功能"
           }
         }
       }
@@ -7054,7 +7252,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "要退出 YoTale 登录吗？"
+            "value" : "要退出登录吗？"
           }
         }
       }
@@ -7065,7 +7263,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "登录已过期，重新打开 YoTale 后将继续分析片段。"
+            "value" : "登录已过期，重新打开 YoTale 后会继续分析瞬间。"
           }
         }
       }
@@ -7131,7 +7329,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "放松一下——我们正在把你的片段编织成故事。"
+            "value" : "歇一会儿，我们正在把你的瞬间剪成影片。"
           }
         }
       }
@@ -7142,7 +7340,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在评估故事时长…"
+            "value" : "正在估算影片时长…"
           }
         }
       }
@@ -7208,7 +7406,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个视频的部分原始素材已不可用。"
+            "value" : "这部影片的部分原始素材已不可用。"
           }
         }
       }
@@ -7219,7 +7417,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "部分提到的片段还没准备好，请稍后重试。"
+            "value" : "你提到的部分瞬间还没准备好，请稍后再试。"
           }
         }
       }
@@ -7230,7 +7428,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "生成新版本时出了点问题。你可以重试。"
+            "value" : "创作新版本时出了点问题，可以再试一次。"
           }
         }
       }
@@ -7307,7 +7505,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "开始一个故事"
+            "value" : "把瞬间，变成故事"
           }
         }
       }
@@ -7318,7 +7516,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在首页开始一个故事，你的作品和短片就会显示在这里。"
+            "value" : "在首页开始一个故事，你的故事和影片都会出现在这里。"
           }
         }
       }
@@ -7329,7 +7527,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "开始一个故事。"
+            "value" : "开始一个新故事。"
           }
         }
       }
@@ -7374,7 +7572,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从片段%lld开始"
+            "value" : "从瞬间 %lld 开始"
           }
         }
       }
@@ -7386,7 +7584,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从片段8开始，去掉片段4，让它更有电影感…"
+            "value" : "从瞬间 8 开始，去掉瞬间 4，更有电影感一点…"
           }
         }
       }
@@ -7398,7 +7596,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "先从山景揭幕开始，展示最精彩的片段，让剪辑跟着音乐走…"
+            "value" : "从山景出现的那一刻开始，挑最精彩的画面，剪辑跟着音乐走…"
           }
         }
       }
@@ -7409,7 +7607,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从…开始"
+            "value" : "从某个瞬间开始"
           }
         }
       }
@@ -7453,7 +7651,7 @@
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "还在分析另外 %lld 个片段——它们就绪后，拍摄指南会更完善。"
+                  "value" : "还有 %lld 个瞬间在分析中，分析完后指南会更完整。"
                 }
               }
             }
@@ -7467,7 +7665,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仍在处理你的故事，比平时花的时间更长。"
+            "value" : "影片仍在制作中，比平时久一些。"
           }
         }
       }
@@ -7478,7 +7676,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仍在处理中。好的剪辑需要多一点时间。"
+            "value" : "还在剪辑中，好的剪辑值得多等一会儿。"
           }
         }
       }
@@ -7522,7 +7720,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 可以"
+            "value" : "可以做到"
           }
         }
       }
@@ -7533,7 +7731,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 可以为你录制的片段标注拍摄地点，让旅行回忆记住那个地方。定位为可选项，仅保存在你的设备上，不会添加到你分享的视频中。"
+            "value" : "YoTale 可以为你拍下的瞬间标注拍摄地点，让旅行回忆留住那个地方。定位是可选的，只保存在你的设备上，也不会出现在你分享的影片里。"
           }
         }
       }
@@ -7544,7 +7742,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 暂时无法做到“%@”——它可以重新剪辑、调整时长、调整顺序、设置转场和更换配乐。你当前的版本已保留，请换一种支持的修改方式试试。"
+            "value" : "YoTale 暂时做不到“%@”。它可以重新剪辑、调整时长和顺序、设置转场、更换配乐。当前版本已保留，换一种可以做到的调整试试。"
           }
         }
       }
@@ -7555,7 +7753,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 暂时无法做到“%@”。要只应用你请求中支持的部分、跳过它吗？"
+            "value" : "YoTale 暂时做不到“%@”。要跳过这部分，只应用其余的调整吗？"
           }
         }
       }
@@ -7566,7 +7764,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 暂时无法开始生成新视频，请稍后再试。"
+            "value" : "暂时无法开始制作新影片，请稍后再试。"
           }
         }
       }
@@ -7654,7 +7852,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 已有足够的素材，你现在就可以生成故事了。"
+            "value" : "素材已经足够，现在就可以制作影片了。"
           }
         }
       }
@@ -7665,7 +7863,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 的 AI 视频生成目前已满负荷，请稍后再试。"
+            "value" : "现在制作影片的人太多了，请稍后再试。"
           }
         }
       }
@@ -7698,7 +7896,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "除非你要求修改，YoTale 会保留现有剪辑。"
+            "value" : "除非你提出修改，YoTale 会保留现有剪辑。"
           }
         }
       }
@@ -7709,7 +7907,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "故事时长"
+            "value" : "影片时长"
           }
         }
       }
@@ -7764,7 +7962,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 会选择合适的感觉"
+            "value" : "YoTale 会挑选合适的感觉"
           }
         }
       }
@@ -7874,7 +8072,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "为片段标注拍摄地点？"
+            "value" : "为瞬间标注拍摄地点？"
           }
         }
       }
@@ -7885,7 +8083,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按片段即可预览 · 关闭后返回相机。"
+            "value" : "点按瞬间即可预览 · 关闭后返回相机。"
           }
         }
       }
@@ -7896,7 +8094,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按片段可预览 · 点按 ✕ 可将其从故事中移除。"
+            "value" : "点按瞬间即可预览 · 点 ✕ 可将它移出这个故事。"
           }
         }
       }
@@ -7907,7 +8105,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按片段即可预览 · 点按“选择”可将片段添加到此故事。"
+            "value" : "点按瞬间即可预览 · 点“选择”把瞬间加入这个故事。"
           }
         }
       }
@@ -7918,7 +8116,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按片段即可预览 · 点按“选择”可为新故事挑选片段。"
+            "value" : "点按瞬间即可预览 · 点“选择”为新故事挑选瞬间。"
           }
         }
       }
@@ -7929,7 +8127,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按选择片段 · 将它们添加到此故事。"
+            "value" : "点按挑选瞬间 · 加入这个故事。"
           }
         }
       }
@@ -7940,7 +8138,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按选择片段 · 用它们创建故事，或将其删除。"
+            "value" : "点按挑选瞬间 · 用它们创建故事，或删除。"
           }
         }
       }
@@ -7951,7 +8149,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "告诉导演有什么变化"
+            "value" : "说说你想调整什么"
           }
         }
       }
@@ -7962,7 +8160,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "告诉导演有什么变化，拍摄脚本就会随之更新——已拍摄和已固定的场景会保留。"
+            "value" : "说说有什么变化，拍摄指南会随之调整；已经拍过和已固定的场景都会保留。"
           }
         }
       }
@@ -7996,7 +8194,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "感谢你的耐心——正在完成你的故事。你可以继续等待，也可以取消。"
+            "value" : "感谢耐心等待，影片马上就好。你可以继续等待，也可以取消。"
           }
         }
       }
@@ -8161,7 +8359,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最精彩的画面，精心剪辑。"
+            "value" : "精选高光画面，节奏更轻快。"
           }
         }
       }
@@ -8172,7 +8370,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最下面的片段"
+            "value" : "最下面的瞬间"
           }
         }
       }
@@ -8216,7 +8414,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "由剪辑自动决定顺序。在上方添加片段即可自己排序。"
+            "value" : "将交给 AI 安排顺序。在上方添加瞬间，就能自己排。"
           }
         }
       }
@@ -8227,7 +8425,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "该片段将从这个故事中移除，不会删除片段库中的原片。"
+            "value" : "这个瞬间会从故事中移除，但不会删除原片。"
           }
         }
       }
@@ -8238,7 +8436,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法读取这个片段的视频。"
+            "value" : "无法读取这个瞬间的视频。"
           }
         }
       }
@@ -8249,7 +8447,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个片段的视频没有可用时长。"
+            "value" : "这个瞬间的视频没有可用时长。"
           }
         }
       }
@@ -8271,7 +8469,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这些片段的原始文件已不在此设备上。请重新添加后再生成故事。"
+            "value" : "这些瞬间的原始文件已不在这台设备上，重新添加后才能制作影片。"
           }
         }
       }
@@ -8282,7 +8480,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "原视频会私密上传到你的 YoTale 账号，即使手机丢失也不会丢。设备上也会保留一份，不会删除任何内容。只有你能访问，不会出现在这台手机上的其他账号中。"
+            "value" : "原视频会私密上传到你的 YoTale 账号，即使手机丢失也能找回。手机上也会保留一份，不会删除任何内容。只有你能查看，这台手机上的其他账号看不到。"
           }
         }
       }
@@ -8293,7 +8491,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法生成这个视频，请重试。"
+            "value" : "这部影片没能渲染出来，请重试。"
           }
         }
       }
@@ -8348,7 +8546,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最上面的片段"
+            "value" : "最上面的瞬间"
           }
         }
       }
@@ -8359,7 +8557,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "可用素材不足以达到这个时长——试试更短的视频。"
+            "value" : "可用素材不够这么长，试试短一点的影片。"
           }
         }
       }
@@ -8370,7 +8568,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "可用的素材还不够生成故事。再拍几个片段后重试吧。"
+            "value" : "可用素材还不够制作影片。再拍几个瞬间后重试吧。"
           }
         }
       }
@@ -8381,7 +8579,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "可用素材约 %1$lld 秒，不足以生成 %2$lld 秒的故事。你可以生成更短的 %3$lld 秒故事，或继续拍摄。"
+            "value" : "可用素材约 %1$lld 秒，不够制作 %2$lld 秒的影片。可以先做一部 %3$lld 秒的短片，或继续拍摄。"
           }
         }
       }
@@ -8392,7 +8590,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "可用素材只有约 %1$lld 秒，还不足以生成 %2$lld 秒的故事。再拍摄或添加一些素材后重试。"
+            "value" : "可用素材只有约 %1$lld 秒，还不够制作 %2$lld 秒的影片。再拍一些或添加素材后重试。"
           }
         }
       }
@@ -8436,7 +8634,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这次修改会改动你没有要求更改的片段，因此已保留当前版本。你可以指明要保留或移动的片段，或使用“生成另一个版本”重新剪辑。"
+            "value" : "这次调整会改动你没要求修改的片段，所以保留了当前版本。可以指明要保留或移动哪些瞬间，或用“再创作一个版本”重新剪一版。"
           }
         }
       }
@@ -8458,7 +8656,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这会永久删除原始素材和分析结果，并将这些片段从用到它们的故事中移除。已生成的视频不受影响。"
+            "value" : "这会永久删除原始照片、视频及分析结果，并把这些瞬间从所有用到它们的故事中移除。已经做好的影片不受影响。"
           }
         }
       }
@@ -8491,7 +8689,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个故事正在生成中。"
+            "value" : "这个故事的影片正在制作中。"
           }
         }
       }
@@ -8502,7 +8700,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个故事将从进行中的故事里移出。你仍可查看片段、生成视频，或随时重新打开。"
+            "value" : "这个故事将移出“进行中”。你仍可查看瞬间、制作影片，或随时重新打开。"
           }
         }
       }
@@ -8513,7 +8711,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个故事将回到进行中的故事。"
+            "value" : "这个故事将回到“进行中”。"
           }
         }
       }
@@ -8557,7 +8755,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "此视频已备份到你的账号。"
+            "value" : "这部影片已备份到你的账号。"
           }
         }
       }
@@ -8568,7 +8766,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "此视频已不可用。"
+            "value" : "这部影片已不可用。"
           }
         }
       }
@@ -8590,7 +8788,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个视频生成于版本记录功能上线之前，无法沿用原有剪辑。请重新生成后再更换音乐。"
+            "value" : "这部影片做于版本记录上线之前，无法沿用原来的剪辑。重新制作后就能更换音乐。"
           }
         }
       }
@@ -8601,7 +8799,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个视频生成于版本记录功能上线之前，无法复用原来的剪辑。请重新生成后再更换音乐。"
+            "value" : "这部影片做于版本记录上线之前，无法沿用原来的剪辑。重新制作后就能更换音乐。"
           }
         }
       }
@@ -8646,7 +8844,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "重新处理未能分析的片段"
+            "value" : "重新分析失败的瞬间"
           }
         }
       }
@@ -8657,7 +8855,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "裁剪、调整顺序和挑选片段"
+            "value" : "裁剪、排序和挑选片段"
           }
         }
       }
@@ -8757,7 +8955,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "开启自动备份时已经执行过此操作。如果仍有片段未备份，可以再次使用。"
+            "value" : "开启自动备份时已经做过这一步。如果仍有瞬间没有备份，可以再执行一次。"
           }
         }
       }
@@ -8911,7 +9109,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "取消固定场景"
+            "value" : "取消固定"
           }
         }
       }
@@ -8933,7 +9131,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更新"
+            "value" : "调整"
           }
         }
       }
@@ -8944,7 +9142,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更新指南"
+            "value" : "调整指南"
           }
         }
       }
@@ -8966,7 +9164,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在更新拍摄脚本…"
+            "value" : "正在调整拍摄指南…"
           }
         }
       }
@@ -9033,7 +9231,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仅在 Wi-Fi 下上传。片段会等到连上 Wi-Fi 后再上传。"
+            "value" : "仅在 Wi-Fi 下上传，瞬间会等连上 Wi-Fi 后再上传。"
           }
         }
       }
@@ -9066,7 +9264,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "使用每个片段"
+            "value" : "包含所有瞬间"
           }
         }
       }
@@ -9077,7 +9275,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "只使用选中的片段"
+            "value" : "只用选中的瞬间"
           }
         }
       }
@@ -9088,7 +9286,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "先用最美的风景画面"
+            "value" : "先放最美的风景"
           }
         }
       }
@@ -9176,7 +9374,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "视频类型"
+            "value" : "影片类型"
           }
         }
       }
@@ -9242,7 +9440,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "视觉灵感 · 并非你实际画面的预览"
+            "value" : "视觉灵感 · 并非你的实际画面"
           }
         }
       }
@@ -9310,7 +9508,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "其他片段怎么处理？"
+            "value" : "其他瞬间怎么处理？"
           }
         }
       }
@@ -9321,7 +9519,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 可以编辑什么？"
+            "value" : "YoTale 能帮你怎么剪？"
           }
         }
       }
@@ -9332,7 +9530,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "想修改什么？"
+            "value" : "想怎么调整？"
           }
         }
       }
@@ -9343,7 +9541,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "有什么新情况"
+            "value" : "有什么新变化"
           }
         }
       }
@@ -9354,7 +9552,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "是什么场合？（可选）"
+            "value" : "这次要拍什么？（可选）"
           }
         }
       }
@@ -9376,7 +9574,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "开启后，这部手机上的片段——包括已有的和登录期间新增的——都会备份到你的 YoTale 账号。原片始终保留在这台 iPhone 上，不会删除任何内容。"
+            "value" : "开启后，这台手机上的瞬间（包括已有的和登录期间新增的）都会备份到你的 YoTale 账号。原片始终保留在这台 iPhone 上，不会删除任何内容。"
           }
         }
       }
@@ -9387,7 +9585,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "为什么重要"
+            "value" : "为什么拍这一幕"
           }
         }
       }
@@ -9420,7 +9618,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在撰写拍摄脚本…"
+            "value" : "正在撰写拍摄指南…"
           }
         }
       }
@@ -9442,7 +9640,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你已有视频正在生成中，请等待完成后再试。"
+            "value" : "你已有影片正在制作中，请等它们完成后再试。"
           }
         }
       }
@@ -9465,7 +9663,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "一切就绪。"
+            "value" : "准备好了。"
           }
         }
       }
@@ -9487,7 +9685,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "素材已经足够"
+            "value" : "素材已经够了"
           }
         }
       }
@@ -9509,7 +9707,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你已达到 AI 视频生成的使用上限，请稍后再试。"
+            "value" : "AI 影片制作已达使用上限，请稍后再试。"
           }
         }
       }
@@ -9520,7 +9718,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你已达到本月 AI 视频生成的使用上限，下个月会重置。"
+            "value" : "本月的 AI 影片制作额度已用完，下个月会重置。"
           }
         }
       }
@@ -9531,7 +9729,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你已达到今天的视频生成上限，请明天再试。"
+            "value" : "今天的影片制作次数已用完，请明天再来。"
           }
         }
       }
@@ -9554,7 +9752,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你拍下的回忆"
+            "value" : "珍藏每一个瞬间"
           }
         }
       }
@@ -9565,7 +9763,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无论是否登录，你拍摄的片段和保存的故事都会保留在这台设备上。"
+            "value" : "无论是否登录，你的瞬间和故事都会保留在这台设备上。"
           }
         }
       }
@@ -9587,7 +9785,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "保持当前顺序。在上方添加片段即可调整位置。"
+            "value" : "保持现有顺序。在上方添加瞬间即可调整位置。"
           }
         }
       }
@@ -9598,7 +9796,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "当前视频仍可使用。你可以先离开，稍后再回来。"
+            "value" : "当前影片仍可观看。你可以先离开，稍后再回来。"
           }
         }
       }
@@ -9642,7 +9840,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的要求无法完全应用到这些素材上，其中部分内容可能相互冲突（例如顺序要求，或排除后剩下的素材太少）。请调整后再试。"
+            "value" : "你的要求无法完全应用到这些素材上，部分内容可能相互冲突（比如顺序要求，或去掉太多后剩下的素材不够）。请调整后再试。"
           }
         }
       }
@@ -9653,7 +9851,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的片段和故事会保留在这台设备上。再次使用 YoTale 的 AI 功能时需要重新登录。"
+            "value" : "你的瞬间和故事会保留在这台设备上。之后使用 AI 功能时需要重新登录。"
           }
         }
       }
@@ -9664,7 +9862,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的片段仍在分析中。"
+            "value" : "你的瞬间还在分析中。"
           }
         }
       }
@@ -9675,7 +9873,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自生成以来，你的片段有所变化。"
+            "value" : "这部影片做好后，你的瞬间有了变化。"
           }
         }
       }
@@ -9686,7 +9884,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这部手机上尚未备份的片段，以及你登录期间新增的片段，会私密上传到你的 YoTale 账号，即使手机丢失也不会丢。备份后，片段会与此账号关联。原片会保留在这台设备上，不会删除任何内容。除非开启蜂窝数据，否则仅在 Wi-Fi 下上传。只有你能访问你的备份。"
+            "value" : "这台手机上尚未备份的瞬间，以及你登录期间新增的瞬间，都会私密上传到你的 YoTale 账号，即使手机丢失也能找回。备份后，瞬间会归属此账号。原片仍保留在这台设备上，不会删除任何内容。未开启蜂窝数据时，仅在 Wi-Fi 下上传。只有你能查看自己的备份。"
           }
         }
       }
@@ -9697,7 +9895,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的片段会显示在这里"
+            "value" : "你的瞬间会出现在这里"
           }
         }
       }
@@ -9708,7 +9906,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "新版本已就绪"
+            "value" : "新版本做好了"
           }
         }
       }
@@ -9730,7 +9928,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的作品与短片"
+            "value" : "你的故事，都在这里"
           }
         }
       }
@@ -9763,7 +9961,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的拍摄脚本"
+            "value" : "拍摄指南"
           }
         }
       }
@@ -9785,7 +9983,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的故事已经很完整了。可以继续拍摄，也可以现在就生成。"
+            "value" : "这些瞬间已经足够讲好这个故事了。可以继续拍，也可以现在就制作影片。"
           }
         }
       }
@@ -9796,7 +9994,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的故事已准备就绪。"
+            "value" : "故事已建好，去拍下第一个瞬间吧。"
           }
         }
       }
@@ -9807,7 +10005,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的故事正在成形。"
+            "value" : "你的故事，正慢慢成形。"
           }
         }
       }
@@ -9818,7 +10016,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的文字要求以 %1$@ 结尾，但当前顺序以 %2$@ 结尾。请在“排序”中把想要的片段拖到最下面，或修改文字。"
+            "value" : "你的文字要求用 %1$@ 结尾，但当前顺序的结尾是 %2$@。请在“调整顺序”中把想要的瞬间拖到最下面，或修改文字。"
           }
         }
       }
@@ -9829,7 +10027,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的文字要求以 %1$@ 结尾，但你的顺序以 %2$@ 结尾。请在“排序片段”中把想要的片段拖到最下面，或修改文字。"
+            "value" : "你的文字要求用 %1$@ 结尾，但当前顺序的结尾是 %2$@。请在“调整顺序”中把想要的瞬间拖到最下面，或修改文字。"
           }
         }
       }
@@ -9840,7 +10038,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的文字要求以 %1$@ 开头，但当前顺序以 %2$@ 开头。请在“排序”中把想要的片段拖到最上面，或修改文字。"
+            "value" : "你的文字要求从 %1$@ 开始，但当前顺序的开头是 %2$@。请在“调整顺序”中把想要的瞬间拖到最上面，或修改文字。"
           }
         }
       }
@@ -9851,7 +10049,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的文字要求以 %1$@ 开头，但你的顺序以 %2$@ 开头。请在“排序片段”中把想要的片段拖到最上面，或修改文字。"
+            "value" : "你的文字要求从 %1$@ 开始，但当前顺序的开头是 %2$@。请在“调整顺序”中把想要的瞬间拖到最上面，或修改文字。"
           }
         }
       }
@@ -9862,7 +10060,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的视频已就绪"
+            "value" : "你的影片做好了"
           }
         }
       }

@@ -504,7 +504,7 @@ struct CustomizeYourStoryView: View {
                 switch outcome.kind {
                 case .serviceFailure:
                     retryableInstruction = snapshotText     // preserve draft + offer Retry (#2)
-                    clarification = (outcome.blocking.first ?? L10n.t("Couldn't interpret that right now.")) + musicSuffix
+                    clarification = (outcome.blocking.first.map { ServerMessageLocalizer.present($0) } ?? L10n.t("Couldn't interpret that right now.")) + musicSuffix
                     return
                 case .clarify:
                     // Thumbnail clarification when numeric refs are unresolved, else text (#2).
@@ -588,9 +588,9 @@ struct CustomizeYourStoryView: View {
         }
         if !o.unresolved.isEmpty {
             // "Add Moment reference" no longer exists on this screen; point at what does.
-            return L10n.t("I couldn’t apply: “\(o.unresolved.joined(separator: "”, “"))”. Try rephrasing it, or use “Arrange Moments” to set the order.")
+            return L10n.t("I couldn’t apply: “\(ServerMessageLocalizer.presentUnresolved(o.unresolved).joined(separator: "”, “"))”. Try rephrasing it, or use “Arrange Moments” to set the order.")
         }
-        if let b = o.blocking.first { return b }
+        if let b = o.blocking.first { return ServerMessageLocalizer.present(b) }
         return L10n.t("Please rephrase your instruction so I can apply it.")
     }
 

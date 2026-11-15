@@ -42,7 +42,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 使用相机来拍摄你的片段。"
+            "value" : "YoTale 需要使用相机，来记录你的瞬间。"
           }
         }
       }
@@ -59,7 +59,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 可以为你拍摄的片段标注拍摄地点，让旅行回忆记住那个地方。位置信息为可选项，也不会添加到你分享的视频中。"
+            "value" : "YoTale 可以为你拍下的瞬间标注拍摄地点，让旅行回忆留住那个地方。定位是可选的，也不会出现在你分享的影片里。"
           }
         }
       }
@@ -76,7 +76,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 会在你拍摄片段时录制声音。"
+            "value" : "YoTale 会在你拍摄时同步录制声音。"
           }
         }
       }
@@ -93,7 +93,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 会把你拍摄的片段保存一份到“照片”，这样你在 YoTale 之外也能保留它们。"
+            "value" : "YoTale 会把你拍下的瞬间存一份到“照片”，这样在 YoTale 之外也能随时找到。"
           }
         }
       }
