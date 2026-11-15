@@ -5,13 +5,10 @@ import Foundation
 // optional `content_language` request field and is NEVER persisted (derived again from the Story each time), so
 // existing Stories need no migration and changing the app language never regenerates or rewrites old content.
 //
-// Policy (first match wins):
-//   1. An EXPLICIT language request in the user's text ("in English", "请用中文", "用英文回答"…).
-//   2. (Reserved) a Story-specific stored preference — none exists today; adding one later slots in here.
-//   3. The language of the SUBSTANTIVE Story text (title + description + event context + the instruction).
-//      "Substantive" = at least `minLetters` letters/characters once digits, punctuation and URLs are ignored, so an
-//      unrelated short input ("ok", "好", "3") never flips the language.
-//   4. The app language.
+// Policy (owner decision 2026-11-15): ONE language setting. The Story's generated content ALWAYS follows the app
+// language, whatever language the user types, and whatever the Story title/notes are written in. Nothing here looks at
+// the user's text to pick the output language. (`substantiveTexts` is kept only so `requestValue` can tell whether a
+// Chinese note sits inside an English-app request, which needs an explicit "en" so the output stays English.)
 //
 // The app language is never changed by any of this.
 enum ContentLanguageResolver {
@@ -22,15 +19,7 @@ enum ContentLanguageResolver {
     static func resolve(explicitRequestIn texts: [String] = [],
                         substantiveTexts: [String],
                         appLanguage: ResolvedLanguage) -> ContentLanguage {
-        // 1. explicit request
-        for t in texts.reversed() {            // most recent instruction wins
-            if let e = explicitLanguageRequest(in: t) { return e }
-        }
-        // 3. substantive Story text
-        let joined = substantiveTexts.joined(separator: "\n")
-        if let d = dominantLanguage(of: joined) { return d }
-        // 4. app language
-        return appLanguage.contentLanguage
+        appLanguage.contentLanguage
     }
 
     /// Dominant language of `text`, or nil when there is not enough signal.

@@ -68,38 +68,23 @@ final class AppLanguageTests: XCTestCase {
 
     // MARK: content language policy
 
-    func test_content_chineseDescription_withEnglishApp_isChinese() {
-        let r = ContentLanguageResolver.resolve(substantiveTexts: ["京都三日游", "清水寺、锦市场和夜晚的鸭川"],
-                                                appLanguage: .en)
-        XCTAssertEqual(r, .zhHans)
-    }
-
-    func test_content_englishDescription_withChineseApp_isEnglish() {
-        let r = ContentLanguageResolver.resolve(substantiveTexts: ["Three days in New York", "restaurants and a Broadway show"],
-                                                appLanguage: .zhHans)
-        XCTAssertEqual(r, .en)
-    }
-
-    func test_content_shortUnrelatedInput_doesNotFlipLanguage() {
-        // Story is English; user types "好" — insufficient signal alone, and the Story text still decides.
-        let r = ContentLanguageResolver.resolve(substantiveTexts: ["Three days in New York", "好"], appLanguage: .zhHans)
-        XCTAssertEqual(r, .en)
-        // No Story text at all and only a tiny input → app language.
-        XCTAssertEqual(ContentLanguageResolver.resolve(substantiveTexts: ["ok"], appLanguage: .zhHans), .zhHans)
-        XCTAssertEqual(ContentLanguageResolver.resolve(substantiveTexts: [""], appLanguage: .en), .en)
-    }
-
-    func test_content_explicitRequest_winsOverEverything() {
+    func test_content_alwaysFollowsAppLanguage_whateverTheText() {
+        let zh = ["京都三日游", "清水寺、锦市场和夜晚的鸭川"], en = ["Three days in New York", "restaurants and a Broadway show"]
+        for texts in [zh, en, ["我们去 Kyoto 看樱花"], ["ok"], [""]] {
+            XCTAssertEqual(ContentLanguageResolver.resolve(substantiveTexts: texts, appLanguage: .zhHans), .zhHans)
+            XCTAssertEqual(ContentLanguageResolver.resolve(substantiveTexts: texts, appLanguage: .en), .en)
+        }
+        // Even an explicit "in English" does not change it: one language setting, no per-text overrides.
         XCTAssertEqual(ContentLanguageResolver.resolve(explicitRequestIn: ["Please answer in English"],
-                                                       substantiveTexts: ["京都三日游，清水寺"], appLanguage: .zhHans), .en)
-        XCTAssertEqual(ContentLanguageResolver.resolve(explicitRequestIn: ["请用中文回答"],
-                                                       substantiveTexts: ["Three days in New York"], appLanguage: .en), .zhHans)
-        XCTAssertEqual(ContentLanguageResolver.resolve(explicitRequestIn: ["用英文写"],
-                                                       substantiveTexts: [], appLanguage: .zhHans), .en)
+                                                       substantiveTexts: ["Three days in New York"], appLanguage: .zhHans), .zhHans)
     }
 
-    func test_content_contradictoryExplicit_isIgnored() {
-        XCTAssertNil(ContentLanguageResolver.explicitLanguageRequest(in: "in English and in Chinese"))
+    func test_content_requestValue_followsAppLanguage() {
+        XCTAssertEqual(ContentLanguageResolver.requestValue(substantiveTexts: ["TMB Hiking"], appLanguage: .zhHans), "zh-Hans")
+        // English app + pure-English text: nothing sent (request byte-identical to before).
+        XCTAssertNil(ContentLanguageResolver.requestValue(substantiveTexts: ["TMB Hiking trip"], appLanguage: .en))
+        // English app + Chinese note: explicit "en" so the output stays English.
+        XCTAssertEqual(ContentLanguageResolver.requestValue(substantiveTexts: ["京都三日游"], appLanguage: .en), "en")
     }
 
     func test_content_mixedText_usesDominantScript() {
