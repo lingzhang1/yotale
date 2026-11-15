@@ -564,7 +564,10 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                                              "shipped_retained_candidate", "best_valid_from_attempt",
                                              "structural_repair", "repair_budget",
                                              # deterministic duration fit: before/after/target, what changed
-                                             "duration_fit")}
+                                             "duration_fit",
+                                             # Editorial vNext D3: deterministic selection diagnostics (no media,
+                                             # no prompts, opaque 8-char Moment refs; computed, not model-written)
+                                             "selection")}
         diag_out["planning_mode"] = "multimodal" if images else "text_only"
         diag_out["sheet_count"] = len(images)
         # P0 EVIDENCE ACCOUNTING (Editorial Pipeline v2). Persist the device's reconciling funnel census (stages

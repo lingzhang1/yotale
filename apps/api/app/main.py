@@ -175,6 +175,10 @@ _MM_EDIT_ALLOWED_TYPES = {"image/jpeg", "image/jpg"}
 
 # MVP application-level creative brief (VERSIONED). Injected into the Edit Planner USER message only — the
 # frozen v5.2 system body is never touched. Owner-authored 2026-10-13. Bump the version suffix on any edit.
+# LEGACY (edit_plan <= 5.3) one-size creative brief, mirrored by the iOS client, which sends it as the `creative_brief`
+# form field on every multimodal create. Under edit_plan >= 5.5 the planner IGNORES the client's brief text when an
+# `editorial_type` is present and uses the server-owned, type-aware briefs in `edit_planner._V55_BRIEFS`, so an older
+# client can never feed Full Story this Highlights-style brief. The client field still gates the optional critique pass.
 MM_CREATIVE_BRIEF_VERSION = "shortform_mvp/1"
 MM_CREATIVE_BRIEF = (
     "When user intent does not require chronology, prioritize visually engaging and meaningful footage. "
