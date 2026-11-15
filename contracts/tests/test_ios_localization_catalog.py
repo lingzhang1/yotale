@@ -26,7 +26,9 @@ def test_glossary_terms_are_consistent():
         e = s[k]["localizations"]["zh-Hans"]
         return (e.get("stringUnit") or e["variations"]["plural"]["other"]["stringUnit"])["value"]
 
-    assert zh("Moments") == "片段"
+    assert zh("Moments") == "瞬间"
+    assert zh("Moment %lld") == "瞬间 %lld"
+    assert zh("Your Shooting Script") == "拍摄指南"
     assert zh("Story Guide") == "拍摄指南"
     assert zh("Highlights") == "精彩集锦"
     assert zh("Full Story") == "完整故事"
@@ -50,3 +52,56 @@ def test_info_plist_permissions_localized():
     for k in ("NSCameraUsageDescription", "NSMicrophoneUsageDescription", "NSPhotoLibraryUsageDescription",
               "NSPhotoLibraryAddUsageDescription", "NSLocationWhenInUseUsageDescription"):
         assert d[k]["localizations"]["zh-Hans"]["stringUnit"]["value"].strip()
+
+
+def _zh_values():
+    s = json.loads(CATALOG.read_text(encoding="utf8"))["strings"]
+    out = {}
+    for k, v in s.items():
+        if v.get("shouldTranslate") is False:
+            continue
+        loc = v["localizations"]["zh-Hans"]
+        out[k] = (loc.get("stringUnit") or loc["variations"]["plural"]["other"]["stringUnit"])["value"]
+    return out
+
+
+def test_moment_entity_is_shunjian_not_pianduan():
+    """Copy pass v2: the product entity Moment is 瞬间. 片段 is allowed only where the English talks about an actual
+    clip/excerpt, so any key mentioning "moment" must not render as 片段."""
+    for k, z in _zh_values().items():
+        if "moment" in k.lower() and "clip" not in k.lower():
+            assert "片段" not in z, f"{k!r} -> {z!r}: Moment must be 瞬间"
+
+
+def test_story_count_label_is_not_concatenated_awkwardly():
+    z = _zh_values()
+    assert z["%lld in %@"] == "%2$@ · %1$lld 个瞬间"   # was "%2$@ 中共 %1$lld 个" ("…女孩 中共 20 个")
+    assert "中共" not in "".join(z.values())
+    assert z["%lld in your library"] == "共 %lld 个"
+
+
+def test_coverage_status_labels_match_semantics():
+    z = _zh_values()
+    assert z["Not captured"] == "尚未拍摄"
+    assert z["Covered"] == "素材充足"
+    assert z["Looking strong"] == "已有相关素材"    # owner decision; was 看起来不错 (a generic positive)
+
+
+def test_alias_keys_keep_english_identical():
+    """Keys that differ from their English text (sentence-form Moment number, Arrange sheet title) must carry an
+    explicit English value equal to the original English, so the English UI is unchanged."""
+    s = json.loads(CATALOG.read_text(encoding="utf8"))["strings"]
+    for key, english in {"Moment %lld (in a sentence)": "Moment %lld",
+                         "Arrange Moments (sheet title)": "Arrange Moments"}.items():
+        assert s[key]["localizations"]["en"]["stringUnit"]["value"] == english
+
+
+def test_owner_numbering_and_arrange_decisions():
+    z = _zh_values()
+    assert z["Moment %lld"] == "瞬间 %lld"                       # compact labels / chips
+    assert z["Moment %lld (in a sentence)"] == "第 %lld 个瞬间"   # inside sentences
+    assert z["Moment %lld doesn't exist in this Story."] == "这个故事里没有第 %lld 个瞬间。"
+    assert z["Arrange Moments (sheet title)"] == "调整顺序"
+    assert z["Arrange"] == "调整顺序"
+    assert z["Arrange Moments"] == "调整瞬间顺序"
+    assert z["Revise"] == "调整影片"

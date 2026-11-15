@@ -132,7 +132,7 @@ struct ContinuousCaptureView: View {
             Button("Enable location") { CaptureLocationService.shared.requestWhenInUseIfNeeded() }
             Button("Not now", role: .cancel) {}
         } message: {
-            Text("Story can tag the Moments you record with where you captured them, so your travel memories remember the place. Location is optional, stays on your device, and is never added to the videos you share.")
+            Text("YoTale can tag the Moments you record with where you captured them, so your travel memories remember the place. Location is optional. It is saved with each Moment, and it is attached to the copy saved to your Photos library.")
         }
         // Phase 1: the recent-Moment thumbnail opens the GLOBAL library in a browse-only
         // (.recentBrowse) cover PRESENTED OVER the camera — the camera session beneath is

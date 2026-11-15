@@ -85,7 +85,7 @@ struct ArrangeMomentsSheet: View {
                 .padding(StoryTheme.screenPadding)
             }
             .background(StoryTheme.ink)
-            .navigationTitle("Arrange Moments")
+            .navigationTitle(L10n.t("Arrange Moments (sheet title)"))   // zh: 调整顺序 inside the sequence UI
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -334,8 +334,8 @@ struct ArrangeMomentsSheet: View {
                 : L10n.t("The editor will choose the order. Add Moments above to arrange them yourself.")
         }
         let nums = orderedIds.compactMap { number($0) }.map(String.init).joined(separator: L10n.current == .zhHans ? "、" : ", ")
-        let first = orderedIds.first.flatMap { number($0) }.map { L10n.t("Moment \($0)") } ?? L10n.t("The top Moment")
-        let last = orderedIds.last.flatMap { number($0) }.map { L10n.t("Moment \($0)") } ?? L10n.t("the bottom Moment")
+        let first = orderedIds.first.flatMap { number($0) }.map { L10n.momentInSentence($0) } ?? L10n.t("The top Moment")
+        let last = orderedIds.last.flatMap { number($0) }.map { L10n.momentInSentence($0) } ?? L10n.t("the bottom Moment")
         let ends = orderedIds.count >= 2 ? L10n.t("\(first) will open the video and \(last) will end it") : L10n.t("\(first) will open the video")
         if mode == .revise {
             return L10n.t("\(ends). Moments \(nums) will follow this intended order. The rest of your video stays as it is. If the footage can't fully allow it, the result says so rather than forcing it.")

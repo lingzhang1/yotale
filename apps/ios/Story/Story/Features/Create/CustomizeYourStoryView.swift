@@ -126,7 +126,7 @@ struct CustomizeYourStoryView: View {
     /// user sees exactly what is saved (e.g. "Start with Moment 1", "Moment 6 right after Moment 1"). Part B.
     static func savedDirectiveLines(_ d: ResolvedDirectives?, numbering: StoryMomentNumbering) -> [String] {
         guard let d, !d.isEmpty else { return [] }
-        func n(_ id: UUID) -> String { numbering.number(forId: id).map { L10n.t("Moment \($0)") } ?? L10n.t("a Moment") }
+        func n(_ id: UUID) -> String { numbering.number(forId: id).map { L10n.momentInSentence($0) } ?? L10n.t("a Moment") }
         let sep = L10n.current == .zhHans ? "、" : ", "
         var lines: [String] = []
         if let o = d.opening { lines.append(L10n.t("Start with \(n(o))")) }
@@ -249,7 +249,7 @@ struct CustomizeYourStoryView: View {
     private static func sequenceConflictMessage(_ conflicts: [MomentSequence.Conflict],
                                                 numbering: StoryMomentNumbering) -> String? {
         func names(_ ids: [UUID]) -> String {
-            ids.compactMap { numbering.number(forId: $0) }.sorted().map { L10n.t("Moment \($0)") }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
+            ids.compactMap { numbering.number(forId: $0) }.sorted().map { L10n.momentInSentence($0) }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
         }
         for c in conflicts {
             switch c {
@@ -504,7 +504,7 @@ struct CustomizeYourStoryView: View {
                 switch outcome.kind {
                 case .serviceFailure:
                     retryableInstruction = snapshotText     // preserve draft + offer Retry (#2)
-                    clarification = (outcome.blocking.first ?? L10n.t("Couldn't interpret that right now.")) + musicSuffix
+                    clarification = (outcome.blocking.first.map { ServerMessageLocalizer.present($0, numbering: numbering) } ?? L10n.t("Couldn't interpret that right now.")) + musicSuffix
                     return
                 case .clarify:
                     // Thumbnail clarification when numeric refs are unresolved, else text (#2).
@@ -583,14 +583,14 @@ struct CustomizeYourStoryView: View {
     /// use the picker — never silently dropped (#2/#6).
     private func clarificationText(_ o: InterpretationOutcome) -> String {
         if !o.unresolvedMomentNumbers.isEmpty {
-            let list = o.unresolvedMomentNumbers.map { L10n.t("Moment \($0)") }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
+            let list = o.unresolvedMomentNumbers.map { L10n.momentInSentence($0) }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
             return L10n.t("\(list) couldn't be matched (this Story has \(numbering.count)). Choose Moments with “Arrange Moments”, or rephrase.")
         }
         if !o.unresolved.isEmpty {
             // "Add Moment reference" no longer exists on this screen; point at what does.
-            return L10n.t("I couldn’t apply: “\(o.unresolved.joined(separator: "”, “"))”. Try rephrasing it, or use “Arrange Moments” to set the order.")
+            return L10n.t("I couldn’t apply: “\(ServerMessageLocalizer.presentUnresolved(o.unresolved).joined(separator: "”, “"))”. Try rephrasing it, or use “Arrange Moments” to set the order.")
         }
-        if let b = o.blocking.first { return b }
+        if let b = o.blocking.first { return ServerMessageLocalizer.present(b, numbering: numbering) }
         return L10n.t("Please rephrase your instruction so I can apply it.")
     }
 

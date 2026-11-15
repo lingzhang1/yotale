@@ -130,6 +130,13 @@ enum L10n {
         return String(localized: value, bundle: bundle(for: lang), locale: lang.locale)
     }
 
+    /// A Moment's display number INSIDE a sentence ("Moment 8" / 「第 8 个瞬间」). Compact labels and chips use
+    /// `L10n.t("Moment \(n)")` instead ("Moment 8" / 「瞬间 8」). Same English text, so English is unchanged; the
+    /// catalog entry for this key carries an explicit English value. Both Chinese forms parse to the same Moment.
+    static func momentInSentence(_ n: Int) -> String { t("Moment \(n) (in a sentence)") }
+
+    static func momentInSentence(_ n: Int, in lang: ResolvedLanguage) -> String { t("Moment \(n) (in a sentence)", in: lang) }
+
     /// Localized string for an explicit language (tests, previews).
     static func t(_ value: String.LocalizationValue, in lang: ResolvedLanguage) -> String {
         String(localized: value, bundle: bundle(for: lang), locale: lang.locale)
