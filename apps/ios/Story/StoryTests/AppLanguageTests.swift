@@ -74,15 +74,19 @@ final class AppLanguageTests: XCTestCase {
         XCTAssertEqual(r, .zhHans)
     }
 
-    func test_content_englishDescription_withChineseApp_isEnglish() {
+    func test_content_englishDescription_withChineseApp_isChinese() {
         let r = ContentLanguageResolver.resolve(substantiveTexts: ["Three days in New York", "restaurants and a Broadway show"],
                                                 appLanguage: .zhHans)
-        XCTAssertEqual(r, .en)
+        XCTAssertEqual(r, .zhHans)   // Chinese UI -> Chinese Guide even for an English Story
+        // ...unless the user explicitly asks for English.
+        XCTAssertEqual(ContentLanguageResolver.resolve(explicitRequestIn: ["please write the guide in English"],
+                                                       substantiveTexts: ["Three days in New York"],
+                                                       appLanguage: .zhHans), .en)
     }
 
     func test_content_shortUnrelatedInput_doesNotFlipLanguage() {
         // Story is English; user types "好" — insufficient signal alone, and the Story text still decides.
-        let r = ContentLanguageResolver.resolve(substantiveTexts: ["Three days in New York", "好"], appLanguage: .zhHans)
+        let r = ContentLanguageResolver.resolve(substantiveTexts: ["Three days in New York", "好"], appLanguage: .en)
         XCTAssertEqual(r, .en)
         // No Story text at all and only a tiny input → app language.
         XCTAssertEqual(ContentLanguageResolver.resolve(substantiveTexts: ["ok"], appLanguage: .zhHans), .zhHans)

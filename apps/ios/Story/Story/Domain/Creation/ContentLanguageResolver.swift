@@ -9,6 +9,7 @@ import Foundation
 //   1. An EXPLICIT language request in the user's text ("in English", "请用中文", "用英文回答"…).
 //   2. (Reserved) a Story-specific stored preference — none exists today; adding one later slots in here.
 //   3. The language of the SUBSTANTIVE Story text (title + description + event context + the instruction).
+//      Exception: English Story text under the Chinese app language resolves to Chinese (owner decision 2026-11-15).
 //      "Substantive" = at least `minLetters` letters/characters once digits, punctuation and URLs are ignored, so an
 //      unrelated short input ("ok", "好", "3") never flips the language.
 //   4. The app language.
@@ -28,7 +29,13 @@ enum ContentLanguageResolver {
         }
         // 3. substantive Story text
         let joined = substantiveTexts.joined(separator: "\n")
-        if let d = dominantLanguage(of: joined) { return d }
+        if let d = dominantLanguage(of: joined) {
+            // A Chinese-UI user reads the Guide / Shooting Ideas in Chinese even when the Story's own title and
+            // notes are English ("TMB Hiking"). Writing Chinese always wins; English text only wins when the app
+            // is English. To get English output under the Chinese UI, ask for it ("in English") — rule 1.
+            if d == .en && appLanguage == .zhHans { return .zhHans }
+            return d
+        }
         // 4. app language
         return appLanguage.contentLanguage
     }
