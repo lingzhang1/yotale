@@ -106,3 +106,12 @@ def test_compare_warns_when_critique_was_on():
     assert any(x.startswith("CRITIQUE ON") and "STORY_CRITIQUE_REVISION" in x for x in w)
     assert not [x for x in E.comparison_warnings([E.job_metrics(_job("cccccccc", "highlights", None, 90, 100, 95, 20))])
                 if x.startswith(("CRITIQUE", "PLANNER CALLS"))]
+
+
+def test_compare_requires_identical_request_fingerprints_for_a_prompt_only_claim():
+    a = _job("aaaaaaaa", "highlights", None, 90, 150, 100, 20); a["payload_fingerprint"] = "f" * 64
+    b = _job("bbbbbbbb", "highlights", None, 90, 95, 91, 22, ver="edit_plan/5.5"); b["payload_fingerprint"] = "e" * 64
+    w = " ".join(E.comparison_warnings([E.job_metrics(a), E.job_metrics(b)]))
+    assert "NOT MATCHED (highlights)" in w and "identical source evidence" in w
+    b["payload_fingerprint"] = "f" * 64
+    assert "NOT MATCHED" not in " ".join(E.comparison_warnings([E.job_metrics(a), E.job_metrics(b)]))

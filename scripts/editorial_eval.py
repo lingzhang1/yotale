@@ -298,6 +298,7 @@ def job_metrics(job: dict, au_moments: list[dict] | None = None, label: str | No
         "input_tokens": d.get("input_tokens"), "output_tokens": d.get("output_tokens"), "est_cost_usd": cost,
         "job_latency_s": round(updated - created, 1) if (created is not None and updated is not None) else None,
         "api_build": d.get("api_build_sha"), "worker_build": d.get("worker_build_sha"),
+        "fingerprint": (str(job.get("payload_fingerprint") or "")[:12] or None),
         "directive_keys": ",".join(rd.get("directive_keys") or []) or None,
         **(_coverage(segs, moments) if moments else {}),
     }
@@ -312,6 +313,10 @@ def comparison_warnings(rows: list[dict]) -> list[str]:
         if len({r["operation"] for r in rs}) > 1:
             w.append(f"INVALID COMPARISON ({t}): mixes operations {sorted({r['operation'] for r in rs})}; "
                      "an Explore must not be compared with an Original to claim editorial superiority.")
+        fps = {r["fingerprint"] for r in rs if r.get("fingerprint")}
+        if len(fps) > 1 and len({r["prompt_version"] for r in rs}) > 1:
+            w.append(f"NOT MATCHED ({t}): the request payload fingerprints differ ({sorted(fps)}), so the baseline and "
+                     "candidate did not receive identical source evidence; do not claim a prompt-only difference.")
         if len({r["target_s"] for r in rs}) > 1:
             w.append(f"NOT COMPARABLE ({t}): different target durations {sorted({r['target_s'] for r in rs if r['target_s']})}.")
         if len({r["moments"] for r in rs if r["moments"]}) > 1:
@@ -333,7 +338,7 @@ COLS = ["label", "prompt_version", "editorial_type", "operation", "target_s", "m
         "pre_fit_total_s", "pre_fit_overshoot_pct", "delivered_s", "delivered_overshoot_pct", "shots", "distinct",
         "pre_fit_mean_s", "mean_s", "median_s", "fit_changes", "fit_dropped", "payoff_shots", "opening_is_payoff",
         "unused_payoff_moments", "payoff_window_coverage", "narrative_candidate_coverage", "opening_role",
-        "native_keep", "native_duck", "native_mute", "dup_review_groups", "directive_keys", "exported_mp4_s", "valid", "completion", "input_tokens", "output_tokens", "est_cost_usd", "job_latency_s"]
+        "native_keep", "native_duck", "native_mute", "dup_review_groups", "directive_keys", "fingerprint", "exported_mp4_s", "valid", "completion", "input_tokens", "output_tokens", "est_cost_usd", "job_latency_s"]
 
 
 def to_markdown(rows: list[dict], warnings: list[str]) -> str:
