@@ -84,4 +84,24 @@ def test_coverage_status_labels_match_semantics():
     z = _zh_values()
     assert z["Not captured"] == "尚未拍摄"
     assert z["Covered"] == "已拍摄"
-    assert z["Looking strong"] != "看起来不错"      # was a generic positive shown on scene cards
+    assert z["Looking strong"] == "已有相关素材"    # owner decision; was 看起来不错 (a generic positive)
+
+
+def test_alias_keys_keep_english_identical():
+    """Keys that differ from their English text (sentence-form Moment number, Arrange sheet title) must carry an
+    explicit English value equal to the original English, so the English UI is unchanged."""
+    s = json.loads(CATALOG.read_text(encoding="utf8"))["strings"]
+    for key, english in {"Moment %lld (in a sentence)": "Moment %lld",
+                         "Arrange Moments (sheet title)": "Arrange Moments"}.items():
+        assert s[key]["localizations"]["en"]["stringUnit"]["value"] == english
+
+
+def test_owner_numbering_and_arrange_decisions():
+    z = _zh_values()
+    assert z["Moment %lld"] == "瞬间 %lld"                       # compact labels / chips
+    assert z["Moment %lld (in a sentence)"] == "第 %lld 个瞬间"   # inside sentences
+    assert z["Moment %lld doesn't exist in this Story."] == "这个故事里没有第 %lld 个瞬间。"
+    assert z["Arrange Moments (sheet title)"] == "调整顺序"
+    assert z["Arrange"] == "调整顺序"
+    assert z["Arrange Moments"] == "调整瞬间顺序"
+    assert z["Revise"] == "调整影片"

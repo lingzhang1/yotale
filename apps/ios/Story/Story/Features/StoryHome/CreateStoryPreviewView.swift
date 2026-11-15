@@ -240,7 +240,7 @@ struct CreateStoryPreviewView: View {
                                            story: StoryModel) -> String {
         let numbering = StoryMomentNumbering(story: story.moments)
         func nums(_ ids: [UUID]) -> String {
-            ids.compactMap { numbering.number(forId: $0) }.sorted().map { L10n.t("Moment \($0)") }
+            ids.compactMap { numbering.number(forId: $0) }.sorted().map { L10n.momentInSentence($0) }
                 .joined(separator: L10n.current == .zhHans ? "、" : ", ")
         }
         if !e.ineligibleNeedsAU.isEmpty {

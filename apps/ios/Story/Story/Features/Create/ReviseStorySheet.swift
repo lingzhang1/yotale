@@ -212,7 +212,7 @@ struct ReviseStorySheet: View {
                 switch outcome.kind {
                 case .serviceFailure:
                     retryable = true
-                    clarification = (outcome.blocking.first.map { ServerMessageLocalizer.present($0) } ?? L10n.t("Couldn't interpret that right now.")) + musicSuffix
+                    clarification = (outcome.blocking.first.map { ServerMessageLocalizer.present($0, numbering: n) } ?? L10n.t("Couldn't interpret that right now.")) + musicSuffix
                     return
                 case .clarify:
                     clarification = clarificationText(outcome, numbering: n) + musicSuffix
@@ -247,13 +247,13 @@ struct ReviseStorySheet: View {
 
     private func clarificationText(_ o: InterpretationOutcome, numbering: StoryMomentNumbering) -> String {
         if !o.unresolvedMomentNumbers.isEmpty {
-            let list = o.unresolvedMomentNumbers.map { L10n.t("Moment \($0)") }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
+            let list = o.unresolvedMomentNumbers.map { L10n.momentInSentence($0) }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
             return L10n.t("\(list) couldn't be matched (this Story has \(numbering.count)). Reposition it with “Arrange”, or rephrase.")
         }
         if !o.unresolved.isEmpty {
             return L10n.t("I couldn’t apply: “\(ServerMessageLocalizer.presentUnresolved(o.unresolved).joined(separator: "”, “"))”. Try rephrasing it, or use “Arrange” to set the order.")
         }
-        if let b = o.blocking.first { return ServerMessageLocalizer.present(b) }
+        if let b = o.blocking.first { return ServerMessageLocalizer.present(b, numbering: numbering) }
         return L10n.t("Please rephrase your instruction so I can apply it.")
     }
 
@@ -261,7 +261,7 @@ struct ReviseStorySheet: View {
     private static func conflictMessage(_ conflicts: [MomentSequence.Conflict],
                                         numbering: StoryMomentNumbering) -> String? {
         func names(_ ids: [UUID]) -> String {
-            ids.compactMap { numbering.number(forId: $0) }.sorted().map { L10n.t("Moment \($0)") }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
+            ids.compactMap { numbering.number(forId: $0) }.sorted().map { L10n.momentInSentence($0) }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
         }
         for c in conflicts {
             switch c {

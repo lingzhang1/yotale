@@ -50,182 +50,218 @@
         }
       }
     },
-    "A Moment you mentioned isn't in this Story." : {
-      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+    "%@ can't come right after several Moments." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "A Moment you mentioned isn't in this Story."
+            "value" : "%@ can't come right after several Moments."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你提到的某个瞬间不在这个故事里。"
+            "value" : "%@不能同时紧跟在多个瞬间之后。"
           }
         }
       }
     },
-    "A removed Moment is also used in your ordering." : {
-      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+    "%@ is asked to be both kept and removed." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "A removed Moment is also used in your ordering."
+            "value" : "%@ is asked to be both kept and removed."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "一个被去掉的瞬间同时出现在你的顺序要求里。"
+            "value" : "%@既被要求保留，又被要求去掉。"
           }
         }
       }
     },
-    "One Moment can't come right after several others." : {
-      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+    "%@ is removed but also used in your ordering." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "One Moment can't come right after several others."
+            "value" : "%@ is removed but also used in your ordering."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "一个瞬间不能同时紧跟在多个瞬间之后。"
+            "value" : "%@已被去掉，却仍出现在你的顺序要求里。"
           }
         }
       }
     },
-    "Removing those Moments leaves too little to make a video. Keep at least 2." : {
-      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+    "%@ is the ending but another Moment is placed after it." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Removing those Moments leaves too little to make a video. Keep at least 2."
+            "value" : "%@ is the ending but another Moment is placed after it."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "去掉这些瞬间后，剩下的素材不够做成影片，请至少保留 2 个。"
+            "value" : "%@是结尾，后面却还排了别的瞬间。"
           }
         }
       }
     },
-    "Several Moments can't all come right after the same one." : {
-      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+    "%@ is the opening but is also placed after another Moment." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Several Moments can't all come right after the same one."
+            "value" : "%@ is the opening but is also placed after another Moment."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "多个瞬间不能都紧跟在同一个瞬间之后。"
+            "value" : "%@是开场，却又被排在另一个瞬间之后。"
           }
         }
       }
     },
-    "The ending Moment has another Moment placed after it." : {
-      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+    "%@ isn't in this Story." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The ending Moment has another Moment placed after it."
+            "value" : "%@ isn't in this Story."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "结尾的瞬间之后又排了别的瞬间。"
+            "value" : "%@不在这个故事里。"
           }
         }
       }
     },
-    "The opening Moment is also placed after another Moment." : {
-      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+    "Arrange Moments (sheet title)" : {
+      "comment" : "Title of the Moment-sequence sheet. English matches \"Arrange Moments\"; Chinese uses the short in-context form.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The opening Moment is also placed after another Moment."
+            "value" : "Arrange Moments"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "开场的瞬间同时被排在了另一个瞬间之后。"
+            "value" : "调整顺序"
           }
         }
       }
     },
-    "The ordering in your request contradicts itself." : {
-      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+    "Moment %lld (in a sentence)" : {
+      "comment" : "A Moment's number inside a full sentence. English matches \"Moment %lld\"; Chinese uses the ordinal form.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The ordering in your request contradicts itself."
+            "value" : "Moment %lld"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的顺序要求前后矛盾。"
+            "value" : "第 %lld 个瞬间"
           }
         }
       }
     },
-    "The same Moment is asked to be both kept and removed." : {
-      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+    "Removing those Moments leaves only %lld to build from. Keep at least 2." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The same Moment is asked to be both kept and removed."
+            "value" : "Removing those Moments leaves only %lld to build from. Keep at least 2."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "同一个瞬间既被要求保留，又被要求去掉。"
+            "value" : "去掉这些瞬间后，只剩 %lld 个可用，至少需要保留 2 个。"
           }
         }
       }
     },
-    "This request has a conflict. Please adjust it and try again." : {
-      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); English UI shows the server text unchanged.",
+    "Several Moments can't all come right after %@." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This request has a conflict. Please adjust it and try again."
+            "value" : "Several Moments can't all come right after %@."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个要求有冲突，请调整后再试。"
+            "value" : "多个瞬间不能都紧跟在%@之后。"
+          }
+        }
+      }
+    },
+    "The ordering of %@ and %@ contradicts itself." : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The ordering of %@ and %@ contradicts itself."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@和%2$@的顺序要求互相矛盾。"
+          }
+        }
+      }
+    },
+    "This request has a conflict. Please adjust it and try again. (%@)" : {
+      "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This request has a conflict. Please adjust it and try again. (%@)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个要求有冲突，请调整后再试。（%@）"
           }
         }
       }
@@ -287,7 +323,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ 在 %2$@ 之后"
+            "value" : "%1$@在%2$@之后"
           }
         }
       }
@@ -353,7 +389,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 还在分析中。稍等一下再制作影片，你的要求已保存。"
+            "value" : "%@还在分析中。稍等一下再制作影片，你的要求已保存。"
           }
         }
       }
@@ -364,7 +400,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "找不到 %1$@（这个故事共有 %2$lld 个瞬间）。请用“调整顺序”选择瞬间，或换种说法。"
+            "value" : "找不到%1$@（这个故事共有 %2$lld 个瞬间）。请用“调整瞬间顺序”选择瞬间，或换种说法。"
           }
         }
       }
@@ -375,7 +411,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "找不到 %1$@（这个故事共有 %2$lld 个瞬间）。请用“调整顺序”调整位置，或换种说法。"
+            "value" : "找不到%1$@（这个故事共有 %2$lld 个瞬间）。请用“调整顺序”调整位置，或换种说法。"
           }
         }
       }
@@ -386,7 +422,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 既在你排好的顺序里，又被要求去掉。请把它移出顺序，或者保留它。"
+            "value" : "%@既在你排好的顺序里，又被要求去掉。请把它移出顺序，或者保留它。"
           }
         }
       }
@@ -397,7 +433,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 在你的瞬间顺序里，但文字要求去掉它。请把它移出顺序，或修改文字。"
+            "value" : "%@在你的瞬间顺序里，但文字要求去掉它。请把它移出顺序，或修改文字。"
           }
         }
       }
@@ -408,7 +444,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 还在分析中。稍等一下再制作影片，你的要求已保存。"
+            "value" : "%@还在分析中。稍等一下再制作影片，你的要求已保存。"
           }
         }
       }
@@ -419,7 +455,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 不在你选中的瞬间里。请在“调整顺序”中添加它，或删掉这处提及。"
+            "value" : "%@不在你选中的瞬间里。请在“调整顺序”中添加它，或删掉这处提及。"
           }
         }
       }
@@ -430,7 +466,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 不在你的顺序里，而你选择了“只用选中的瞬间”。请在“调整顺序”中添加它、更改这个设置，或修改文字。"
+            "value" : "%@不在你的顺序里，而你选择了“只用选中的瞬间”。请在“调整瞬间顺序”中添加它、更改这个设置，或修改文字。"
           }
         }
       }
@@ -441,7 +477,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ 紧接在 %2$@ 之后"
+            "value" : "%1$@紧接在%2$@之后"
           }
         }
       }
@@ -452,7 +488,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 作为开场"
+            "value" : "%@作为开场"
           }
         }
       }
@@ -463,7 +499,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ 作为开场，%2$@ 作为结尾"
+            "value" : "%1$@作为开场，%2$@作为结尾"
           }
         }
       }
@@ -496,7 +532,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@。瞬间 %2$@ 会按这个顺序出现；AI 可能在它们之间穿插其他瞬间，素材允许时会保持你的顺序。"
+            "value" : "%1$@。第 %2$@ 个瞬间会按这个顺序出现；AI 可能在它们之间穿插其他瞬间，素材允许时会保持你的顺序。"
           }
         }
       }
@@ -507,7 +543,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@。瞬间 %2$@ 会按这个顺序排列，影片的其他部分保持不变。如果素材无法完全满足，结果会如实说明，不会硬凑。"
+            "value" : "%1$@。第 %2$@ 个瞬间会按这个顺序排列，影片的其他部分保持不变。如果素材无法完全满足，结果会如实说明，不会硬凑。"
           }
         }
       }
@@ -518,7 +554,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@。只使用瞬间 %2$@，并按这个顺序排列。素材允许时会保持你的顺序；如果无法完全做到，会如实呈现结果，不会硬凑。"
+            "value" : "%1$@。只使用第 %2$@ 个瞬间，并按这个顺序排列。素材允许时会保持你的顺序；如果无法完全做到，会如实呈现结果，不会硬凑。"
           }
         }
       }
@@ -1693,7 +1729,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "调整顺序"
+            "value" : "调整瞬间顺序"
           }
         }
       }
@@ -2153,7 +2189,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "取消移动瞬间 %lld"
+            "value" : "取消移动第 %lld 个瞬间"
           }
         }
       }
@@ -3776,7 +3812,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "用 %@ 结尾"
+            "value" : "用%@结尾"
           }
         }
       }
@@ -3888,7 +3924,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "去掉 %@"
+            "value" : "去掉%@"
           }
         }
       }
@@ -4406,7 +4442,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "没能应用“%@”。请换种说法，或用“调整顺序”来设置。"
+            "value" : "没能应用“%@”。请换种说法，或用“调整瞬间顺序”来设置。"
           }
         }
       }
@@ -4615,7 +4651,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "包含 %@"
+            "value" : "包含%@"
           }
         }
       }
@@ -4904,7 +4940,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已有素材"
+            "value" : "已有相关素材"
           }
         }
       }
@@ -5039,7 +5075,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这个故事里没有瞬间 %lld。"
+            "value" : "这个故事里没有第 %lld 个瞬间。"
           }
         }
       }
@@ -5238,7 +5274,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "移动瞬间 %lld"
+            "value" : "移动第 %lld 个瞬间"
           }
         }
       }
@@ -5824,7 +5860,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "打开故事板，选择并排列瞬间"
+            "value" : "打开故事板，选择并调整瞬间顺序"
           }
         }
       }
@@ -6469,7 +6505,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从顺序中移除瞬间 %lld"
+            "value" : "把第 %lld 个瞬间移出顺序"
           }
         }
       }
@@ -7560,7 +7596,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从 %@ 开始"
+            "value" : "从%@开始"
           }
         }
       }
@@ -10016,7 +10052,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的文字要求用 %1$@ 结尾，但当前顺序的结尾是 %2$@。请在“调整顺序”中把想要的瞬间拖到最下面，或修改文字。"
+            "value" : "你的文字要求用%1$@结尾，但当前顺序的结尾是%2$@。请在“调整顺序”中把想要的瞬间拖到最下面，或修改文字。"
           }
         }
       }
@@ -10027,7 +10063,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的文字要求用 %1$@ 结尾，但当前顺序的结尾是 %2$@。请在“调整顺序”中把想要的瞬间拖到最下面，或修改文字。"
+            "value" : "你的文字要求用%1$@结尾，但当前顺序的结尾是%2$@。请在“调整瞬间顺序”中把想要的瞬间拖到最下面，或修改文字。"
           }
         }
       }
@@ -10038,7 +10074,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的文字要求从 %1$@ 开始，但当前顺序的开头是 %2$@。请在“调整顺序”中把想要的瞬间拖到最上面，或修改文字。"
+            "value" : "你的文字要求从%1$@开始，但当前顺序的开头是%2$@。请在“调整顺序”中把想要的瞬间拖到最上面，或修改文字。"
           }
         }
       }
@@ -10049,7 +10085,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的文字要求从 %1$@ 开始，但当前顺序的开头是 %2$@。请在“调整顺序”中把想要的瞬间拖到最上面，或修改文字。"
+            "value" : "你的文字要求从%1$@开始，但当前顺序的开头是%2$@。请在“调整瞬间顺序”中把想要的瞬间拖到最上面，或修改文字。"
           }
         }
       }

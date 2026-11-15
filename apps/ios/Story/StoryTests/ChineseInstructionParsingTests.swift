@@ -51,6 +51,18 @@ final class ChineseInstructionParsingTests: XCTestCase {
         XCTAssertEqual(parse("用瞬间 5 结尾"), ["ending5"])
         XCTAssertEqual(parse("去掉瞬间 4"), ["exclude4"])
         XCTAssertEqual(parse("从瞬间 8 开始，去掉瞬间 4，更有电影感一点"), ["opening8", "exclude4"])
+        // Sentence form used in full Chinese sentences (L10n.momentInSentence): 「第 8 个瞬间」.
+        XCTAssertEqual(parse("从第 8 个瞬间开始"), ["opening8"])
+        XCTAssertEqual(parse("用第 5 个瞬间结尾"), ["ending5"])
+        XCTAssertEqual(parse("去掉第 4 个瞬间"), ["exclude4"])
+    }
+
+    // Compact 「瞬间 8」 and sentence 「第 8 个瞬间」 must resolve to the SAME stable Moment id.
+    func testCompactAndSentenceFormsResolveToSameMoment() {
+        let a = MomentReferenceResolver.parseTyped("从瞬间 8 开始")
+        let b = MomentReferenceResolver.parseTyped("从第 8 个瞬间开始")
+        XCTAssertEqual(a.map { "\($0.slot)\($0.number)" }, b.map { "\($0.slot)\($0.number)" })
+        XCTAssertEqual(a.first?.number, 8)
     }
 
     // "瞬间" is also ordinary prose; only digits after a bare 瞬间 count as a Moment number.
