@@ -33,7 +33,7 @@
     <key>StoryAppleSignInAvailable</key>
     <string>$(STORY_APPLE_SIGNIN_AVAILABLE)</string>
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>Story can tag the Moments you record with where you captured them, so your travel memories remember the place. Location is optional and never added to the videos you share.</string>
+    <string>YoTale can tag the Moments you record with where you captured them, so your travel memories remember the place. Location is optional. It is saved with each Moment and attached to the copy saved to your Photos library.</string>
     <key>UIAppFonts</key>
     <array>
         <string>Fraunces.ttf</string>

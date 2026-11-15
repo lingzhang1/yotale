@@ -53,13 +53,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Story can tag the Moments you record with where you captured them, so your travel memories remember the place. Location is optional and never added to the videos you share."
+            "value" : "YoTale can tag the Moments you record with where you captured them, so your travel memories remember the place. Location is optional. It is saved with each Moment and attached to the copy saved to your Photos library."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "YoTale 可以为你拍下的瞬间标注拍摄地点，让旅行回忆留住那个地方。定位是可选的，也不会出现在你分享的影片里。"
+            "value" : "YoTale 可以为你拍下的瞬间标注拍摄地点，让旅行回忆留住那个地方。定位是可选的，会和每个瞬间一起保存，也会附在存入“照片”App 的那份副本里。"
           }
         }
       }
