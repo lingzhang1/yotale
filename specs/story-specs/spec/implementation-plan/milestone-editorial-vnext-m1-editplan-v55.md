@@ -121,7 +121,7 @@ inputs are local job/AU dumps you point at. Verified on the two real beta baseli
 | Full CI backend suite `pytest packages contracts apps/api/tests` | **1163 passed** |
 | CDK `jest` | **72 passed** (3 suites) |
 | iOS | no Swift change in M1; Xcode tests not run (sandbox cannot build the app); owner's device build is the authority for any later iOS change |
-| Pre-deploy release gate (`release_config_gate.py pre`) | to be confirmed by this PR's CI (needs a clean tree for `--require-clean-asset`) |
+| Pre-deploy release gate (`release_config_gate.py pre`, dev + beta, exactly the CI commands, clean committed tree at `54e8849`) | **ACCEPTED** for both (local; CI on the PR will re-run) |
 
 Required cases from the brief covered: v5.3 unchanged; v5.5 Highlights/Full Story policies when selected; no conflicting legacy lines; Full Story never gets the
 Highlights brief; user opening directive rendered and stated to win; Custom target preserved; Original/Revise/Explore routing preserved; directed Explore remains
@@ -131,7 +131,7 @@ verbatim. Not asserted, deliberately: any aesthetic outcome or Moment id.
 ## 12. Not verified
 
 Any quality effect; behavior of a real model under 5.5 (no live call made); latency/cost of 5.5 (the prompt is slightly different in size, not measured); rendered
-videos; the CI release gate on this branch; the iOS client (unchanged).
+videos; the release gate in CI (it passed locally); the iOS client (unchanged).
 
 ## 13. Remaining milestones and dependencies
 
