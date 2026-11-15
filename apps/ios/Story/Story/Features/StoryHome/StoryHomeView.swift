@@ -86,7 +86,7 @@ struct StoryHomeView: View {
                     .accessibilityLabel("Back")
                     VStack(alignment: .leading, spacing: 3) {
                         Text(story.title.displayTitle).font(StoryTheme.display(22)).foregroundStyle(StoryTheme.cream)
-                        Text(story.status == .completed ? "Completed" : "Active")
+                        Text(story.status == .completed ? L10n.t("Completed") : L10n.t("Active"))
                             .font(StoryTheme.body(11)).tracking(0.5)
                             .foregroundStyle(story.status == .completed ? StoryTheme.gold : StoryTheme.cream.opacity(0.22))
                     }
@@ -250,10 +250,10 @@ struct StoryHomeView: View {
                                 let improved = outcome.changes.filter { $0.disposition == "improved" }.count
                                 let archived = outcome.archivedSceneIds.count
                                 var parts: [String] = []
-                                if added > 0 { parts.append("\(added) added") }
-                                if improved > 0 { parts.append("\(improved) improved") }
-                                if archived > 0 { parts.append("\(archived) archived") }
-                                return parts.isEmpty ? "Guide updated." : "Updated · " + parts.joined(separator: " · ")
+                                if added > 0 { parts.append(L10n.t("\(added) added")) }
+                                if improved > 0 { parts.append(L10n.t("\(improved) improved")) }
+                                if archived > 0 { parts.append(L10n.t("\(archived) archived")) }
+                                return parts.isEmpty ? L10n.t("Guide updated.") : L10n.t("Updated · \(parts.joined(separator: " · "))")
                             } catch {
                                 return nil   // current guide untouched; the section shows a recoverable error
                             }
@@ -569,9 +569,9 @@ struct StoryHomeView: View {
     }
 
     private var stateLine: String {
-        if story.status == .completed { return "Everything from your Story, in one place." }
-        if story.moments.isEmpty { return "Your Story is ready to begin." }
-        return "Your Story is taking shape."
+        if story.status == .completed { return L10n.t("Everything from your Story, in one place.") }
+        if story.moments.isEmpty { return L10n.t("Your Story is ready to begin.") }
+        return L10n.t("Your Story is taking shape.")
     }
 }
 
@@ -594,7 +594,7 @@ private struct StoryOptionsSheet: View {
 
             if confirming {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(isActive ? "Complete this Story?" : "Reopen this Story?")
+                    Text(isActive ? L10n.t("Complete this Story?") : L10n.t("Reopen this Story?"))
                         .font(StoryTheme.display(22)).foregroundStyle(StoryTheme.cream)
                     Text(isActive
                          ? "This Story moves out of your active Stories. You can still view Moments, create videos, or reopen it anytime."
@@ -631,7 +631,7 @@ private struct StoryOptionsSheet: View {
                           disabled: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack {
-                Text(title).font(StoryTheme.body(15))
+                Text(LocalizedStringKey(title)).font(StoryTheme.body(15))
                     .foregroundStyle(disabled ? StoryTheme.cream.opacity(0.28) : tint)
                 Spacer()
                 if disabled {
@@ -644,7 +644,7 @@ private struct StoryOptionsSheet: View {
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .accessibilityHint(disabled ? "Not available yet" : "")
+        .accessibilityHint(disabled ? L10n.t("Not available yet") : "")
     }
 }
 
@@ -704,7 +704,7 @@ private struct MomentTile: View {
                 if let n = countOverlay {
                     LinearGradient(colors: [.clear, StoryTheme.ink.opacity(0.68)],
                                    startPoint: .center, endPoint: .bottom)
-                    Text("\(n) moment\(n == 1 ? "" : "s") →")
+                    Text("\(n) moments →")
                         .font(StoryTheme.body(12, .medium)).foregroundStyle(StoryTheme.cream.opacity(0.9))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                         .padding(8)

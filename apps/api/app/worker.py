@@ -448,7 +448,8 @@ def _run_coverage(store: _jobs.JobStore, job_id: str, job: dict) -> str:
             creative_intent=b.get("creative_intent", {}),
             scope=b.get("scope", {}),
             moment_understandings=b.get("moment_understandings", []),
-            pending_count=int(b.get("pending_count", 0)))
+            pending_count=int(b.get("pending_count", 0)),
+            content_language=b.get("content_language"))
 
         t0 = time.monotonic()
         engine = _build_coverage_engine()

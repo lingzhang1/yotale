@@ -67,7 +67,7 @@ struct ReferenceVideoPlayer: View {
                         .foregroundStyle(.white.opacity(0.92))
                         .shadow(radius: 6)
                 }
-                .accessibilityLabel(isPlaying ? "Replay example video" : "Play example video")
+                .accessibilityLabel(isPlaying ? L10n.t("Replay example video") : L10n.t("Play example video"))
                 .accessibilityIdentifier("reference-video-play")
             }
         }

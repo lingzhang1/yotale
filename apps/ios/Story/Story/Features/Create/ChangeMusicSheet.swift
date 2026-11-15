@@ -122,15 +122,15 @@ struct ChangeMusicSheet: View {
             guard let uuid = UUID(uuidString: assetId),
                   let asset = try? context.fetch(
                     FetchDescriptor<MyMusicAssetModel>(predicate: #Predicate { $0.id == uuid })).first else {
-                errorText = "That track couldn't be found."; return
+                errorText = L10n.t("That track couldn't be found."); return
             }
             if let providerTrackId = asset.providerTrackId {
                 // Saved favorite -> re-resolve live from the provider (no stored bytes).
-                guard let rec = recommendation else { errorText = "Music isn't available right now."; return }
+                guard let rec = recommendation else { errorText = L10n.t("Music isn't available right now."); return }
                 working = true
                 Task { @MainActor in
                     guard let sel = await resolver.resolveSelection(recommendation: rec, trackId: providerTrackId) else {
-                        working = false; errorText = "Couldn't prepare that saved track."; return
+                        working = false; errorText = L10n.t("Couldn't prepare that saved track."); return
                     }
                     await runReplace(.provider(trackId: sel.trackId, url: sel.soundtrackURL,
                                                role: sel.soundtrackRole, priority: sel.nativeAudioPriority,
@@ -141,11 +141,11 @@ struct ChangeMusicSheet: View {
             }
         case .track(let trackId):
             // Provider track: resolve (download + plan-derived role/priority) off the current recommendation.
-            guard let rec = recommendation else { errorText = "Music isn't available right now."; return }
+            guard let rec = recommendation else { errorText = L10n.t("Music isn't available right now."); return }
             working = true
             Task { @MainActor in
                 guard let sel = await resolver.resolveSelection(recommendation: rec, trackId: trackId) else {
-                    working = false; errorText = "Couldn't prepare that track."; return
+                    working = false; errorText = L10n.t("Couldn't prepare that track."); return
                 }
                 await runReplace(.provider(trackId: sel.trackId, url: sel.soundtrackURL,
                                            role: sel.soundtrackRole, priority: sel.nativeAudioPriority,

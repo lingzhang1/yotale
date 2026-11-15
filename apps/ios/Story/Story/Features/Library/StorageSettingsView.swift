@@ -86,19 +86,19 @@ struct StorageSettingsView: View {
         }
     }
 
-    @ViewBuilder private func row(_ label: String, bytes: Int) -> some View {
+    @ViewBuilder private func row(_ label: LocalizedStringKey, bytes: Int) -> some View {
         LabeledContent(label, value: ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))
     }
 
     /// Honest result line: distinguishes a real free, a DEBUG protected move (not counted as freed), and a
     /// genuine no-op — so protected-mode acceptance no longer reads as "nothing happened".
     private func outcomeMessage(_ o: StorageOptimizer.EvictionOutcome) -> String {
-        if o.evictedCount == 0 { return "Nothing to free — everything is already optimized." }
+        if o.evictedCount == 0 { return L10n.t("Nothing to free — everything is already optimized.") }
         if o.protectedCount > 0 {
-            return "Protected \(o.protectedCount) moment\(o.protectedCount == 1 ? "" : "s") (moved for testing — not counted as freed)."
+            return L10n.t("Protected \(o.protectedCount) moments (moved for testing — not counted as freed).")
         }
         let freed = ByteCountFormatter.string(fromByteCount: Int64(o.freedBytes), countStyle: .file)
-        return "Freed \(freed) from \(o.evictedCount) moment\(o.evictedCount == 1 ? "" : "s")."
+        return L10n.t("Freed \(freed) from \(o.evictedCount) moments.")
     }
 
     private func refresh() {

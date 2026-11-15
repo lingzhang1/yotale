@@ -162,7 +162,7 @@ struct ContinuousCaptureView: View {
         }
         .alert("Couldn't save that clip", isPresented: $model.showError, actions: {
             Button("OK", role: .cancel) {}
-        }, message: { Text(model.errorMessage ?? "Please try again.") })
+        }, message: { Text(model.errorMessage ?? L10n.t("Please try again.")) })
         .cloudAuthGate(cloudGate)
     }
 
@@ -193,7 +193,7 @@ struct ContinuousCaptureView: View {
                             .frame(width: 40, height: 40)
                             .background(Color.black.opacity(0.4), in: Circle())
                     }
-                    .accessibilityLabel(model.isAEAFLocked ? "Unlock focus and exposure" : "Lock focus and exposure")
+                    .accessibilityLabel(model.isAEAFLocked ? L10n.t("Unlock focus and exposure") : L10n.t("Lock focus and exposure"))
 
                     // Torch toggle — shown only where the device has a torch. Safe mid-record.
                     if model.hasTorch {
@@ -206,7 +206,7 @@ struct ContinuousCaptureView: View {
                                 .frame(width: 40, height: 40)
                                 .background(Color.black.opacity(0.4), in: Circle())
                         }
-                        .accessibilityLabel(model.torchOn ? "Turn torch off" : "Turn torch on")
+                        .accessibilityLabel(model.torchOn ? L10n.t("Turn torch off") : L10n.t("Turn torch on"))
                     }
 
                     // Flip front/rear — gated OUT of recording (a mid-clip input swap would corrupt the
@@ -255,8 +255,8 @@ struct ContinuousCaptureView: View {
     }
 
     private var destinationLabel: String {
-        if let s = captureContext.associatedStory { return "Adds to \(s.title)" }
-        return "Saves to Moments"
+        if let s = captureContext.associatedStory { return L10n.t("Adds to \(s.title)") }
+        return L10n.t("Saves to Moments")
     }
 
     // MARK: - Bottom: AI overlays · recent thumbnail · record button
@@ -585,8 +585,8 @@ struct ContinuousCaptureView: View {
     }
 
     private var ideaEyebrow: String {
-        if let s = model.currentIdeaSeconds { return "SHOT IDEA · \(s) SEC" }
-        return "SHOT IDEA"
+        if let s = model.currentIdeaSeconds { return L10n.t("SHOT IDEA · \(s) SEC") }
+        return L10n.t("SHOT IDEA")
     }
 
     // AI failed/throttled — honest, dismissible. Recording still works.
@@ -631,7 +631,7 @@ struct ContinuousCaptureView: View {
                                 .overlay(Circle().stroke(active ? gold.opacity(0.9) : .clear, lineWidth: 1.5))
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(active ? "Zoom \(liveZoomLabel(model.currentUserZoom))" : "Zoom \(zoomLabel(z)) times")
+                        .accessibilityLabel(active ? L10n.t("Zoom \(liveZoomLabel(model.currentUserZoom))") : L10n.t("Zoom \(zoomLabel(z)) times"))
                     }
                 }
                 .padding(.horizontal, 6).padding(.vertical, 6)
@@ -1012,7 +1012,7 @@ struct ShotFramingReferenceView: View {
     /// whole line to the UTM-tagged source. Falls back to plain text if a link is missing/invalid.
     @ViewBuilder private var attribution: some View {
         let text = image.attributionText.isEmpty
-            ? "Photo by \(image.photographerName) on Unsplash" : image.attributionText
+            ? L10n.t("Photo by \(image.photographerName) on Unsplash") : image.attributionText
         if let src = URL(string: image.sourceURL) {
             Link(destination: src) {
                 Text(text).font(.system(size: 13)).foregroundStyle(ink.opacity(0.55))
@@ -1118,7 +1118,7 @@ struct ShotFramingVideoReferenceView: View {
 
     /// "Video by <user> on Pixabay" — links to the UTM-tagged source page. Plain text if the link is missing.
     @ViewBuilder private var attribution: some View {
-        let text = video.attributionText.isEmpty ? "Video by \(video.contributor) on Pixabay" : video.attributionText
+        let text = video.attributionText.isEmpty ? L10n.t("Video by \(video.contributor) on Pixabay") : video.attributionText
         if let src = URL(string: video.sourceURL) {
             Link(destination: src) {
                 Text(text).font(.system(size: 13)).foregroundStyle(ink.opacity(0.55))

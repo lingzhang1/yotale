@@ -201,6 +201,13 @@ enum MomentReferenceResolver {
         ("hip hop", ["hip hop"]), ("hip-hop", ["hip hop"]), ("rock", ["rock"]), ("pop", ["pop"]),
         ("jazz", ["jazz"]), ("classical", ["classical"]), ("orchestral", ["orchestral", "cinematic"]),
         ("folk", ["folk", "acoustic"]), ("piano", ["piano"]), ("guitar", ["acoustic"]),
+        // 简体中文 vocabulary (additive)
+        ("原声", ["acoustic", "intimate"]), ("轻柔", ["calm", "gentle"]), ("舒缓", ["calm"]), ("平静", ["calm"]),
+        ("氛围", ["atmospheric"]), ("电影感", ["cinematic"]), ("史诗", ["epic"]), ("感人", ["emotional"]),
+        ("温暖", ["emotional"]), ("治愈", ["calm", "gentle"]), ("梦幻", ["dreamy"]), ("热血", ["energetic"]),
+        ("活力", ["energetic"]), ("动感", ["energetic"]), ("欢快", ["energetic"]), ("电子", ["electronic", "energetic"]),
+        ("嘻哈", ["hip hop"]), ("摇滚", ["rock"]), ("流行", ["pop"]), ("爵士", ["jazz"]), ("古典", ["classical"]),
+        ("钢琴", ["piano"]), ("吉他", ["acoustic"]), ("民谣", ["folk", "acoustic"]),
     ]
 
     /// Classify the Stage 2 free text into disjoint music concerns WITHOUT a second AI pass (owner §3). An
@@ -215,9 +222,11 @@ enum MomentReferenceResolver {
         // "sync to the beat", "on the beat", "to the music", "match the cuts".
         let beatSync = ["match the music", "match to the music", "to the music", "match the cuts",
                         "match cuts", "to the beat", "on the beat", "sync to", "beat sync", "beat-sync",
-                        "match the beat", "hit the beat"].contains { lower.contains($0) }
+                        "match the beat", "hit the beat",
+                        // 简体中文: 卡点 / 踩点 / 跟着音乐剪 / 配合音乐节奏
+                        "卡点", "踩点", "跟着音乐", "跟随音乐", "配合音乐", "随音乐", "音乐节奏", "跟着节拍", "跟着鼓点"].contains { lower.contains($0) }
         // Music preference requires an explicit music-context word so visual language can never be mistaken.
-        let hasMusicContext = ["music", "soundtrack", "song", "track", "tune", "score"].contains { lower.contains($0) }
+        let hasMusicContext = ["music", "soundtrack", "song", "track", "tune", "score", "音乐", "配乐", "歌曲", "背景乐"].contains { lower.contains($0) }
         var preference: (phrase: String, moodTags: [String])? = nil
         if hasMusicContext {
             var moods: [String] = []
@@ -231,6 +240,76 @@ enum MomentReferenceResolver {
             }
         }
         return ParsedMusicIntent(preference: preference, beatSync: beatSync)
+    }
+
+    // MARK: Chinese (简体中文) reference support — additive; English patterns above are untouched.
+    // A Chinese Moment reference: 片段8 / 片段 8 / 片段#8 / 片段八 / 第8个片段 / 第八段 / 第８段 (full-width digits,
+    // Chinese numerals 一…九十九 and 两 are accepted). Each form has ONE capture group (see `capturedNumbers`).
+    private static let zhNum = "[0-9０-９一二三四五六七八九十两]+"
+    private static let zhRef = "(?:片段\\s*#?\\s*(\(zhNum))|第\\s*(\(zhNum))\\s*(?:个\\s*片段|段|片段))"
+
+    private static var chinesePatterns: [(DirectiveSlot, String)] {
+        let r = zhRef
+        return [
+            // OPENING — 从片段8开始 / 以片段8开头 / 以片段8为开头 / 用片段8开头 / 片段8放在开头 / 片段8作为开场
+            (.opening, "从\\s*\(r)\\s*(?:开始|开头|起)"),
+            (.opening, "(?:以|用|拿|让)\\s*\(r)\\s*(?:来\\s*)?(?:作为|做|当)?\\s*(?:为\\s*)?(?:开头|开场|开始|第一个)"),
+            (.opening, "\(r)\\s*(?:放|排|安排)?\\s*(?:在|到)?\\s*(?:最\\s*前面?|开头|最开始|第一个?|最先)"),
+            (.opening, "\(r)\\s*(?:作为|做|当)\\s*(?:开头|开场)"),
+            // ENDING — 以片段8结尾 / 以片段8为结尾 / 到片段8结束 / 片段8放在最后 / 最后用片段8
+            (.ending, "(?:以|用|让)\\s*\(r)\\s*(?:来\\s*)?(?:作为|做|当)?\\s*(?:为\\s*)?(?:结尾|收尾|结束|压轴)"),
+            (.ending, "(?:到|在)\\s*\(r)\\s*(?:结束|结尾|收尾)"),
+            (.ending, "\(r)\\s*(?:放|排|安排)?\\s*(?:在|到)?\\s*(?:最\\s*后面?|结尾|最末|最后一个?)"),
+            (.ending, "\(r)\\s*(?:作为|做|当)\\s*(?:结尾|收尾)"),
+            (.ending, "最后\\s*(?:用|放|是|选|加)?\\s*\(r)"),
+            // EXCLUDE — 不要用片段3 / 去掉片段3 / 删除 / 删掉 / 跳过 / 不用 / 排除
+            (.exclude, "(?:不要用|不要使用|别用|不用|不使用|不要|去掉|去除|删除|删掉|移除|跳过|排除|略过|舍弃)\\s*\(r)"),
+            // INCLUDE (lowest priority)
+            (.include, "(?:包含|包括|使用|加入|添加|保留|加上|必须用|一定要用|用)\\s*\(r)"),
+        ]
+    }
+
+    /// All Moment numbers captured by a match (in text order), accepting ASCII / full-width digits and Chinese
+    /// numerals. Works for the English patterns too (their single group is plain `\d+`).
+    private static func capturedNumbers(_ m: NSTextCheckingResult, in ns: NSString) -> [Int] {
+        var out: [Int] = []
+        guard m.numberOfRanges > 1 else { return out }
+        for i in 1..<m.numberOfRanges {
+            let r = m.range(at: i)
+            if r.location != NSNotFound, let n = parseNumber(ns.substring(with: r)) { out.append(n) }
+        }
+        return out
+    }
+
+    /// Parse "8", "８", "八", "十", "十二", "二十", "二十三", "两" (1…99 for numerals; any digit run for digits).
+    static func parseNumber(_ raw: String) -> Int? {
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty else { return nil }
+        // Digits (ASCII or full-width): fold full-width to ASCII.
+        var ascii = ""
+        var allDigits = true
+        for ch in s.unicodeScalars {
+            if ch.value >= 0xFF10 && ch.value <= 0xFF19 {
+                ascii.unicodeScalars.append(Unicode.Scalar(ch.value - 0xFF10 + 0x30)!)
+            } else if ch.value >= 0x30 && ch.value <= 0x39 {
+                ascii.unicodeScalars.append(ch)
+            } else { allDigits = false; break }
+        }
+        if allDigits { return Int(ascii) }
+        let digit: [Character: Int] = ["一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+                                       "六": 6, "七": 7, "八": 8, "九": 9]
+        let chars = Array(s)
+        if chars.count == 1 {
+            if chars[0] == "十" { return 10 }
+            return digit[chars[0]]
+        }
+        guard let tenIdx = chars.firstIndex(of: "十") else { return nil }
+        let tensPart = chars[..<tenIdx], onesPart = chars[(tenIdx + 1)...]
+        guard tensPart.count <= 1, onesPart.count <= 1 else { return nil }
+        let tens = tensPart.first.flatMap { digit[$0] } ?? (tensPart.isEmpty ? 1 : nil)
+        let ones = onesPart.first.flatMap { digit[$0] } ?? (onesPart.isEmpty ? 0 : nil)
+        guard let t = tens, let o = ones else { return nil }
+        return t * 10 + o
     }
 
     /// Parse typed "Moment N" references from free text. Deterministic, order-preserving. Recognizes the four
@@ -257,7 +336,7 @@ enum MomentReferenceResolver {
             (.exclude, #"(?:exclude|do\s*n[o']?t\s+use|don[o']?t\s+use|remove|drop|skip|without|leave\s+out)\s+moment\s+#?(\d+)"#),
             // INCLUDE (lowest priority; NOT a bare "with" — that over-matched "start with")
             (.include, #"(?:include|use|add|keep|feature)\s+moment\s+#?(\d+)"#),
-        ]
+        ] + chinesePatterns
         let ns = text as NSString
         var claimed = IndexSet()  // character ranges already consumed by a higher-priority pattern
         var withPos: [(pos: Int, ref: ParsedReference)] = []
@@ -269,7 +348,7 @@ enum MomentReferenceResolver {
                 if (full.location..<(full.location + full.length)).contains(where: { claimed.contains($0) }) {
                     continue
                 }
-                guard m.numberOfRanges > 1, let n = Int(ns.substring(with: m.range(at: 1))) else { continue }
+                guard let n = capturedNumbers(m, in: ns).first else { continue }
                 withPos.append((full.location,
                                 ParsedReference(slot: slot, number: n, matchedText: ns.substring(with: full))))
                 for i in full.location..<(full.location + full.length) { claimed.insert(i) }
@@ -294,9 +373,9 @@ enum MomentReferenceResolver {
         func scan(_ pattern: String, adjacent: Bool, swap: Bool = false) {
             guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return }
             for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-                guard m.numberOfRanges > 2,
-                      let x = Int(ns.substring(with: m.range(at: 1))),
-                      let y = Int(ns.substring(with: m.range(at: 2))) else { continue }
+                let nums = capturedNumbers(m, in: ns)
+                guard nums.count >= 2 else { continue }
+                let x = nums[0], y = nums[1]
                 // swap=false: first number is `after`? depends on pattern; callers set it so (after, before).
                 let after = swap ? y : x
                 let before = swap ? x : y
@@ -311,6 +390,11 @@ enum MomentReferenceResolver {
         scan(#"moment\s+#?(\d+)\s*,?\s+then\s+(?:moment\s+)?#?(\d+)"#, adjacent: true, swap: true)
         // "moment B, moment A follows/next" => A after B, adjacent (swap: first is before)
         scan(#"moment\s+#?(\d+)[,\s]+(?:then\s+)?(?:moment\s+)?#?(\d+)\s+(?:follows?|follow|next|afterwards?|comes\s+next)"#, adjacent: true, swap: true)
+        // Chinese: "片段A紧接在片段B之后" / "片段A在片段B之后" / "片段B，然后片段A" / "片段B接着片段A"
+        let zr = zhRef
+        scan("\(zr)\\s*(?:紧接着?|紧跟着?|立刻|马上|直接)\\s*(?:在)?\\s*\(zr)\\s*(?:之后|后面|后)", adjacent: true)
+        scan("\(zr)\\s*(?:放|排)?\\s*在\\s*\(zr)\\s*(?:之后|后面|后)", adjacent: false)
+        scan("\(zr)\\s*[,，、]?\\s*(?:然后|接着|再接|再放|之后是|后面是|紧接着)\\s*(?:是)?\\s*\(zr)", adjacent: true, swap: true)
         // "moment B ... moment A follow(s)" with an opening/start antecedent: "<start X> and moment A follow"
         // The antecedent is the opening Moment named earlier. Handled by resolveImplicitFollow (below) when a
         // bare "moment A follow(s)" has no explicit before-number — it attaches to the opening directive.
@@ -336,6 +420,14 @@ enum MomentReferenceResolver {
             options: [.caseInsensitive]) {
             for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
                 if m.numberOfRanges > 1, let n = Int(ns.substring(with: m.range(at: 1))) { nums.append(n) }
+            }
+        }
+        // Chinese: "片段A紧随其后" / "片段A接着" / "片段A跟在后面" (no explicit antecedent -> the opening).
+        if let re = try? NSRegularExpression(
+            pattern: "\(zhRef)\\s*(?:紧随其后|随后|接着|紧接着|跟在后面|跟着|其后|接在后面|紧跟)",
+            options: []) {
+            for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+                nums.append(contentsOf: capturedNumbers(m, in: ns))
             }
         }
         return nums

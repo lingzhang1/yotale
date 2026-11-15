@@ -78,8 +78,7 @@ final class StoryUseCases {
 
     /// A sensible default Story title when the user leaves it blank (owner Phase 1 "sensible default if blank").
     static func defaultStoryTitle() -> String {
-        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .none
-        return "My Story · \(f.string(from: Date()))"
+        return L10n.t("My Story · \(L10nFormat.shortDate(Date()))")
     }
 
     /// Whether there is ENOUGH event context to generate a non-generic Guide. A very thin/empty description
@@ -91,7 +90,7 @@ final class StoryUseCases {
         if wordCount >= 4 { return true }           // a real event description
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
         // A specific (non-default) multi-word title can also carry enough intent (e.g. "Maya's 5th Birthday").
-        return !t.isEmpty && !t.hasPrefix("My Story ·") && t.split(separator: " ").count >= 2
+        return !t.isEmpty && !t.hasPrefix("My Story ·") && !t.hasPrefix("我的故事 ·") && t.split(separator: " ").count >= 2
     }
 
     /// ASYNC enrichment: resolve the REAL CreativeIntent for an already-created Story via the backend and

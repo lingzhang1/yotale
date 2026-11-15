@@ -274,9 +274,9 @@ enum EditPlanRequestBuilder {
         var errorDescription: String? {
             switch self {
             case .noUsableMoments:
-                return "No Moments with both a local video file and a completed analysis — nothing to plan."
+                return L10n.t("No Moments with both a local video file and a completed analysis — nothing to plan.")
             case .missingTarget:
-                return "No Story duration chosen — pick a duration before creating."
+                return L10n.t("No Story duration chosen — pick a duration before creating.")
             }
         }
     }

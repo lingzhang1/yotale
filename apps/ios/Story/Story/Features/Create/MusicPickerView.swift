@@ -123,8 +123,8 @@ struct MusicPickerView: View {
 
     private var tabBar: some View {
         HStack(spacing: 0) {
-            tabButton("Songs", .songs)
-            tabButton("My Music", .myMusic)
+            tabButton(L10n.t("Songs"), .songs)
+            tabButton(L10n.t("My Music"), .myMusic)
         }
         .padding(.horizontal, StoryTheme.screenPadding).padding(.top, 10)
     }
@@ -276,7 +276,7 @@ struct MusicPickerView: View {
             } catch {
                 await MainActor.run {
                     searching = false
-                    searchError = (error as? MusicServiceError)?.errorDescription ?? "Search unavailable."
+                    searchError = (error as? MusicServiceError)?.errorDescription ?? L10n.t("Search unavailable.")
                 }
             }
         }
@@ -313,7 +313,7 @@ struct MusicPickerView: View {
                 Text("Imported & saved tracks — reusable in every Story.")
                     .font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.4))
                 Spacer()
-                Text("build \(StoryCreativeRefinement.buildIdentifier)")
+                Text(verbatim: "build \(StoryCreativeRefinement.buildIdentifier)")
                     .font(StoryTheme.body(9)).foregroundStyle(StoryTheme.cream.opacity(0.18))
             }
             .padding(.top, 12)
@@ -354,7 +354,7 @@ struct MusicPickerView: View {
                     .foregroundStyle(Self.canPreview(asset) ? StoryTheme.gold : StoryTheme.gold.opacity(0.3))
             }.buttonStyle(.plain)
              .disabled(!Self.canPreview(asset) || resolvingPreviewId == asset.id)   // unavailable/offline track can't preview
-             .accessibilityLabel(myMusicPlayingId == asset.id ? "Pause preview" : "Preview \(asset.displayName)")
+             .accessibilityLabel(myMusicPlayingId == asset.id ? L10n.t("Pause preview") : L10n.t("Preview \(asset.displayName)"))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(asset.displayName).font(StoryTheme.body(15)).foregroundStyle(StoryTheme.cream).lineLimit(1)
@@ -380,13 +380,13 @@ struct MusicPickerView: View {
     /// (§7 — never claim "backed up" when only metadata exists).
     static func subtitle(for asset: MyMusicAssetModel) -> String {
         let dur = time(asset.durationSeconds)
-        if asset.isProviderFavorite { return "Saved · \(dur)" }
+        if asset.isProviderFavorite { return L10n.t("Saved · \(dur)") }
         switch asset.cloudBackupState {
-        case .cloudVerified: return "My Music · Backed up · \(dur)"
-        case .backingUp:     return "My Music · Backing up… · \(dur)"
-        case .restorePending: return "My Music · Restoring…"
-        case .unavailable:   return "My Music · Unavailable on this device"
-        case .localOnly:     return "My Music · On this device only · \(dur)"
+        case .cloudVerified: return L10n.t("My Music · Backed up · \(dur)")
+        case .backingUp:     return L10n.t("My Music · Backing up… · \(dur)")
+        case .restorePending: return L10n.t("My Music · Restoring…")
+        case .unavailable:   return L10n.t("My Music · Unavailable on this device")
+        case .localOnly:     return L10n.t("My Music · On this device only · \(dur)")
         }
     }
 
@@ -406,7 +406,7 @@ struct MusicPickerView: View {
 
     private func handleFileImport(_ result: Result<[URL], Error>) {
         switch result {
-        case .failure(let e): importError = "Import failed: \(e.localizedDescription)"
+        case .failure(let e): importError = L10n.t("Import failed: \(e.localizedDescription)")
         case .success(let urls):
             guard let url = urls.first else { return }
             do {
@@ -436,14 +436,14 @@ struct MusicPickerView: View {
         stopPreview()
         // Imported track with local bytes: play the managed file directly.
         if !asset.isProviderFavorite {
-            guard MyMusicStore.shared.exists(asset) else { importError = "That track's file is missing."; return }
+            guard MyMusicStore.shared.exists(asset) else { importError = L10n.t("That track's file is missing."); return }
             let fileURL = MyMusicStore.shared.absoluteURL(for: asset.relativePath)
             myMusicPlayingId = asset.id   // optimistic; cleared if switched away during activation
             Task {
                 let r = await AudioSessionCoordinator.shared.apply(.playbackDefault)   // off main, non-blocking
                 await MainActor.run {
                     guard myMusicPlayingId == asset.id else { return }
-                    if !r.succeeded { importError = "That track can't be previewed right now." }
+                    if !r.succeeded { importError = L10n.t("That track can't be previewed right now.") }
                     let p = AVPlayer(url: fileURL)
                     player = p; p.play()
                 }
@@ -461,9 +461,9 @@ struct MusicPickerView: View {
             let r = url == nil ? nil : await AudioSessionCoordinator.shared.apply(.playbackDefault)
             await MainActor.run {
                 resolvingPreviewId = nil
-                guard let url else { importError = "That track can't be previewed right now."; return }
+                guard let url else { importError = L10n.t("That track can't be previewed right now."); return }
                 guard myMusicPlayingId == nil || myMusicPlayingId == asset.id else { return }
-                if r?.succeeded == false { importError = "That track can't be previewed right now." }
+                if r?.succeeded == false { importError = L10n.t("That track can't be previewed right now.") }
                 let p = AVPlayer(url: url)
                 player = p; myMusicPlayingId = asset.id; p.play()
             }
@@ -476,7 +476,7 @@ struct MusicPickerView: View {
     }
 
     private static func time(_ s: Double) -> String {
-        let t = Int(s.rounded()); return String(format: "%d:%02d", t / 60, t % 60)
+        return L10nFormat.clock(s)
     }
 
     /// Whether this provider track is already saved as a favorite in Your music.
@@ -533,7 +533,7 @@ struct MusicPickerView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(track.previewURLString == nil)
-                .accessibilityLabel(playing ? "Pause preview" : "Preview \(track.title)")
+                .accessibilityLabel(playing ? L10n.t("Pause preview") : L10n.t("Preview \(track.title)"))
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .firstTextBaseline) {
@@ -606,7 +606,7 @@ struct MusicPickerView: View {
             await MainActor.run {
                 // If the user already switched away / stopped while we activated, do not start stale playback.
                 guard playingTrackId == track.trackId else { return }
-                if !r.succeeded { importError = "That track can't be previewed right now." }
+                if !r.succeeded { importError = L10n.t("That track can't be previewed right now.") }
                 let p = AVPlayer(url: url)   // Epidemic previews are signed HLS (.m3u8); AVPlayer streams.
                 player = p
                 p.play()
@@ -625,17 +625,16 @@ struct MusicPickerView: View {
     // MARK: - consumer copy (NO BPM / beats / analysis)
 
     private static func lengthLabel(_ s: Double) -> String {
-        let total = Int(s.rounded())
-        return String(format: "%d:%02d", total / 60, total % 60)
+        return L10nFormat.clock(s)
     }
 
     /// A short, human mood line — vocal presence only (never numeric analysis).
     private static func moodLine(_ t: MusicCandidateDTO) -> String {
         switch (t.vocalType ?? "NONE").uppercased() {
-        case "NONE": return "Instrumental"
-        case "PRESENCE": return "Light vocals"
-        case "LEAD": return "Vocal-led"
-        default: return "Instrumental"
+        case "NONE": return L10n.t("Instrumental")
+        case "PRESENCE": return L10n.t("Light vocals")
+        case "LEAD": return L10n.t("Vocal-led")
+        default: return L10n.t("Instrumental")
         }
     }
 }

@@ -49,27 +49,27 @@ enum EditPlanJobError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach Story. Check your connection and try again."
-        case .conflict: return "This Story is already being created."
-        case .badStatus(let c): return "Unexpected response (\(c))."
-        case .decoding: return "The plan response couldn't be read."
-        case .pollTimeout: return "Still working on your Story — it's taking longer than usual."
+        case .transport: return L10n.t("Couldn't reach Story. Check your connection and try again.")
+        case .conflict: return L10n.t("This Story is already being created.")
+        case .badStatus(let c): return L10n.t("Unexpected response (\(c)).")
+        case .decoding: return L10n.t("The plan response couldn't be read.")
+        case .pollTimeout: return L10n.t("Still working on your Story — it's taking longer than usual.")
         case .quotaExceeded(let scope, _):
             // A real allowance cap — NOT a technical failure. Honest, scope-specific, and never a plain retry.
             switch scope {
             case "user_daily_gens":
-                return "You've reached today's limit for creating videos. Please try again tomorrow."
+                return L10n.t("You've reached today's limit for creating videos. Please try again tomorrow.")
             case "user_monthly_usd":
-                return "You've reached this month's usage limit for AI video creation. It resets next month."
+                return L10n.t("You've reached this month's usage limit for AI video creation. It resets next month.")
             case "active_jobs":
-                return "You already have videos being created. Let those finish, then try again."
+                return L10n.t("You already have videos being created. Let those finish, then try again.")
             case "global_monthly_usd":
-                return "Story is at capacity for AI video creation right now. Please try again later."
+                return L10n.t("Story is at capacity for AI video creation right now. Please try again later.")
             default:
-                return "You've reached a usage limit for AI video creation. Please try again later."
+                return L10n.t("You've reached a usage limit for AI video creation. Please try again later.")
             }
         case .quotaStoreUnavailable:
-            return "Story can't start a new video right now. Please try again in a moment."
+            return L10n.t("Story can't start a new video right now. Please try again in a moment.")
         }
     }
 }

@@ -56,8 +56,8 @@ struct AddMomentsSheet: View {
                     .font(.system(size: 20)).foregroundStyle(StoryTheme.gold)
                     .frame(width: 32)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(StoryTheme.body(16)).foregroundStyle(StoryTheme.cream)
-                    Text(sub).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.45))
+                    Text(LocalizedStringKey(title)).font(StoryTheme.body(16)).foregroundStyle(StoryTheme.cream)
+                    Text(LocalizedStringKey(sub)).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.45))
                 }
                 Spacer()
                 Image(systemName: "chevron.right")

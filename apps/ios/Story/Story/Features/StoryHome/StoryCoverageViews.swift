@@ -43,7 +43,7 @@ enum StoryCoveragePresentation {
 
     /// The ENOUGH line for a sufficient Story (Figma-consistent). Non-prescriptive.
     static func enoughLine(_ cov: StoryCoverageV2DTO) -> String {
-        "Your Story already tells its story. You can keep capturing, or create it now."
+        L10n.t("Your Story already tells its story. You can keep capturing, or create it now.")
     }
 
     /// A single honest uncertainty line when some Moments are still being understood.
@@ -51,7 +51,7 @@ enum StoryCoveragePresentation {
     static func pendingLine(_ cov: StoryCoverageV2DTO) -> String? {
         guard cov.pendingCount > 0 else { return nil }
         let n = cov.pendingCount
-        return "Still looking at \(n) more moment\(n == 1 ? "" : "s") — your guide will fill in as they're ready."
+        return L10n.t("Still looking at \(n) more moments — your guide will fill in as they're ready.")
     }
 }
 
@@ -80,16 +80,16 @@ struct StoryGuideSection: View {
     }
     private func stateLabel(_ s: NarrativeCoverageDTO?) -> String? {
         switch s {
-        case .strong: return "You've got this covered"
-        case .lookingGood: return "Looking strong"
-        case .couldUseMore: return "Could use more"
+        case .strong: return L10n.t("You've got this covered")
+        case .lookingGood: return L10n.t("Looking strong")
+        case .couldUseMore: return L10n.t("Could use more")
         default: return nil   // unknown -> no tag (neutral)
         }
     }
     private var pendingLine: String? {
         guard let c = coverage, c.pendingCount > 0 else { return nil }
         let n = c.pendingCount
-        return "Still looking at \(n) more moment\(n == 1 ? "" : "s") — your guide will fill in as they're ready."
+        return L10n.t("Still looking at \(n) more moments — your guide will fill in as they're ready.")
     }
 
     var body: some View {
@@ -171,7 +171,7 @@ struct StoryGuideSection: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
             Button { onShoot(dim, poss) } label: {
-                Text(isRepresented ? "Reshoot →" : "Shoot →")
+                Text(isRepresented ? L10n.t("Reshoot →") : L10n.t("Shoot →"))
                     .font(StoryTheme.body(13, .medium))
                     .foregroundStyle(isRepresented ? StoryTheme.cream.opacity(0.4) : StoryTheme.gold)
             }
@@ -241,16 +241,16 @@ struct StoryGuideV2Section: View {
     /// Right-aligned status label on a card, reference-matched ("Covered" / "Not captured" / gentle mid).
     private func statusLabel(_ sceneId: String) -> String {
         switch stateFor(sceneId) {
-        case .strong:      return "Covered"
-        case .lookingGood: return "Looking strong"
-        case .couldUseMore: return "Could use more"
-        default:           return "Not captured"
+        case .strong:      return L10n.t("Covered")
+        case .lookingGood: return L10n.t("Looking strong")
+        case .couldUseMore: return L10n.t("Could use more")
+        default:           return L10n.t("Not captured")
         }
     }
     private var pendingLine: String? {
         guard let c = coverage, c.pendingCount > 0 else { return nil }
         let n = c.pendingCount
-        return "Still looking at \(n) more moment\(n == 1 ? "" : "s") — your guide will fill in as they're ready."
+        return L10n.t("Still looking at \(n) more moments — your guide will fill in as they're ready.")
     }
 
     /// Resolve the hero scene + the index-derived "SCENE NN" number for each scene.
@@ -328,7 +328,7 @@ struct StoryGuideV2Section: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
-                pill("\(g.scenes.count) scene\(g.scenes.count == 1 ? "" : "s")", gold: true)
+                pill(L10n.t("\(g.scenes.count) scenes"), gold: true)
                 if let ev = eventLabel, !ev.isEmpty { pill(ev, gold: false) }
                 Spacer(minLength: 8)
             }
@@ -427,7 +427,7 @@ struct StoryGuideV2Section: View {
             await MainActor.run {
                 isRefining = false
                 if let summary { refineSummary = summary }
-                else { refineError = "Couldn't update just now — your current guide is unchanged. Try again." }
+                else { refineError = L10n.t("Couldn't update just now — your current guide is unchanged. Try again.") }
             }
         }
     }
@@ -451,7 +451,7 @@ struct StoryGuideV2Section: View {
                 Spacer()
                 if others.count > 3 {
                     Button { withAnimation { showAllOthers.toggle() } } label: {
-                        Text(showAllOthers ? "Show fewer" : "View all")
+                        Text(showAllOthers ? L10n.t("Show fewer") : L10n.t("View all"))
                             .font(StoryTheme.body(13, .medium)).foregroundStyle(StoryTheme.gold)
                     }.buttonStyle(.plain)
                 }
@@ -470,7 +470,8 @@ struct StoryGuideV2Section: View {
     /// A small, deterministic category vocabulary derived from scene position (NOT a backend field — the
     /// contract stays unchanged). Gives the reference's "SCENE NN · CATEGORY" badge a tasteful label.
     static func category(for number: Int) -> String {
-        let vocab = ["OPENING", "ATMOSPHERE", "CONNECTION", "TEXTURE", "CLIMAX", "RELEASE", "DETAIL", "REFLECTION"]
+        let vocab = [L10n.t("OPENING"), L10n.t("ATMOSPHERE"), L10n.t("CONNECTION"), L10n.t("TEXTURE"),
+                     L10n.t("CLIMAX"), L10n.t("RELEASE"), L10n.t("DETAIL"), L10n.t("REFLECTION")]
         return vocab[(max(1, number) - 1) % vocab.count]
     }
 }
@@ -541,7 +542,7 @@ private struct FeaturedSceneCard: View {
                             .foregroundStyle(pinned ? StoryTheme.gold : StoryTheme.cream.opacity(0.4))
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(pinned ? "Unpin scene" : "Pin scene")
+                    .accessibilityLabel(pinned ? L10n.t("Unpin scene") : L10n.t("Pin scene"))
                     .accessibilityIdentifier("pin-scene-button")
                     Text(status).font(StoryTheme.body(12))
                         .foregroundStyle(covered ? StoryTheme.cream.opacity(0.5) : StoryTheme.cream.opacity(0.4))
@@ -718,7 +719,7 @@ private struct OtherSceneRow: View {
                         .foregroundStyle(StoryTheme.cream.opacity(0.45)).lineLimit(1)
                 }
                 Spacer()
-                Text(covered ? "Covered" : "")
+                Text(covered ? L10n.t("Covered") : "")
                     .font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.45))
                 Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(StoryTheme.cream.opacity(0.3))
             }

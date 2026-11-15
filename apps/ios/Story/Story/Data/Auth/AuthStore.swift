@@ -107,7 +107,7 @@ final class AuthStore: NSObject {
     // ---- Apple (OAuth code + PKCE via ASWebAuthenticationSession) ------------------------------------
     func signInWithApple() async throws {
         guard StoryAuthConfig.appleSignInAvailable else {
-            throw CognitoAuthError.service("Apple sign-in isn't available in this build yet.")
+            throw CognitoAuthError.service(L10n.t("Apple sign-in isn't available in this build yet."))
         }
         state = .authenticating
         let verifier = AuthHelpers.randomCodeVerifier()
@@ -125,7 +125,7 @@ final class AuthStore: NSObject {
                       let returnedState = comps.queryItems?.first(where: { $0.name == "state" })?.value,
                       returnedState == self?.pkceState,
                       let c = comps.queryItems?.first(where: { $0.name == "code" })?.value else {
-                    cont.resume(throwing: CognitoAuthError.service("Apple sign-in was cancelled or failed."))
+                    cont.resume(throwing: CognitoAuthError.service(L10n.t("Apple sign-in was cancelled or failed.")))
                     return
                 }
                 cont.resume(returning: c)
@@ -188,7 +188,7 @@ final class AuthStore: NSObject {
             canonicalId = try await identity.resolveCanonicalId(accessToken: t.accessToken)
         } catch {
             signOutLocal()
-            lastError = (error as? LocalizedError)?.errorDescription ?? "Couldn't finish signing in. Please try again."
+            lastError = (error as? LocalizedError)?.errorDescription ?? L10n.t("Couldn't finish signing in. Please try again.")
             throw error
         }
         t.storyUserId = canonicalId

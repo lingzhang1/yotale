@@ -34,6 +34,7 @@ from contracts.schemas.ai_contracts import (
     StoryConceptContract,
     StoryPlanContract,
 )
+from language_policy import apply_language_suffix, contains_han
 from model_gateway import (
     ModelGateway,
     StructuredOutputError,
@@ -80,6 +81,11 @@ def sanitize_reference_query(raw: Any) -> str | None:
     must not fail the Director. (/v1/scene-image normalizes again and broadens on a no-match.)"""
     if not isinstance(raw, str):
         return None
+    if contains_han(raw):
+        # Search queries must be short ENGLISH keywords. A query that still carries Han characters would only
+        # reach the stock-photo provider as garbage (or a half-translated fragment) -> unusable => text-only
+        # card via the existing graceful no-image path. Never raises.
+        return None
     q = _RQ_CONTROL_RE.sub(" ", raw)
     q = _RQ_URL_RE.sub(" ", q)
     q = _RQ_EMAIL_RE.sub(" ", q)
@@ -102,6 +108,9 @@ _UNSAFE_SUBSTRINGS = (
     "climb onto",
     "lean over the edge",
     "near the edge while",
+    # Simplified-Chinese equivalents (content_language=zh-Hans output) — same hard safety backstop.
+    "倒退着走", "倒着走", "后退着走", "边走边后退", "冲进车流", "走进车流", "走到马路中", "走上马路",
+    "爬上栏杆", "爬上围栏", "探身出", "探出边缘", "靠近边缘时",
 )
 
 
@@ -175,11 +184,13 @@ class StoryDirectorEngine(Protocol):
         scene_understanding: dict[str, Any] | None = None,
         capture_constraints: dict[str, Any] | None = None,
         selected_opportunity: dict[str, Any] | None = None,
+        content_language: str | None = None,
     ) -> DirectorOutput: ...
 
     def next(
         self,
         prior: dict[str, Any],
+        content_language: str | None = None,
     ) -> DirectorOutput: ...
 
 
@@ -206,6 +217,7 @@ class RealStoryDirectorEngine:
         scene_understanding: dict[str, Any] | None,
         capture_constraints: dict[str, Any] | None,
         selected_opportunity: dict[str, Any] | None = None,
+        content_language: str | None = None,
     ) -> StructuredRequest:
         import json
         null_scene = not scene_understanding
@@ -241,7 +253,7 @@ class RealStoryDirectorEngine:
             task=TASK_INIT,
             schema=self._schema,
             prompt_version=PROMPT_VERSION,
-            system=self._system,
+            system=apply_language_suffix(self._system, content_language),
             user_content=(
                 prefix
                 + "INITIALIZE. Produce the concept, plan (beats + shots), initial "
@@ -256,13 +268,13 @@ class RealStoryDirectorEngine:
             temperature=0.3,
         )
 
-    def build_next_request(self, prior: dict[str, Any]) -> StructuredRequest:
+    def build_next_request(self, prior: dict[str, Any], content_language: str | None = None) -> StructuredRequest:
         import json
         return StructuredRequest(
             task=TASK_NEXT,
             schema=self._schema,
             prompt_version=PROMPT_VERSION,
-            system=self._system,
+            system=apply_language_suffix(self._system, content_language),
             user_content=(
                 "NEXT. Given the prior plan/state and the Story progress so far, "
                 "update director_state and return exactly ONE next decision. Keep "
@@ -276,12 +288,14 @@ class RealStoryDirectorEngine:
 
     # ---- ops ---------------------------------------------------------------
 
-    def initialize(self, creative_intent, scene_understanding=None, capture_constraints=None, selected_opportunity=None) -> DirectorOutput:
-        req = self.build_initialize_request(creative_intent, scene_understanding, capture_constraints, selected_opportunity)
+    def initialize(self, creative_intent, scene_understanding=None, capture_constraints=None, selected_opportunity=None,
+                   content_language=None) -> DirectorOutput:
+        req = self.build_initialize_request(creative_intent, scene_understanding, capture_constraints, selected_opportunity,
+                                            content_language)
         return self._to_output(self._gateway.generate_structured(req))
 
-    def next(self, prior) -> DirectorOutput:
-        req = self.build_next_request(prior)
+    def next(self, prior, content_language=None) -> DirectorOutput:
+        req = self.build_next_request(prior, content_language)
         return self._to_output(self._gateway.generate_structured(req))
 
     # ---- validation --------------------------------------------------------
@@ -433,7 +447,8 @@ class RealStoryDirectorEngine:
 class MockStoryDirectorEngine:
     """Deterministic mock (no model). Dev/tests only — never production direction."""
 
-    def initialize(self, creative_intent, scene_understanding, capture_constraints=None, selected_opportunity=None) -> DirectorOutput:
+    def initialize(self, creative_intent, scene_understanding, capture_constraints=None, selected_opportunity=None,
+                   content_language=None) -> DirectorOutput:
         cid, pid, sid, bid = uuid4(), uuid4(), uuid4(), "beat_open"
         from contracts.schemas.ai_contracts import ShotContract, StoryBeat
         concept = StoryConceptContract(id=cid, title="Mock concept", summary="A mock point of view.")
@@ -447,7 +462,7 @@ class MockStoryDirectorEngine:
             decision=DirectorDecision(action="capture_shot", shot=shot, reason="mock"),
         )
 
-    def next(self, prior) -> DirectorOutput:
+    def next(self, prior, content_language=None) -> DirectorOutput:
         return self.initialize(prior.get("creative_intent", {}), prior.get("scene_understanding", {}))
 
 

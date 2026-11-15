@@ -9,6 +9,7 @@ import SwiftData
 struct HomeView: View {
     @Environment(\.modelContext) private var context
     @Environment(AuthStore.self) private var auth
+    @Environment(AppLanguageStore.self) private var languageStore
     @Query private var stories: [StoryModel]
     @Query private var moments: [MomentModel]
 
@@ -95,6 +96,7 @@ struct HomeView: View {
         HStack {
             StoryEyebrow(text: "YoTale")
             Spacer()
+            languageMenu
             // Account affordance in the Home header — the ONLY entry point to sign in WITHOUT first triggering a
             // gated AI action (Start a Story / music search / capture AI). Beta testers can sign in here to see
             // their account's Stories and to (re-)test the OTP flow.
@@ -140,6 +142,28 @@ struct HomeView: View {
         }
     }
 
+    // Language picker — ALWAYS visible (signed in or out). Endonyms are never translated.
+    private var languageMenu: some View {
+        @Bindable var store = languageStore
+        return Menu {
+            Picker("Language", selection: $store.preference) {
+                ForEach(AppLanguage.allCases) { lang in
+                    if let name = lang.endonym {
+                        Text(verbatim: name).tag(lang)
+                    } else {
+                        Text("Follow iPhone language").tag(lang)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "globe")
+                .font(.system(size: 20))
+                .foregroundStyle(StoryTheme.cream.opacity(0.7))
+                .padding(.trailing, 10)
+        }
+        .accessibilityLabel("Language")
+    }
+
     // Compact secondary destination card (icon + count row, title, sub).
     private func secondaryCard(icon: String, count: Int, title: String, sub: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -151,8 +175,8 @@ struct HomeView: View {
                     .font(StoryTheme.body(15)).foregroundStyle(StoryTheme.cream.opacity(0.5))
             }
             .padding(.bottom, 18)
-            Text(title).font(StoryTheme.display(18)).foregroundStyle(StoryTheme.cream)
-            Text(sub).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.45))
+            Text(LocalizedStringKey(title)).font(StoryTheme.display(18)).foregroundStyle(StoryTheme.cream)
+            Text(LocalizedStringKey(sub)).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)

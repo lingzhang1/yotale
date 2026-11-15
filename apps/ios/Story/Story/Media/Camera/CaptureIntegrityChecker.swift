@@ -29,8 +29,8 @@ enum CaptureIntegrityIssue: String, Equatable, Codable, CaseIterable {
     /// Plain, physical, NON-semantic user sentence. Never mentions shot/beat/purpose.
     var userReason: String {
         switch self {
-        case .unreadableFile: return "That one didn't record properly."
-        case .tooShort:       return "That one was too short to use."
+        case .unreadableFile: return L10n.t("That one didn't record properly.")
+        case .tooShort:       return L10n.t("That one was too short to use.")
         }
     }
 

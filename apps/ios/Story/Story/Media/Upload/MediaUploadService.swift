@@ -20,13 +20,13 @@ enum MediaUploadError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Network error during upload."
-        case .unauthorized: return "Upload session expired."
-        case .conflict: return "Upload ownership conflict."
-        case .badStatus(let c): return "Unexpected upload response (\(c))."
-        case .decoding: return "Unexpected upload response shape."
-        case .s3PutFailed(let c): return "Direct upload to storage failed (\(c))."
-        case .verificationFailed(let m): return "Upload verification failed: \(m)"
+        case .transport: return L10n.t("Network error during upload.")
+        case .unauthorized: return L10n.t("Upload session expired.")
+        case .conflict: return L10n.t("Upload ownership conflict.")
+        case .badStatus(let c): return L10n.t("Unexpected upload response (\(c)).")
+        case .decoding: return L10n.t("Unexpected upload response shape.")
+        case .s3PutFailed(let c): return L10n.t("Direct upload to storage failed (\(c)).")
+        case .verificationFailed(let m): return L10n.t("Upload verification failed: \(m)")
         }
     }
 }

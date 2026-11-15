@@ -25,8 +25,10 @@ struct StoryCoverageRequestDTO: Encodable {
     /// Completed MomentUnderstanding records (each: {moment_id, observed{...}, story_context{...}}).
     let momentUnderstandings: [JSONValue]
     let pendingCount: Int
+    var contentLanguage: String? = nil
 
     enum CodingKeys: String, CodingKey {
+        case contentLanguage = "content_language"
         case storyId = "story_id"
         case creativeIntent = "creative_intent"
         case scope
@@ -46,16 +48,16 @@ enum StoryCoverageServiceError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach Story to update your Story Guide."
-        case .unavailableRetryable: return "Story Guide is updating; will retry."
-        case .badStatus(let c): return "Unexpected coverage response (\(c))."
-        case .decoding: return "Coverage returned an unexpected shape."
+        case .transport: return L10n.t("Couldn't reach Story to update your Story Guide.")
+        case .unavailableRetryable: return L10n.t("Story Guide is updating; will retry.")
+        case .badStatus(let c): return L10n.t("Unexpected coverage response (\(c)).")
+        case .decoding: return L10n.t("Coverage returned an unexpected shape.")
         case .jobFailed(let cat):
             return cat == "provider_exhausted"
-                ? "Story Guide analysis is temporarily rate-limited. Try again later."
-                : "Story Guide analysis didn't complete (\(cat))."
-        case .jobCancelled: return "Story Guide update was cancelled."
-        case .pollTimedOut: return "Story Guide is still analyzing; it will finish in the background."
+                ? L10n.t("Story Guide analysis is temporarily rate-limited. Try again later.")
+                : L10n.t("Story Guide analysis didn't complete (\(cat)).")
+        case .jobCancelled: return L10n.t("Story Guide update was cancelled.")
+        case .pollTimedOut: return L10n.t("Story Guide is still analyzing; it will finish in the background.")
         }
     }
 }
@@ -76,7 +78,10 @@ struct StoryCoverageV2RequestDTO: Encodable {
     let scope: JSONValue
     let momentUnderstandings: [JSONValue]
     let pendingCount: Int
+    /// Folded into the request body, hence into the job operation_id: an English and a Chinese coverage never collide.
+    var contentLanguage: String? = nil
     enum CodingKeys: String, CodingKey {
+        case contentLanguage = "content_language"
         case storyId = "story_id"
         case storyGuide = "story_guide"
         case storyGuideVersion = "story_guide_version"
@@ -106,6 +111,16 @@ struct StoryCoverageV2Service: StoryCoverageV2Computing {
     /// the existing queued/running/completed job is recovered WITHOUT launching new inference; changed
     /// evidence -> new id -> new job. Polling never triggers inference (it only reads status).
     func compute(_ request: StoryCoverageV2RequestDTO) async throws -> StoryCoverageV2DTO {
+        // An older backend rejects the unknown `content_language` field (422); retry once without it.
+        do { return try await computeOnce(request) }
+        catch StoryCoverageServiceError.badStatus(let code) where code == 422 && request.contentLanguage != nil {
+            var legacy = request
+            legacy.contentLanguage = nil
+            return try await computeOnce(legacy)
+        }
+    }
+
+    private func computeOnce(_ request: StoryCoverageV2RequestDTO) async throws -> StoryCoverageV2DTO {
         let bodyData: Data
         do { bodyData = try StoryContractCoding.encoder().encode(request) }
         catch { throw StoryCoverageServiceError.decoding(error) }

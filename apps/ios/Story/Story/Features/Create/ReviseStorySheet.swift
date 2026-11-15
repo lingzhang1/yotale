@@ -16,7 +16,7 @@ struct ReviseStorySheet: View {
     let base: GeneratedOutputModel
     /// Display label of the version being edited ("V3"), shown as "Editing Version N" so the user knows which
     /// version a revise acts on. The selected versionId is captured by the caller at op start (not the latest).
-    var versionLabel: String = "this version"
+    var versionLabel: String = L10n.t("this version")
     /// Apply the revision: resolved hard directives + the raw instruction (soft direction).
     let onApply: (ResolvedDirectives, String) -> Void
 
@@ -82,7 +82,7 @@ struct ReviseStorySheet: View {
                         .buttonStyle(.plain)
                     }
                     PromptSuggestionChips(
-                        title: "Try asking Story…",
+                        title: L10n.t("Try asking Story…"),
                         suggestions: PromptSuggestions.revise(firstMomentNumber: numbering.items.first?.number),
                         text: $instruction,
                         onInsert: { interpretToken = UUID(); if retryable { retryable = false; clarification = nil } })
@@ -98,7 +98,7 @@ struct ReviseStorySheet: View {
                     Button("Cancel") { interpretToken = UUID(); dismiss() }.foregroundStyle(StoryTheme.textSecondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isInterpreting ? "Understanding…" : "Apply") { apply() }
+                    Button(isInterpreting ? L10n.t("Understanding…") : L10n.t("Apply")) { apply() }
                         .fontWeight(.semibold)
                         .foregroundStyle((canApply && !isInterpreting) ? StoryTheme.gold : StoryTheme.textMuted)
                         .disabled(!canApply || isInterpreting)
@@ -146,7 +146,7 @@ struct ReviseStorySheet: View {
                 }
                 Spacer()
                 HStack(spacing: 5) {
-                    Text(momentSequence.isActive ? "Edit" : "Arrange")
+                    Text(momentSequence.isActive ? L10n.t("Edit") : L10n.t("Arrange"))
                         .font(StoryTheme.body(13, .medium)).foregroundStyle(StoryTheme.cream)
                     Image(systemName: "arrow.right").font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(StoryTheme.cream)
@@ -162,9 +162,9 @@ struct ReviseStorySheet: View {
     }
 
     private var sequenceSummary: String {
-        guard momentSequence.isActive else { return "Keep current order" }
+        guard momentSequence.isActive else { return L10n.t("Keep current order") }
         let nums = momentSequence.orderedIds.compactMap { numbering.number(forId: $0) }.map(String.init)
-        return "\(nums.count) repositioned · \(nums.joined(separator: " → "))"
+        return L10n.t("\(nums.count) repositioned · \(nums.joined(separator: " → "))")
     }
 
     private func apply() {
@@ -176,13 +176,10 @@ struct ReviseStorySheet: View {
         // revise (no text) has nothing to classify.
         switch CapabilityClassifier.classify(snapshotText) {
         case .allUnsupported(let nouns):
-            unsupportedBlock = "Story can't do \(CapabilityClassifier.phrase(nouns)) yet — it re-cuts, "
-                + "re-times, reorders, sets transitions and changes the soundtrack. Your current version is "
-                + "kept. Try rephrasing with a supported change."
+            unsupportedBlock = L10n.t("Story can't do \(CapabilityClassifier.phrase(nouns)) yet — it re-cuts, re-times, reorders, sets transitions and changes the soundtrack. Your current version is kept. Try rephrasing with a supported change.")
             return
         case .mixed(let nouns):
-            confirmPartial = "Story can't do \(CapabilityClassifier.phrase(nouns)) yet. Apply the supported "
-                + "parts of your request and skip that?"
+            confirmPartial = L10n.t("Story can't do \(CapabilityClassifier.phrase(nouns)) yet. Apply the supported parts of your request and skip that?")
             return
         case .supported:
             break
@@ -215,7 +212,7 @@ struct ReviseStorySheet: View {
                 switch outcome.kind {
                 case .serviceFailure:
                     retryable = true
-                    clarification = (outcome.blocking.first ?? "Couldn't interpret that right now.") + musicSuffix
+                    clarification = (outcome.blocking.first ?? L10n.t("Couldn't interpret that right now.")) + musicSuffix
                     return
                 case .clarify:
                     clarification = clarificationText(outcome, numbering: n) + musicSuffix
@@ -250,36 +247,32 @@ struct ReviseStorySheet: View {
 
     private func clarificationText(_ o: InterpretationOutcome, numbering: StoryMomentNumbering) -> String {
         if !o.unresolvedMomentNumbers.isEmpty {
-            let list = o.unresolvedMomentNumbers.map { "Moment \($0)" }.joined(separator: ", ")
-            return "\(list) couldn't be matched (this Story has \(numbering.count)). Reposition it with “Arrange”, or rephrase."
+            let list = o.unresolvedMomentNumbers.map { L10n.t("Moment \($0)") }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
+            return L10n.t("\(list) couldn't be matched (this Story has \(numbering.count)). Reposition it with “Arrange”, or rephrase.")
         }
         if !o.unresolved.isEmpty {
-            return "I couldn’t apply: “" + o.unresolved.joined(separator: "”, “")
-                + "”. Try rephrasing it, or use “Arrange” to set the order."
+            return L10n.t("I couldn’t apply: “\(o.unresolved.joined(separator: "”, “"))”. Try rephrasing it, or use “Arrange” to set the order.")
         }
         if let b = o.blocking.first { return b }
-        return "Please rephrase your instruction so I can apply it."
+        return L10n.t("Please rephrase your instruction so I can apply it.")
     }
 
     /// Plain-language message for a storyboard<->typed conflict (owner §10). nil when there is no conflict.
     private static func conflictMessage(_ conflicts: [MomentSequence.Conflict],
                                         numbering: StoryMomentNumbering) -> String? {
         func names(_ ids: [UUID]) -> String {
-            ids.compactMap { numbering.number(forId: $0) }.sorted().map { "Moment \($0)" }.joined(separator: ", ")
+            ids.compactMap { numbering.number(forId: $0) }.sorted().map { L10n.t("Moment \($0)") }.joined(separator: L10n.current == .zhHans ? "、" : ", ")
         }
         for c in conflicts {
             switch c {
             case .excludedButSequenced(let ids):
-                return "\(names(ids)) is both in your arranged order and asked to be dropped. "
-                     + "Remove it from the order, or don’t drop it."
+                return L10n.t("\(names(ids)) is both in your arranged order and asked to be dropped. Remove it from the order, or don’t drop it.")
             case .outsideOnlySelected(let ids):
-                return "\(names(ids)) isn’t in your selected Moments. Add it in Arrange, or remove the mention."
+                return L10n.t("\(names(ids)) isn’t in your selected Moments. Add it in Arrange, or remove the mention.")
             case .openingDiffersFromTopCard(let typed, let top):
-                return "Your text says to start with \(names([typed])), but your order starts with \(names([top])). "
-                     + "Drag the one you want to the top in Arrange, or edit the text."
+                return L10n.t("Your text says to start with \(names([typed])), but your order starts with \(names([top])). Drag the one you want to the top in Arrange, or edit the text.")
             case .endingDiffersFromLastCard(let typed, let last):
-                return "Your text says to end with \(names([typed])), but your order ends with \(names([last])). "
-                     + "Drag the one you want to the bottom in Arrange, or edit the text."
+                return L10n.t("Your text says to end with \(names([typed])), but your order ends with \(names([last])). Drag the one you want to the bottom in Arrange, or edit the text.")
             }
         }
         return nil

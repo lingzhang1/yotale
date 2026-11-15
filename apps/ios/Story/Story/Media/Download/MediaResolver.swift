@@ -26,9 +26,9 @@ enum MediaResolveError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .signedOut: return "Sign in to restore this video from your account."
-        case .notOwnedByActiveAccount: return "This video belongs to a different account."
-        case .noCloudCopy: return "This video isn't backed up and isn't on this device."
+        case .signedOut: return L10n.t("Sign in to restore this video from your account.")
+        case .notOwnedByActiveAccount: return L10n.t("This video belongs to a different account.")
+        case .noCloudCopy: return L10n.t("This video isn't backed up and isn't on this device.")
         case .download(let e): return e.errorDescription
         }
     }

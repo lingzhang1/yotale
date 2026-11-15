@@ -23,6 +23,7 @@ from typing import Protocol, runtime_checkable
 from uuid import uuid4
 
 from contracts.schemas.ai_contracts import CreativeIntentContract
+from language_policy import apply_language_suffix
 from model_gateway import (
     ModelGateway,
     StructuredOutputError,
@@ -58,7 +59,7 @@ def _tool_schema() -> dict:
 
 @runtime_checkable
 class CreativeIntentEngine(Protocol):
-    def resolve(self, raw_text: str) -> CreativeIntentContract:
+    def resolve(self, raw_text: str, content_language: str | None = None) -> CreativeIntentContract:
         """Resolve free-form creative direction into a canonical CreativeIntent.
         Raises StructuredOutputError (invalid output) / ProviderError (transport)
         — callers return a designed failure path, never a fabricated intent."""
@@ -74,20 +75,20 @@ class RealCreativeIntentEngine:
         self._schema = _tool_schema()
         self._max_repair_attempts = max_repair_attempts
 
-    def build_request(self, raw_text: str) -> StructuredRequest:
+    def build_request(self, raw_text: str, content_language: str | None = None) -> StructuredRequest:
         return StructuredRequest(
             task=TASK,
             schema=self._schema,
             prompt_version=PROMPT_VERSION,
-            system=self._system,
+            system=apply_language_suffix(self._system, content_language),
             user_content=f"User creative direction:\n{raw_text}",
             max_repair_attempts=self._max_repair_attempts,
             max_tokens=800,
             temperature=0.0,
         )
 
-    def resolve(self, raw_text: str) -> CreativeIntentContract:
-        req = self.build_request(raw_text)
+    def resolve(self, raw_text: str, content_language: str | None = None) -> CreativeIntentContract:
+        req = self.build_request(raw_text, content_language)
         result: StructuredResult = self._gateway.generate_structured(req)
         return self._to_contract(result, raw_text)
 
@@ -111,7 +112,7 @@ class MockCreativeIntentEngine:
     """Deterministic mock (no model). Dev/tests only — never a production intent.
     Mirrors the Milestone-A flattened mock behavior into the canonical shape."""
 
-    def resolve(self, raw_text: str) -> CreativeIntentContract:
+    def resolve(self, raw_text: str, content_language: str | None = None) -> CreativeIntentContract:
         return CreativeIntentContract(
             id=uuid4(),
             summary=f"A story derived from: {raw_text[:80]}",

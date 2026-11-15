@@ -47,7 +47,7 @@ struct MomentReferencePicker: View {
                     Button("Cancel") { dismiss() }.foregroundStyle(StoryTheme.textSecondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add\(selected.isEmpty ? "" : " \(selected.count)")") {
+                    Button(selected.isEmpty ? L10n.t("Add") : L10n.t("Add \(selected.count)")) {
                         onConfirm(numbering.items.map(\.id).filter { selected.contains($0) })
                         dismiss()
                     }
@@ -123,11 +123,11 @@ struct MomentReferencePicker: View {
             .padding(4)
             .background(StoryTheme.ink.opacity(0.7), in: Circle())
             .padding(6)
-            .accessibilityLabel(local ? "Available on this device" : "Backed up in cloud")
+            .accessibilityLabel(local ? L10n.t("Available on this device") : L10n.t("Backed up in cloud"))
     }
 
     private func durationBadge(_ sec: Double) -> some View {
-        Text(sec >= 1 ? "\(Int(sec.rounded()))s" : String(format: "%.1fs", sec))
+        Text(sec >= 1 ? L10n.t("\(Int(sec.rounded()))s") : L10n.t("\(L10nFormat.decimal(sec))s"))
             .font(StoryTheme.body(10, .medium)).foregroundStyle(StoryTheme.cream.opacity(0.9))
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(StoryTheme.ink.opacity(0.7), in: Capsule())

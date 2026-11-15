@@ -70,8 +70,8 @@ struct ArrangeMomentsSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     Text(mode == .revise
-                         ? "Choose the Moments you want to reposition, then drag to arrange them. Everything else in your video stays as it is."
-                         : "Choose the Moments you want to show, then drag to arrange them.")
+                         ? L10n.t("Choose the Moments you want to reposition, then drag to arrange them. Everything else in your video stays as it is.")
+                         : L10n.t("Choose the Moments you want to show, then drag to arrange them."))
                         .font(StoryTheme.body(14)).foregroundStyle(StoryTheme.textSecondary)
 
                     header
@@ -119,10 +119,10 @@ struct ArrangeMomentsSheet: View {
             if orderedIds.isEmpty {
                 Text("Press and hold to drag").font(StoryTheme.body(12)).foregroundStyle(StoryTheme.textMuted)
             } else {
-                Button(mode == .revise ? "Clear" : "Reset to AI order") { orderedIds = []; tapMoveId = nil }
+                Button(mode == .revise ? L10n.t("Clear") : L10n.t("Reset to AI order")) { orderedIds = []; tapMoveId = nil }
                     .font(StoryTheme.body(13)).foregroundStyle(StoryTheme.gold)
-                    .accessibilityHint(mode == .revise ? "Clears the sequence so your current order is kept"
-                                                       : "Clears the sequence so the editor chooses the order")
+                    .accessibilityHint(mode == .revise ? L10n.t("Clears the sequence so your current order is kept")
+                                                       : L10n.t("Clears the sequence so the editor chooses the order"))
             }
         }
     }
@@ -131,8 +131,8 @@ struct ArrangeMomentsSheet: View {
         VStack(spacing: 8) {
             Image(systemName: "rectangle.stack.badge.plus")
                 .font(.system(size: 28)).foregroundStyle(StoryTheme.textMuted)
-            Text(mode == .revise ? "No change — your current order is kept."
-                                 : "No sequence yet — the editor chooses the order.")
+            Text(mode == .revise ? L10n.t("No change — your current order is kept.")
+                                 : L10n.t("No sequence yet — the editor chooses the order."))
                 .font(StoryTheme.body(13)).foregroundStyle(StoryTheme.textSecondary)
             Text("Add Moments below to arrange them yourself.")
                 .font(StoryTheme.body(12)).foregroundStyle(StoryTheme.textMuted)
@@ -170,7 +170,7 @@ struct ArrangeMomentsSheet: View {
     private func dragPreview(_ id: UUID) -> some View {
         HStack(spacing: 10) {
             thumb(id).frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: StoryTheme.field))
-            Text(number(id).map { "Moment \($0)" } ?? "Moment")
+            Text(number(id).map { L10n.t("Moment \($0)") } ?? L10n.t("Moment"))
                 .font(StoryTheme.body(15, .semibold)).foregroundStyle(StoryTheme.cream)
         }
         .padding(8)
@@ -190,11 +190,11 @@ struct ArrangeMomentsSheet: View {
                     .stroke(isPicked ? StoryTheme.gold : Color.clear, lineWidth: 2))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(number(id).map { "Moment \($0)" } ?? "Moment")
+                Text(number(id).map { L10n.t("Moment \($0)") } ?? L10n.t("Moment"))
                     .font(StoryTheme.body(15, .semibold)).foregroundStyle(StoryTheme.cream)
                 Text(role).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.gold)
                 if let secs = durationSeconds(id) {
-                    Text(secs >= 1 ? "\(Int(secs.rounded()))s clip" : String(format: "%.1fs clip", secs))
+                    Text(secs >= 1 ? L10n.t("\(Int(secs.rounded()))s clip") : L10n.t("\(L10nFormat.decimal(secs))s clip"))
                         .font(StoryTheme.body(11)).foregroundStyle(StoryTheme.textMuted)
                 }
             }
@@ -208,10 +208,10 @@ struct ArrangeMomentsSheet: View {
                     .font(.system(size: 20)).foregroundStyle(isPicked ? StoryTheme.gold : StoryTheme.textSecondary)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isPicked ? "Cancel move of Moment \(number(id) ?? 0)"
-                                         : "Move Moment \(number(id) ?? 0)")
-            .accessibilityHint(tapMoveId == nil ? "Double-tap, then double-tap another Moment to place this before it"
-                                                : "Double-tap another Moment to place this before it")
+            .accessibilityLabel(isPicked ? L10n.t("Cancel move of Moment \(number(id) ?? 0)")
+                                         : L10n.t("Move Moment \(number(id) ?? 0)"))
+            .accessibilityHint(tapMoveId == nil ? L10n.t("Double-tap, then double-tap another Moment to place this before it")
+                                                : L10n.t("Double-tap another Moment to place this before it"))
 
             Button(role: .destructive) {
                 orderedIds.removeAll { $0 == id }
@@ -221,7 +221,7 @@ struct ArrangeMomentsSheet: View {
                     .foregroundStyle(StoryTheme.textMuted)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Remove Moment \(number(id) ?? 0) from the sequence")
+            .accessibilityLabel(L10n.t("Remove Moment \(number(id) ?? 0) from the sequence"))
 
             Image(systemName: "line.3.horizontal").font(.system(size: 16))
                 .foregroundStyle(StoryTheme.textMuted).accessibilityHidden(true)
@@ -262,9 +262,9 @@ struct ArrangeMomentsSheet: View {
     /// more Moments, the bottom card IS its ending (they become the `opening` / `ending` directives). A single
     /// Moment only opens the video — it cannot also be the last shot.
     private func roleLabel(_ idx: Int) -> String {
-        if idx == 0 { return "Opens the video" }
-        if idx == orderedIds.count - 1 { return "Ends the video" }
-        return "Next"
+        if idx == 0 { return L10n.t("Opens the video") }
+        if idx == orderedIds.count - 1 { return L10n.t("Ends the video") }
+        return L10n.t("Next")
     }
 
     // ---- add row: Add Moments + Add all --------------------------------------------------------------
@@ -300,8 +300,8 @@ struct ArrangeMomentsSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("What about the other Moments?")
                 .font(StoryTheme.body(15, .semibold)).foregroundStyle(StoryTheme.cream)
-            policyRow(.allowOthers, "AI can include other Moments between these")
-            policyRow(.onlySelected, "Use only the selected Moments")
+            policyRow(.allowOthers, L10n.t("AI can include other Moments between these"))
+            policyRow(.onlySelected, L10n.t("Use only the selected Moments"))
         }
         .opacity(orderedIds.isEmpty ? 0.4 : 1)
         .disabled(orderedIds.isEmpty)
@@ -330,25 +330,21 @@ struct ArrangeMomentsSheet: View {
     private var disclosureText: String {
         guard !orderedIds.isEmpty else {
             return mode == .revise
-                ? "Your current order is kept. Add Moments above to reposition them."
-                : "The editor will choose the order. Add Moments above to arrange them yourself."
+                ? L10n.t("Your current order is kept. Add Moments above to reposition them.")
+                : L10n.t("The editor will choose the order. Add Moments above to arrange them yourself.")
         }
-        let nums = orderedIds.compactMap { number($0) }.map(String.init).joined(separator: ", ")
-        let first = orderedIds.first.flatMap { number($0) }.map { "Moment \($0)" } ?? "The top Moment"
-        let last = orderedIds.last.flatMap { number($0) }.map { "Moment \($0)" } ?? "the bottom Moment"
-        let ends = orderedIds.count >= 2 ? "\(first) will open the video and \(last) will end it" : "\(first) will open the video"
+        let nums = orderedIds.compactMap { number($0) }.map(String.init).joined(separator: L10n.current == .zhHans ? "、" : ", ")
+        let first = orderedIds.first.flatMap { number($0) }.map { L10n.t("Moment \($0)") } ?? L10n.t("The top Moment")
+        let last = orderedIds.last.flatMap { number($0) }.map { L10n.t("Moment \($0)") } ?? L10n.t("the bottom Moment")
+        let ends = orderedIds.count >= 2 ? L10n.t("\(first) will open the video and \(last) will end it") : L10n.t("\(first) will open the video")
         if mode == .revise {
-            return "\(ends). Moments \(nums) will follow this intended order. The rest of your video stays as it is. "
-                 + "If the footage can't fully allow it, the result says so rather than forcing it."
+            return L10n.t("\(ends). Moments \(nums) will follow this intended order. The rest of your video stays as it is. If the footage can't fully allow it, the result says so rather than forcing it.")
         }
         switch policy {
         case .allowOthers:
-            return "\(ends). Moments \(nums) are required in this intended order; the editor may include other "
-                 + "Moments between them, and keeps your order when the footage allows."
+            return L10n.t("\(ends). Moments \(nums) are required in this intended order; the editor may include other Moments between them, and keeps your order when the footage allows.")
         case .onlySelected:
-            return "\(ends). Only Moments \(nums) will be used, in this intended order. The editor keeps your order "
-                 + "when the footage allows; if it can't fully honor it, the result is shown honestly rather than "
-                 + "forced."
+            return L10n.t("\(ends). Only Moments \(nums) will be used, in this intended order. The editor keeps your order when the footage allows; if it can't fully honor it, the result is shown honestly rather than forced.")
         }
     }
 

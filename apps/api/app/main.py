@@ -66,6 +66,7 @@ from story_coverage import (
 )
 from story_guide import GuideInput, GuideUnavailableError, RefineInput, StoryGuideEngine
 from music_direction import MusicDirectionEngine
+from language_policy import normalize_content_language as _norm_lang
 from edit_planner import (
     EditPlannerEngine,
     EditPlanInputs,
@@ -292,6 +293,11 @@ class StoryCoverageRequest(BaseModel):
     moment_understandings: list[dict] = Field(default_factory=list,
         description="completed MomentUnderstanding records (observed + story_context)")
     pending_count: int = Field(default=0, ge=0)
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class StoryGuideRequest(BaseModel):
@@ -303,6 +309,11 @@ class StoryGuideRequest(BaseModel):
     creative_intent: dict = Field(..., description="the resolved CreativeIntent (compact)")
     scope: dict = Field(default_factory=dict, description="{target_duration_seconds?, format?}")
     source_creative_intent_version: str | None = Field(default=None)
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class StoryGuideRefineRequest(BaseModel):
@@ -324,6 +335,11 @@ class StoryGuideRefineRequest(BaseModel):
     user_instruction: str | None = Field(default=None, description="one-time Update Guide instruction")
     event_context: str | None = Field(default=None, description="persistent editable event context")
     source_creative_intent_version: str | None = Field(default=None)
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class SceneImageRequest(BaseModel):
@@ -439,6 +455,11 @@ class DurationRecommendationRequest(BaseModel):
     story_guide: dict = Field(default_factory=dict)
     story_coverage: dict = Field(default_factory=dict)
     requested_scope: str | None = Field(default=None, description="'highlights' | 'complete' | None")
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class MusicPlanRequest(BaseModel):
@@ -499,6 +520,11 @@ class StoryCoverageV2Request(BaseModel):
     scope: dict = Field(default_factory=dict)
     moment_understandings: list[dict] = Field(default_factory=list)
     pending_count: int = Field(default=0, ge=0)
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class ResolveCreativeIntentRequest(BaseModel):
@@ -507,6 +533,11 @@ class ResolveCreativeIntentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     raw_text: str = Field(min_length=1, description="User's free-form creative direction")
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class DirectorInitializeRequest(BaseModel):
@@ -526,6 +557,11 @@ class DirectorInitializeRequest(BaseModel):
                     "(Story Idea -> Show me, or Guide possibility -> Shoot). Shape: "
                     "{story_guide_dimension_id?, label, purpose, capture_possibility_label?}. null = "
                     "unchanged Director behavior. Semantic WHAT, never a literal shot/constraint.")
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class DirectorNextRequest(BaseModel):
@@ -534,6 +570,11 @@ class DirectorNextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prior: dict = Field(..., description="Prior concept/plan/director_state + progress descriptors")
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 SERVICE_NAME = "story-api"
 SERVICE_VERSION = "0.1.0"  # Milestone A
@@ -1024,7 +1065,9 @@ def create_app() -> FastAPI:
             "input_chars": len(body.raw_text),
         }
         try:
-            intent = engine.resolve(body.raw_text)
+            _lang = _norm_lang(body.content_language)
+            # Only pass the kwarg when a language was requested, so engines/fakes without it are untouched.
+            intent = engine.resolve(body.raw_text) if _lang is None else engine.resolve(body.raw_text, content_language=_lang)
         except StructuredOutputError as e:
             log.warning(
                 "creative_intent_structured_output_failed",
@@ -1394,6 +1437,7 @@ def create_app() -> FastAPI:
             cov = engine.compute(CoverageInput(
                 story_id=body.story_id, creative_intent=body.creative_intent, scope=body.scope,
                 moment_understandings=body.moment_understandings, pending_count=body.pending_count,
+                content_language=_norm_lang(body.content_language),
             ))
         except CoverageUnavailableError as e:
             log.warning("story_coverage_unavailable",
@@ -1440,7 +1484,8 @@ def create_app() -> FastAPI:
         try:
             guide = engine.generate(GuideInput(
                 story_id=body.story_id, creative_intent=body.creative_intent, scope=body.scope,
-                source_creative_intent_version=body.source_creative_intent_version))
+                source_creative_intent_version=body.source_creative_intent_version,
+                content_language=_norm_lang(body.content_language)))
         except GuideUnavailableError as e:
             log.warning("story_guide_v2_unavailable",
                 extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
@@ -1480,7 +1525,8 @@ def create_app() -> FastAPI:
                 current_scenes=body.current_scenes,
                 captured_scene_ids=body.captured_scene_ids, pinned_scene_ids=body.pinned_scene_ids,
                 user_instruction=body.user_instruction, event_context=body.event_context,
-                source_creative_intent_version=body.source_creative_intent_version))
+                source_creative_intent_version=body.source_creative_intent_version,
+                content_language=_norm_lang(body.content_language)))
         except GuideUnavailableError as e:
             log.warning("story_guide_refine_unavailable",
                 extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
@@ -2068,6 +2114,12 @@ def create_app() -> FastAPI:
         # Re-serialize the VALIDATED body so the fingerprint + the worker see a canonical form (and optionally
         # fold in the acceptance-only test delay). Keeps the stored body independent of client whitespace.
         canon = parsed.model_dump(mode="json")
+        # content_language is part of the request identity (it changes the output) ONLY when it is a supported,
+        # normalized value; when absent/unknown the key is dropped so the stored body — and therefore the payload
+        # fingerprint — is byte-identical to the pre-i18n shape.
+        _cl = _norm_lang(canon.pop("content_language", None))
+        if _cl is not None:
+            canon["content_language"] = _cl
         if test_delay_s and int(test_delay_s) > 0:
             canon["_test_delay_s"] = int(test_delay_s)
         body_json = _json.dumps(canon, sort_keys=True, default=str)
@@ -2202,7 +2254,8 @@ def create_app() -> FastAPI:
             recommendation = engine.recommend(DurationPlannerInputs(
                 creative_intent=ci, evidence=evidence,
                 story_guide=body.story_guide, story_coverage=body.story_coverage,
-                requested_scope=body.requested_scope))
+                requested_scope=body.requested_scope,
+                content_language=_norm_lang(body.content_language)))
         except (StructuredOutputError, ProviderError) as e:
             error = str(e)[:300]
             log.warning("duration_recommendation_unavailable", extra={**base, "success": False, "error": error})
@@ -2405,7 +2458,8 @@ def create_app() -> FastAPI:
                 story_id=body.story_id, story_guide=body.story_guide,
                 story_guide_version=body.story_guide_version, creative_intent=body.creative_intent,
                 scope=body.scope, moment_understandings=body.moment_understandings,
-                pending_count=body.pending_count))
+                pending_count=body.pending_count,
+                content_language=_norm_lang(body.content_language)))
         except CoverageV2UnavailableError as e:
             log.warning("story_coverage_v2_unavailable",
                 extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
@@ -2459,8 +2513,14 @@ def create_app() -> FastAPI:
         cid = str(uuid4())
         started = time.monotonic()
         try:
-            out = engine.initialize(body.creative_intent, body.scene_understanding,
-                                    body.capture_constraints, body.selected_opportunity)
+            _lang = _norm_lang(body.content_language)
+            if _lang is None:
+                out = engine.initialize(body.creative_intent, body.scene_understanding,
+                                        body.capture_constraints, body.selected_opportunity)
+            else:
+                out = engine.initialize(body.creative_intent, body.scene_understanding,
+                                        body.capture_constraints, body.selected_opportunity,
+                                        content_language=_lang)
         except StructuredOutputError as e:
             _director_fail("initialize", e, started, cid, "structured_output_failed")
         except ProviderError as e:
@@ -2478,7 +2538,8 @@ def create_app() -> FastAPI:
         cid = str(uuid4())
         started = time.monotonic()
         try:
-            out = engine.next(body.prior)
+            _lang = _norm_lang(body.content_language)
+            out = engine.next(body.prior) if _lang is None else engine.next(body.prior, content_language=_lang)
         except StructuredOutputError as e:
             _director_fail("next", e, started, cid, "structured_output_failed")
         except ProviderError as e:

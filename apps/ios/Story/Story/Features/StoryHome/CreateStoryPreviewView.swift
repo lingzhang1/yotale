@@ -184,9 +184,7 @@ struct CreateStoryPreviewView: View {
                 let existing = coord.direction(for: story.id)?.moodTags ?? []
                 // Surface only a MATERIAL conflict (the requested moods are not already covered).
                 if !Set(pref.moodTags).isSubset(of: Set(existing)) {
-                    musicConflictMessage = "You asked for “\(pref.phrase)” music, but this Story already has a "
-                        + "music feel you set earlier. I kept your earlier choice. Change it from the music "
-                        + "controls if you want “\(pref.phrase)” instead."
+                    musicConflictMessage = L10n.t("You asked for “\(pref.phrase)” music, but this Story already has a music feel you set earlier. I kept your earlier choice. Change it from the music controls if you want “\(pref.phrase)” instead.")
                 }
                 // else: compatible — nothing to do, the authored direction already covers it.
             } else {
@@ -242,18 +240,19 @@ struct CreateStoryPreviewView: View {
                                            story: StoryModel) -> String {
         let numbering = StoryMomentNumbering(story: story.moments)
         func nums(_ ids: [UUID]) -> String {
-            ids.compactMap { numbering.number(forId: $0) }.sorted().map { "Moment \($0)" }.joined(separator: ", ")
+            ids.compactMap { numbering.number(forId: $0) }.sorted().map { L10n.t("Moment \($0)") }
+                .joined(separator: L10n.current == .zhHans ? "、" : ", ")
         }
         if !e.ineligibleNeedsAU.isEmpty {
             let who = nums(e.ineligibleNeedsAU)
-            return "\(who) \(e.ineligibleNeedsAU.count == 1 ? "is" : "are") still being analyzed. "
-                 + "Give it a moment, then create your Story — your instruction is saved."
+            return e.ineligibleNeedsAU.count == 1
+                ? L10n.t("\(who) is still being analyzed. Give it a moment, then create your Story — your instruction is saved.")
+                : L10n.t("\(who) are still being analyzed. Give them a moment, then create your Story — your instruction is saved.")
         }
         if !e.ineligibleUnknown.isEmpty {
-            return "A Moment your instruction refers to isn't available on this device. "
-                 + "Edit your instruction, or wait for it to finish syncing."
+            return L10n.t("A Moment your instruction refers to isn't available on this device. Edit your instruction, or wait for it to finish syncing.")
         }
-        return "Some referenced Moments aren't ready yet. Please try again in a moment."
+        return L10n.t("Some referenced Moments aren't ready yet. Please try again in a moment.")
     }
 
     /// Restore (R6) only the cloud-only Moments this Story's PERSISTED directives reference, on demand, before

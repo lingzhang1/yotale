@@ -84,12 +84,12 @@ enum StoryCreationError: Error, LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .missingPrerequisite(let w): return w
-        case .planUnavailable: return "The Edit Planner is temporarily unavailable. Please retry."
-        case .planInfeasible(let r): return "This Story's material can't fill the target: \(r)"
-        case .planTransport(let r): return "Couldn't reach the Edit Planner: \(r)"
-        case .invalidPlan(let r): return "The plan can't be rendered: \(r)"
-        case .renderFailed(let r): return "Rendering failed: \(r)"
-        case .alreadyCreating: return "A video is already being created for this Story."
+        case .planUnavailable: return L10n.t("The Edit Planner is temporarily unavailable. Please retry.")
+        case .planInfeasible(let r): return L10n.t("This Story's material can't fill the target: \(r)")
+        case .planTransport(let r): return L10n.t("Couldn't reach the Edit Planner: \(r)")
+        case .invalidPlan(let r): return L10n.t("The plan can't be rendered: \(r)")
+        case .renderFailed(let r): return L10n.t("Rendering failed: \(r)")
+        case .alreadyCreating: return L10n.t("A video is already being created for this Story.")
         case .directivesUnsatisfiable(let detail):
             // Only blame the INSTRUCTION when the failure is genuinely about the directives conflicting with
             // each other / the footage (e.g. an explicit exclude set that leaves nothing, or contradictory
@@ -100,30 +100,28 @@ enum StoryCreationError: Error, LocalizedError, Equatable {
             let d = detail.lowercased()
             let mechanical = ["source", "duration", "render", "speed", "output", "timeline", "segment"]
             if mechanical.contains(where: d.contains) {
-                return "I couldn't put together a valid edit this time — this is on my side, not your instruction. Please try again."
+                return L10n.t("I couldn't put together a valid edit this time — this is on my side, not your instruction. Please try again.")
             }
-            return "Your instruction couldn't be fully applied to this footage — some parts may conflict (for example an ordering or an exclude that leaves too little to work with). Try adjusting it."
+            return L10n.t("Your instruction couldn't be fully applied to this footage — some parts may conflict (for example an ordering or an exclude that leaves too little to work with). Try adjusting it.")
         case .invalidPlanOutput:
             // No user directives were involved — do NOT blame the instruction. Honest technical message.
-            return "I couldn't put together a valid edit this time. This is on my side, not your footage — please try again."
+            return L10n.t("I couldn't put together a valid edit this time. This is on my side, not your footage — please try again.")
         case .unsupportedOperation(let detail):
             // Prefer the backend's specific capability message; fall back to a clear generic one.
             let d = detail.trimmingCharacters(in: .whitespacesAndNewlines)
             return d.isEmpty
-                ? "That kind of edit isn't supported yet — this app can re-cut, re-time, reorder, set transitions and change the soundtrack, but not color, filters or visual effects. Your current version was kept."
+                ? L10n.t("That kind of edit isn't supported yet — this app can re-cut, re-time, reorder, set transitions and change the soundtrack, but not color, filters or visual effects. Your current version was kept.")
                 : d
         case .preservationViolation:
             // Phase 2: a distinct message — NOT the duration "can't fill the target" copy. The revise would
             // have changed clips the user did not ask to change, so the original was kept.
-            return "This change would have altered clips you didn't ask to change, so your current version was kept. Try naming the Moments to keep or move, or use Create Another Version for a fresh edit."
+            return L10n.t("This change would have altered clips you didn't ask to change, so your current version was kept. Try naming the Moments to keep or move, or use Create Another Version for a fresh edit.")
         case .insufficientMaterial(let achievable, let requested, let suggested):
             let a = Int(achievable.rounded()), req = Int(requested.rounded())
             if let s = suggested {
-                return "There's about \(a)s of usable footage — not enough for a \(req)s Story. "
-                     + "You can create a shorter \(Int(s.rounded()))s Story, or keep shooting."
+                return L10n.t("There's about \(a)s of usable footage — not enough for a \(req)s Story. You can create a shorter \(Int(s.rounded()))s Story, or keep shooting.")
             }
-            return "There's only about \(a)s of usable footage — not enough for a \(req)s Story yet. "
-                 + "Shoot or add a little more and try again."
+            return L10n.t("There's only about \(a)s of usable footage — not enough for a \(req)s Story yet. Shoot or add a little more and try again.")
         case .quotaDenied(let m):
             // Surface the honest, scope-specific quota message built by the networking layer; never a retry.
             return m
@@ -424,7 +422,7 @@ final class StoryCreationCoordinator {
         // into a dead .idle state (the Creating screen would spin on "Getting your moments ready…" forever with
         // no failure surfaced) — surface a recoverable failure so the user gets Try again.
         guard Self.claimActive(story.id, by: self) else {
-            state = .failed(message: "A video is already being created for this Story. Please wait a moment and try again.")
+            state = .failed(message: L10n.t("A video is already being created for this Story. Please wait a moment and try again."))
             lastFailure = .alreadyCreating
             lastStory = story
             return
@@ -617,9 +615,9 @@ final class StoryCreationCoordinator {
                 editorialType: pendingEditorialType,
                 allowedSourceSet: allowedSourceSet)
         } catch let e as EditPlanRequestBuilder.BuildError {
-            return finishFailed(.missingPrerequisite(e.errorDescription ?? "Missing prerequisites for creation."))
+            return finishFailed(.missingPrerequisite(e.errorDescription ?? L10n.t("Missing prerequisites for creation.")))
         } catch {
-            return finishFailed(.missingPrerequisite("Couldn't assemble the creation request: \(error)"))
+            return finishFailed(.missingPrerequisite(L10n.t("Couldn't assemble the creation request: \(String(describing: error))")))
         }
         if cancelRequested { return finishCancelled() }
 
@@ -1099,9 +1097,9 @@ final class StoryCreationCoordinator {
                 self?.updatePendingStatus(story: story, jobStatus: st.status.rawValue)
                 self?.planningSubstatus = {
                     switch st.status {
-                    case .queued:           return "Queued for planning…"
-                    case .running:          return "Planning your Story…"
-                    case .cancelRequested:  return "Cancelling…"
+                    case .queued:           return L10n.t("Queued for planning…")
+                    case .running:          return L10n.t("Planning your Story…")
+                    case .cancelRequested:  return L10n.t("Cancelling…")
                     default:                return nil
                     }
                 }()
@@ -1347,7 +1345,7 @@ final class StoryCreationCoordinator {
         if let rel = partialRelativePath { cleanup(relative: rel) }
         planningSubstatus = nil
         lastFailure = error
-        state = .failed(message: error.errorDescription ?? "Creation failed.")
+        state = .failed(message: error.errorDescription ?? L10n.t("Creation failed."))
         dropPreparingAttempt()
     }
 

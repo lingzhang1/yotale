@@ -98,14 +98,14 @@ struct MomentsLibraryView: View {
             // "New Story". One pipeline; cancelling leaves no orphan Story.
             CreativeDirectionView(seedMoments: sel.moments)
         }
-        .confirmationDialog("Delete \(selected.count) moment\(selected.count == 1 ? "" : "s") from your library?",
+        .confirmationDialog("Delete \(selected.count) moments from your library?",
                             isPresented: $pendingDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { deleteSelected() }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This permanently removes the original media and analysis, and removes these moments from any Story that used them. Already-created videos are unaffected.")
         }
-        .confirmationDialog("Back up \(selected.count) moment\(selected.count == 1 ? "" : "s") to your account?",
+        .confirmationDialog("Back up \(selected.count) moments to your account?",
                             isPresented: $confirmBackup, titleVisibility: .visible) {
             Button("Back Up") { backUpSelection() }
             Button("Cancel", role: .cancel) { }
@@ -229,7 +229,7 @@ struct MomentsLibraryView: View {
                 }.accessibilityLabel("Library options")
             }
             if !moments.isEmpty && libraryContext.allowsSelection {
-                Button(selecting ? "Done" : "Select") {
+                Button(selecting ? L10n.t("Done") : L10n.t("Select")) {
                     withAnimation { selecting.toggle(); if !selecting { selected.removeAll() } }
                 }
                 .font(StoryTheme.body(15)).foregroundStyle(StoryTheme.gold)
@@ -244,38 +244,38 @@ struct MomentsLibraryView: View {
         return "←"
     }
     private var backLabel: String {
-        if case .recentBrowse = libraryContext { return "Back to camera" }
-        return "Back"
+        if case .recentBrowse = libraryContext { return L10n.t("Back to camera") }
+        return L10n.t("Back")
     }
 
     private var titleText: String {
         switch libraryContext {
-        case .home, .story: return "Moments"
-        case .recentBrowse: return "Recent Moments"
+        case .home, .story: return L10n.t("Moments")
+        case .recentBrowse: return L10n.t("Recent Moments")
         }
     }
 
     private var subtitleText: String {
         switch libraryContext {
-        case .home:         return "\(moments.count) in your library"
-        case .story(let s): return "Add to \(s.title.displayTitle)"
-        case .recentBrowse: return "\(moments.count) in your library"
+        case .home:         return L10n.t("\(moments.count) in your library")
+        case .story(let s): return L10n.t("Add to \(s.title.displayTitle)")
+        case .recentBrowse: return L10n.t("\(moments.count) in your library")
         }
     }
 
     private var hintText: String {
         if case .recentBrowse = libraryContext {
-            return "Tap a moment to preview · close to return to the camera."
+            return L10n.t("Tap a moment to preview · close to return to the camera.")
         }
         if selecting {
             switch libraryContext {
-            case .story: return "Tap moments to select · add them to this Story."
-            default:     return "Tap moments to select · create a Story from them, or delete them."
+            case .story: return L10n.t("Tap moments to select · add them to this Story.")
+            default:     return L10n.t("Tap moments to select · create a Story from them, or delete them.")
             }
         }
         switch libraryContext {
-        case .story: return "Tap a moment to preview · tap Select to add moments to this Story."
-        default:     return "Tap a moment to preview · tap Select to pick moments for a new Story."
+        case .story: return L10n.t("Tap a moment to preview · tap Select to add moments to this Story.")
+        default:     return L10n.t("Tap a moment to preview · tap Select to pick moments for a new Story.")
         }
     }
 
@@ -378,7 +378,7 @@ struct MomentsLibraryView: View {
     // Lives in a safe-area inset (no grid overlap); wraps cleanly on small screens.
     private var homeSelectionBar: some View {
         VStack(spacing: 12) {
-            Text("\(selected.count) Moment\(selected.count == 1 ? "" : "s") selected")
+            Text("\(selected.count) Moments selected")
                 .font(StoryTheme.body(13)).foregroundStyle(StoryTheme.cream.opacity(0.55))
                 .frame(maxWidth: .infinity, alignment: .leading)
 

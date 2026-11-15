@@ -31,10 +31,10 @@ enum MyMusicCloudBackup {
         case uploadFailed(String)
         var errorDescription: String? {
             switch self {
-            case .notImported: return "Saved catalog tracks aren't uploaded (they stay with the music provider)."
-            case .tooLarge(let n): return "That track is too large to back up (\(n / (1024*1024)) MB; limit 30 MB)."
-            case .missingBytes: return "That track's local file is missing, so it can't be backed up."
-            case .uploadFailed(let m): return "Couldn't back up that track (\(m))."
+            case .notImported: return L10n.t("Saved catalog tracks aren't uploaded (they stay with the music provider).")
+            case .tooLarge(let n): return L10n.t("That track is too large to back up (\(n / (1024*1024)) MB; limit 30 MB).")
+            case .missingBytes: return L10n.t("That track's local file is missing, so it can't be backed up.")
+            case .uploadFailed(let m): return L10n.t("Couldn't back up that track (\(m)).")
             }
         }
     }
@@ -115,7 +115,7 @@ enum MyMusicCloudBackup {
             if let e = existing { asset = e }
             else {
                 asset = MyMusicAssetModel(
-                    id: assetId, displayName: "Imported track", relativePath: "",
+                    id: assetId, displayName: L10n.t("Imported track"), relativePath: "",
                     originalFilename: "", durationSeconds: 0, contentHash: "",
                     ownerAccountId: owner,
                     cloudBackupStateRaw: MyMusicAssetModel.CloudBackupState.restorePending.rawValue)

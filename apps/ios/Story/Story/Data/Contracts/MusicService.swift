@@ -125,11 +125,11 @@ enum MusicServiceError: Error, LocalizedError {
     case encoding(Error)
     var errorDescription: String? {
         switch self {
-        case .unavailable: return "Music isn't available right now."
-        case .transport(let e): return "Couldn't reach the music service: \(e)"
-        case .badStatus(let c): return "Unexpected music response (\(c))."
-        case .decoding(let e): return "Music response couldn't be read: \(e)"
-        case .encoding(let e): return "Couldn't build the music request: \(e)"
+        case .unavailable: return L10n.t("Music isn't available right now.")
+        case .transport(let e): return L10n.t("Couldn't reach the music service: \(String(describing: e))")
+        case .badStatus(let c): return L10n.t("Unexpected music response (\(c)).")
+        case .decoding(let e): return L10n.t("Music response couldn't be read: \(String(describing: e))")
+        case .encoding(let e): return L10n.t("Couldn't build the music request: \(String(describing: e))")
         }
     }
 }

@@ -27,16 +27,16 @@ enum MediaDownloadError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Network error during download."
-        case .unauthorized: return "Download session expired."
-        case .notFound: return "Cloud media not found for this account."
-        case .notVerified: return "Cloud media not yet verified."
-        case .badStatus(let c): return "Unexpected download response (\(c))."
-        case .decoding: return "Unexpected download response shape."
-        case .s3GetFailed(let c): return "Download from storage failed (\(c))."
-        case .sizeMismatch(let e, let g): return "Downloaded size \(g) != expected \(e)."
-        case .checksumMismatch: return "Downloaded file failed integrity check."
-        case .missingExpectation: return "Server did not provide size/checksum to verify the download."
+        case .transport: return L10n.t("Network error during download.")
+        case .unauthorized: return L10n.t("Download session expired.")
+        case .notFound: return L10n.t("Cloud media not found for this account.")
+        case .notVerified: return L10n.t("Cloud media not yet verified.")
+        case .badStatus(let c): return L10n.t("Unexpected download response (\(c)).")
+        case .decoding: return L10n.t("Unexpected download response shape.")
+        case .s3GetFailed(let c): return L10n.t("Download from storage failed (\(c)).")
+        case .sizeMismatch(let e, let g): return L10n.t("Downloaded size \(g) != expected \(e).")
+        case .checksumMismatch: return L10n.t("Downloaded file failed integrity check.")
+        case .missingExpectation: return L10n.t("Server did not provide size/checksum to verify the download.")
         }
     }
 }

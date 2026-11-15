@@ -122,7 +122,8 @@ final class StoryCoverageEngine {
         let request = StoryCoverageV2RequestDTO(
             storyId: story.id, storyGuide: guideValue, storyGuideVersion: guide.schemaVersion,
             creativeIntent: intentValue, scope: .object(scope),
-            momentUnderstandings: inputsAtStart.completedMUValues, pendingCount: inputsAtStart.pendingCount)
+            momentUnderstandings: inputsAtStart.completedMUValues, pendingCount: inputsAtStart.pendingCount,
+            contentLanguage: ContentLanguageResolver.requestValue(for: story))
         do {
             let dto = try await service.compute(request)
             // OBSOLETE-SKIP: inputs moved on during the call -> do NOT overwrite current coverage with a stale
