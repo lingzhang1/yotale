@@ -1668,8 +1668,12 @@ def _budget_block(h: dict | None) -> str:
     a, b = h["typical_shot_s"]
     return (
         f"\nBUDGET (advisory, not a quota): the target is {h['target_s']:g}s. {name} tends to run about "
-        f"{a:g}–{b:g}s per shot, which suggests roughly {lo}–{hi} shots. Material: {material}. Decide your shots "
-        f"and their lengths FIRST so that the sum of output_duration_seconds lands within about ±10% of "
+        f"{a:g}–{b:g}s per shot, which would suggest roughly {lo}–{hi} shots. Material: {material}. This is a "
+        "typical-pace guide only: NOT a minimum or maximum shot length, NOT a shot count, and it never overrides the "
+        "user's instructions. Fewer, stronger shots are fine: when the strongest footage runs out, let a striking "
+        "shot or a complete action run longer, or end a little under the target, rather than adding weak or "
+        "repetitive footage. Keep complete actions, meaningful sound and striking continuous shots intact. Decide "
+        f"your shots and their lengths FIRST so that the sum of output_duration_seconds lands within about ±10% of "
         f"{h['target_s']:g}s before you finish; a payoff or continuous action may run longer than typical. A "
         "deterministic fit will trim a plan that runs long, possibly cutting footage you valued, so aim at the "
         "target yourself.\n")
@@ -2539,8 +2543,24 @@ def _payoff_overlap(moment: dict, a: float, b: float) -> tuple[bool, str | None]
     return pay, best_role
 
 
+def _short_refs(ids, min_len: int = 8) -> dict[str, str]:
+    """Collision-safe short references for one job: each id maps to the shortest prefix (>= min_len chars) that no
+    OTHER id in the job shares. Deterministic; random UUIDs stay at 8 chars, deterministic/similar ids lengthen
+    until they are unique, so two different Moments can never share a reference within a job."""
+    uniq = sorted({str(i).lower() for i in ids if i})
+    refs: dict[str, str] = {}
+    for i in uniq:
+        n = min_len
+        while n < len(i) and any(o != i and o.startswith(i[:n]) for o in uniq):
+            n += 1
+        refs[i] = i[:n]
+    return refs
+
+
 def selection_diagnostics(plan: dict, inputs: "EditPlanInputs", diag: dict, pre_fit_plan: dict | None = None) -> dict:
     by_id = {str(m.get("id")).lower(): m for m in (inputs.moments or []) if isinstance(m, dict)}
+    _refs = _short_refs(list(by_id) + [str(sg.get("asset_id")).lower()
+                                       for sg in ((plan or {}).get("segments") or []) + ((pre_fit_plan or {}).get("segments") or [])])
     segs = sorted((plan or {}).get("segments", []) or [], key=lambda x: x.get("order", 0))
     used, used_ids = [], set()
     for sg in segs:
@@ -2556,7 +2576,7 @@ def selection_diagnostics(plan: dict, inputs: "EditPlanInputs", diag: dict, pre_
         except (TypeError, ValueError):
             out = None
         if len(used) < _SEL_MAX_USED:
-            used.append({"m": mid[:8], "r": [round(a, 2), round(b, 2)], "o": out, "p": pay, "role": role})
+            used.append({"m": _refs.get(mid, mid[:8]), "r": [round(a, 2), round(b, 2)], "o": out, "p": pay, "role": role})
     unused = []
     for mid, m in by_id.items():
         if mid in used_ids:
@@ -2566,7 +2586,7 @@ def selection_diagnostics(plan: dict, inputs: "EditPlanInputs", diag: dict, pre_
             ed = m.get("editorial") or {}
             confs = [v.get("confidence") for v in ed.get("visual_candidates", [])
                      if isinstance(v, dict) and v.get("role") == "payoff" and isinstance(v.get("confidence"), (int, float))]
-            unused.append({"m": mid[:8], "payoff_windows": n, "payoff_s": round(tot, 1),
+            unused.append({"m": _refs.get(mid, mid[:8]), "payoff_windows": n, "payoff_s": round(tot, 1),
                            "conf": round(max(confs), 2) if confs else None,
                            "dur_s": round(float(m.get("duration_seconds") or 0), 1)})
     unused.sort(key=lambda x: -(x["conf"] or 0))

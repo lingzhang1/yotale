@@ -294,8 +294,16 @@ def _plan_for(inp, picks):
     return {"target_duration_seconds": 90, "segments": segs}
 
 
+def _distinct_prefix_moments():
+    ms = fx.red_jacket_group()
+    for i, m in enumerate(ms):
+        m["id"] = f"{0xa0 + i:02x}{i:06x}-0000-4000-8000-00000000000{i}"
+    return ms
+
+
 def test_selection_diagnostics_shape_and_privacy(v55):
-    inp = fx.make_inputs(**H)
+    ms = _distinct_prefix_moments()
+    inp = fx.make_inputs(moments=ms, image_moment_order=[m["id"] for m in ms], **H)
     plan = _plan_for(inp, [(3, 0, 8), (1, 0, 5.2), (2, 1.58, 4.5)])
     pre = _plan_for(inp, [(3, 0, 10), (1, 0, 5.2), (2, 1.58, 6.1), (4, 0, 4.5)])
     d = selection_diagnostics(plan, inp, {"duration_fit": {"applied": True, "adopted": True, "before_s": 25.8,
@@ -303,9 +311,9 @@ def test_selection_diagnostics_shape_and_privacy(v55):
     assert d["editorial_type"] == "highlights" and d["brief"] == "type_aware" and d["prompt_version"] == ep.PROMPT_VERSION
     assert d["shots"]["n"] == 3 and d["shots"]["distinct"] == 3 and d["pre_fit"]["n"] == 4
     assert d["budget"]["pre_fit_total_s"] > d["budget"]["delivered_s"] and d["budget"]["hint"]["suggested_shots"] == [10, 10]   # 5 Moments => at most 2 shots each
-    assert d["opening"]["m"] == "aaaaaaaa" and d["opening"]["p"] is False         # opening is an establishing shot here
+    assert d["opening"]["m"] == ms[3]["id"][:8] and d["opening"]["p"] is False         # opening is an establishing shot here
     assert d["used"][1]["p"] is True and d["used"][1]["role"] == "payoff"
-    assert {u["m"] for u in d["unused_payoff"]} == {"aaaaaaaa"} and len(d["unused_payoff"]) == 1
+    assert {u["m"] for u in d["unused_payoff"]} == {ms[0]["id"][:8]} and len(d["unused_payoff"]) == 1
     assert d["sheets"] == {"count": 5, "bytes": 5 * 3}
     assert d["fit"]["dropped"] == 1 and d["fit"]["adopted"] is True
     s = json.dumps(d)
@@ -370,3 +378,148 @@ def test_engine_system_prompt_is_the_55_prompt_when_selected(monkeypatch):
 def test_worker_whitelists_selection_diagnostics():
     src = open(os.path.join(ROOT, "apps", "api", "app", "worker.py")).read()
     assert '"selection")}' in src
+
+
+# --------------------------------------------------------------------------------------------------------------
+# 10. M1 review: critique coupling, hint safety, diagnostics correctness
+# --------------------------------------------------------------------------------------------------------------
+def _fake_critique_gateway(inp):
+    """Gateway that answers the plan call with a valid plan and the critique/revision calls with text/plan."""
+    class GW(FakeModelGateway):
+        pass
+    return GW(response=_valid_plan(inp))
+
+
+@pytest.mark.parametrize("etype", ["highlights", "full_story"])
+def test_v55_alone_never_enables_critique(v55, etype):
+    """The critique pass needs an explicit client opt-in (critique_revision) AND a brief. Selecting 5.5, sending a brief and
+    a type must stay at ONE planner call."""
+    inp = fx.make_inputs(**dict(fx.CASES["highlights_original"], editorial_type=etype,
+                                creative_intent={"target_duration_seconds": 15.0}))
+    assert inp.critique_revision is False and inp.creative_brief
+    eng = RealEditPlannerEngine(FakeModelGateway(response=_valid_plan(inp)))
+    eng.generate(inp)
+    assert eng.last_diagnostics["model_calls"] == 1 and "critique_attempted" not in eng.last_diagnostics
+
+
+def test_critique_is_opt_in_only_and_needs_a_brief(v55):
+    src = open(os.path.join(ROOT, "packages", "edit_planner", "__init__.py")).read()
+    assert "if inputs.critique_revision and inputs.creative_brief:" in src          # the ONLY trigger
+    api = open(os.path.join(ROOT, "apps", "api", "app", "main.py")).read()
+    assert api.count("critique_revision: bool = Form(default=False") == 2             # sync + job endpoints default OFF
+    assert "bool(env.get(\"critique_revision\"))" in open(os.path.join(ROOT, "apps", "api", "app", "worker.py")).read()
+
+
+def test_critique_runs_only_when_the_client_opts_in(v55):
+    inp = fx.make_inputs(**dict(fx.CASES["highlights_original"], critique_revision=True,
+                                creative_intent={"target_duration_seconds": 15.0}))
+    gw = FakeModelGateway(response=_valid_plan(inp))
+    eng = RealEditPlannerEngine(gw)
+    eng.generate(inp)
+    assert eng.last_diagnostics.get("critique_attempted") is True                    # explicit opt-in is honored, not hidden
+
+
+# ---- budget hint cannot contradict comparative selection --------------------------------------------------------
+def test_hint_states_it_is_not_a_quota_or_limit_and_allows_fewer_stronger_shots(v55):
+    u = _build_user(fx.make_inputs(**H))
+    b = u.split("BUDGET", 1)[1].split("\nINPUT:", 1)[0]
+    for must in ("NOT a minimum or maximum shot length", "NOT a shot count", "never overrides the user's instructions",
+                 "Fewer, stronger shots are fine", "rather than adding weak or repetitive footage",
+                 "complete actions, meaningful sound and striking continuous shots intact"):
+        assert must in b, must
+    assert "SELECT, do not cover" in u and "using fewer Moments is correct" in u        # selection objective is present too
+    assert not re.search(r"\b(at least|at most|exactly|required|must use)\b", b, re.I)
+
+
+def test_plan_below_the_suggested_shot_count_is_accepted_untouched(v55):
+    """The hint never becomes a validator/fitter rule: a plan with FEWER shots than suggested ships as the model wrote it."""
+    inp = fx.make_inputs(**dict(H, creative_intent={"target_duration_seconds": 90.0}))
+    assert compute_budget_hint(inp)["suggested_shots"][0] > 3
+    plan = _valid_plan(inp)                                                           # 4 shots, far below the suggestion
+    assert validate_plan(plan, inp) == []
+    eng = RealEditPlannerEngine(FakeModelGateway(response=plan))
+    out = eng.generate(inp)
+    d = eng.last_diagnostics
+    assert d["model_calls"] == 1 and len(out.segments) == 4 and d["first_pass_executable"] is True
+    assert d["selection"]["shots"]["n"] == 4 and d["selection"]["budget"]["hint"]["suggested_shots"][0] > 4
+
+
+def test_validator_and_fitter_do_not_read_the_hint():
+    import inspect
+    from edit_planner import duration_fit
+    for fn in (ep.validate_plan, ep.assess_creative_intent):
+        assert "suggested_shots" not in inspect.getsource(fn) and "compute_budget_hint" not in inspect.getsource(fn)
+    assert "suggested_shots" not in inspect.getsource(duration_fit)
+
+
+def test_user_directives_and_type_win_over_hint_text(v55):
+    u = _build_user(fx.make_inputs(**fx.CASES["highlights_opening_directive"]))
+    assert "never overrides the user's instructions" in u and "always win over this strategy" in u
+
+
+# ---- selection diagnostics: correct, independent, collision-safe, serialisable ---------------------------------
+def _independent_selection_check(plan, inp):
+    """Recompute from first principles, sharing no code with selection_diagnostics."""
+    used = [str(s["asset_id"]).lower() for s in sorted(plan["segments"], key=lambda x: x["order"])]
+    outs = [float(s["output_duration_seconds"]) for s in plan["segments"]]
+    payoff_ids = set()
+    for m in inp.moments:
+        for v in (m.get("editorial") or {}).get("visual_candidates", []):
+            if v.get("role") == "payoff":
+                payoff_ids.add(m["id"].lower())
+    return {"n": len(used), "distinct": len(set(used)), "total": round(sum(outs), 2),
+            "unused_payoff": sorted(payoff_ids - set(used))}
+
+
+def test_selection_numbers_match_an_independent_recomputation(v55):
+    ms = _distinct_prefix_moments()
+    inp = fx.make_inputs(moments=ms, image_moment_order=[m["id"] for m in ms], **H)
+    plan = _plan_for(inp, [(3, 0, 8), (1, 0, 5.2), (1, 9.5, 12.5), (2, 1.58, 4.5)])
+    d = selection_diagnostics(plan, inp, {}, plan)
+    ind = _independent_selection_check(plan, inp)
+    assert (d["shots"]["n"], d["shots"]["distinct"], d["budget"]["delivered_s"]) == (ind["n"], ind["distinct"], ind["total"])
+    refs = {m["id"].lower(): m["id"][:8] for m in ms}
+    assert sorted(u["m"] for u in d["unused_payoff"]) == sorted(refs[i] for i in ind["unused_payoff"])
+    assert d["budget"]["pre_fit_total_s"] == d["budget"]["delivered_s"]               # no fit => pre == delivered
+    assert [u["m"] for u in d["used"]] == [refs[str(s["asset_id"]).lower()] for s in plan["segments"]]
+
+
+def test_short_refs_never_collide_within_a_job():
+    same = [f"aaaaaaaa-0000-4000-8000-00000000000{i}" for i in range(5)]
+    r = ep._short_refs(same)
+    assert len(set(r.values())) == 5 and all(len(v) >= 8 for v in r.values())
+    assert all(full.startswith(ref) for full, ref in r.items())                      # a ref is always a prefix of its id
+    mixed = ["abcdefgh", "abcdefghij", "abcdefghik", "m1", "m10"]
+    r2 = ep._short_refs(mixed)
+    assert len(set(r2.values())) == len(mixed)
+    rand = [__import__("uuid").uuid4().hex for _ in range(200)]
+    rr = ep._short_refs(rand)
+    assert len(set(rr.values())) == 200 and max(len(v) for v in rr.values()) <= 10    # random ids stay short
+    assert ep._short_refs(same) == ep._short_refs(list(reversed(same)))              # deterministic
+
+
+def test_diagnostics_with_colliding_prefixes_stay_unambiguous(v55):
+    inp = fx.make_inputs(**H)                                                         # fixture ids all start "aaaaaaaa"
+    plan = _plan_for(inp, [(0, 0, 3), (1, 0, 5.2), (2, 1.58, 4.5)])
+    d = selection_diagnostics(plan, inp, {}, None)
+    refs = [u["m"] for u in d["used"]]
+    assert len(set(refs)) == 3
+    assert not ({u["m"] for u in d["unused_payoff"]} & set(refs))                    # an unused ref never equals a used ref
+
+
+def test_selection_serialises_through_the_job_store_unchanged(v55):
+    from edit_plan_jobs import _ser, _deser_val
+    ms = _distinct_prefix_moments()
+    inp = fx.make_inputs(moments=ms, image_moment_order=[m["id"] for m in ms], **H)
+    d = selection_diagnostics(_plan_for(inp, [(3, 0, 8), (1, 0, 5.2)]), inp, {}, None)
+    back = _deser_val({"M": _ser(d)})
+    assert json.loads(json.dumps(back)) == json.loads(json.dumps(d))                  # no loss through the DynamoDB codec
+    assert len(json.dumps(d)) < 20000                                                  # small enough for a job item
+
+
+def test_diagnostics_store_no_images_and_no_prompt_text(v55):
+    ms = _distinct_prefix_moments()
+    inp = fx.make_inputs(moments=ms, image_moment_order=[m["id"] for m in ms], **H)
+    s = json.dumps(selection_diagnostics(_plan_for(inp, [(3, 0, 8)]), inp, {}, None))
+    for banned in ("TYPE STRATEGY", "CREATIVE DIRECTION", "BUDGET", "xff", "base64", "data:image"):
+        assert banned not in s

@@ -90,3 +90,19 @@ def test_render_is_offline_restores_state_and_shows_both_versions(tmp_path):
     assert (tmp_path / "o" / "user.diff").read_text().startswith("--- user@5.3")
     s = json.loads((tmp_path / "o" / "summary.json").read_text())
     assert s["5.3"]["budget_hint"] is None and s["5.5"]["budget_hint"]["suggested_shots"] == [10, 10]
+
+
+def test_calls_are_split_planner_repair_and_critique():
+    r = E.job_metrics(_job("aaaaaaaa", "highlights", None, 90, 100, 95, 20, calls=2, extra={"executability_repairs_used": 1}))
+    assert (r["model_calls"], r["planner_calls"], r["repair_calls"], r["critique_attempted"]) == (2, 1, 1, False)
+    c = E.job_metrics(_job("bbbbbbbb", "highlights", None, 90, 100, 95, 20, calls=3, extra={"critique_attempted": True}))
+    assert c["planner_calls"] == 1 and c["critique_attempted"] is True
+
+
+def test_compare_warns_when_critique_was_on():
+    j = _job("aaaaaaaa", "highlights", None, 90, 100, 95, 20, calls=3, extra={"critique_attempted": True})
+    j["critique_requested"] = True
+    w = E.comparison_warnings([E.job_metrics(j)])
+    assert any(x.startswith("CRITIQUE ON") and "STORY_CRITIQUE_REVISION" in x for x in w)
+    assert not [x for x in E.comparison_warnings([E.job_metrics(_job("cccccccc", "highlights", None, 90, 100, 95, 20))])
+                if x.startswith(("CRITIQUE", "PLANNER CALLS"))]

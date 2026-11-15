@@ -136,7 +136,8 @@ def load_au_moments(path: str | None) -> list[dict]:
         dur = round(ms[-1] / 1000.0 * n / (n - 1), 2)
         us = [[u.get("start_time"), u.get("end_time")] for u in (obs.get("useful_segments") or []) if isinstance(u, dict)]
         out.append({"id": str(r.get("moment_id") or j.get("moment_id")).lower(), "duration_seconds": dur,
-                    "useful_segments": us or [[0, dur]], "editorial": j.get("editorial"), "events": obs.get("events")})
+                    "useful_segments": us or [[0, dur]], "editorial": j.get("editorial"), "events": obs.get("events"),
+                    "subjects": [str(x).lower() for x in (obs.get("subjects") or [])]})
     return out
 
 
@@ -164,6 +165,64 @@ def _coerce_plan(plan: dict) -> dict:
     if _num(out.get("target_duration_seconds")) is not None:
         out["target_duration_seconds"] = float(out["target_duration_seconds"])
     return out
+
+
+def _coverage(segs: list[dict], moments: list[dict]) -> dict:
+    """Deterministic coverage descriptors from the plan and AU (NOT a quality judgement):
+    payoff windows / narrative candidates overlapped by a used source range, native-audio mix, and groups of used
+    Moments that share the same AU subjects (candidate near-duplicate groups FOR HUMAN REVIEW only)."""
+    by = {m["id"]: m for m in moments}
+    used: dict[str, list[tuple[float, float]]] = {}
+    for sg in segs:
+        a, b = _num(sg.get("source_start_seconds")), _num(sg.get("source_end_seconds"))
+        if a is not None and b is not None:
+            used.setdefault(str(sg.get("asset_id")).lower(), []).append((a, b))
+
+    def hit(mid, s0, e0):
+        return any(min(b, e0) - max(a, s0) > 0 for a, b in used.get(mid, []))
+    pay_t = pay_h = nar_t = nar_h = 0
+    for mid, m in by.items():
+        ed = m.get("editorial") or {}
+        for v in ed.get("visual_candidates", []) or []:
+            if isinstance(v, dict) and v.get("role") == "payoff" and _num(v.get("start_time")) is not None:
+                pay_t += 1; pay_h += hit(mid, _num(v["start_time"]), _num(v["end_time"]))
+        for n in ed.get("narrative_candidates", []) or []:
+            if isinstance(n, dict) and _num(n.get("start_time")) is not None and _num(n.get("end_time")) is not None:
+                nar_t += 1; nar_h += hit(mid, _num(n["start_time"]), _num(n["end_time"]))
+    audio: dict[str, int] = {}
+    for sg in segs:
+        audio[str(sg.get("native_audio"))] = audio.get(str(sg.get("native_audio")), 0) + 1
+    groups: dict[tuple, set] = {}
+    for mid in used:
+        subj = tuple(sorted((by.get(mid) or {}).get("subjects") or []))
+        if subj:
+            groups.setdefault(subj, set()).add(mid)
+    first = str(segs[0].get("asset_id")).lower() if segs else None
+    fa, fb = (_num(segs[0].get("source_start_seconds")), _num(segs[0].get("source_end_seconds"))) if segs else (None, None)
+    role = None
+    if first in by and fa is not None and fb is not None:
+        best = 0.0
+        for v in (by[first].get("editorial") or {}).get("visual_candidates", []) or []:
+            if isinstance(v, dict) and _num(v.get("start_time")) is not None:
+                ov = min(fb, _num(v["end_time"])) - max(fa, _num(v["start_time"]))
+                if ov > best:
+                    best, role = ov, v.get("role")
+    return {"payoff_window_coverage": f"{pay_h}/{pay_t}" if pay_t else None,
+            "narrative_candidate_coverage": f"{nar_h}/{nar_t}" if nar_t else None,
+            "native_keep": audio.get("keep", 0), "native_duck": audio.get("duck", 0), "native_mute": audio.get("mute", 0),
+            "opening_role": role, "dup_review_groups": sum(1 for g in groups.values() if len(g) > 1) if groups else None}
+
+
+def _planner_calls(d: dict):
+    """The planned generation call(s), net of executability repairs, truncation retries and the 2-call critique pass.
+    Repairs are accounted separately (`repair_calls`); a clean single-call job is 1."""
+    n = _num(d.get("model_calls"))
+    if n is None:
+        return None
+    n -= (_num(d.get("executability_repairs_used")) or 0) + (_num(d.get("truncation_escalations")) or 0)
+    if d.get("critique_attempted"):
+        n -= 2
+    return int(max(n, 0))
 
 
 def job_metrics(job: dict, au_moments: list[dict] | None = None, label: str | None = None) -> dict:
@@ -220,7 +279,9 @@ def job_metrics(job: dict, au_moments: list[dict] | None = None, label: str | No
         "operation": (rd.get("mode") or "original"),
         "target_s": target, "target_source": d.get("duration_target_source") or "unrecorded",
         "moments": (sel or {}).get("n_moments") or len(sheet_ids) or None, "sheets": d.get("sheet_count"),
-        "model_calls": d.get("model_calls"), "first_pass_executable": d.get("first_pass_executable"),
+        "model_calls": d.get("model_calls"), "repair_calls": d.get("executability_repairs_used") or 0,
+        "critique_requested": bool(job.get("critique_requested")), "critique_attempted": bool(d.get("critique_attempted")),
+        "planner_calls": _planner_calls(d), "first_pass_executable": d.get("first_pass_executable"),
         "completion": d.get("completion"), "valid": valid,
         "pre_fit_total_s": round(pre_total, 1) if pre_total is not None else None,
         "pre_fit_overshoot_pct": round((pre_total / target - 1) * 100, 1) if (pre_total and target) else None,
@@ -237,6 +298,8 @@ def job_metrics(job: dict, au_moments: list[dict] | None = None, label: str | No
         "input_tokens": d.get("input_tokens"), "output_tokens": d.get("output_tokens"), "est_cost_usd": cost,
         "job_latency_s": round(updated - created, 1) if (created is not None and updated is not None) else None,
         "api_build": d.get("api_build_sha"), "worker_build": d.get("worker_build_sha"),
+        "directive_keys": ",".join(rd.get("directive_keys") or []) or None,
+        **(_coverage(segs, moments) if moments else {}),
     }
 
 
@@ -255,13 +318,22 @@ def comparison_warnings(rows: list[dict]) -> list[str]:
             w.append(f"NOT COMPARABLE ({t}): different Moment counts.")
         if len({r["prompt_version"] for r in rs}) < 2 and len(rs) > 1:
             w.append(f"NOTE ({t}): all rows share prompt_version {rs[0]['prompt_version']}; this is not a baseline/candidate pair.")
+    for r in rows:
+        if r.get("critique_requested") or r.get("critique_attempted"):
+            w.append(f"CRITIQUE ON ({r['label']}): the critique->revision pass was requested/attempted; the approved "
+                     "initial evaluation uses ONE planner call and no critique. Rebuild the app (>= #121) and clear "
+                     "any STORY_CRITIQUE_REVISION override, then regenerate this case once.")
+        if r.get("planner_calls") not in (None, 1):
+            w.append(f"PLANNER CALLS ({r['label']}): {r['planner_calls']} planned generation calls (expected 1).")
     return w
 
 
 COLS = ["label", "prompt_version", "editorial_type", "operation", "target_s", "moments", "sheets", "model_calls",
+        "planner_calls", "repair_calls", "critique_requested", "critique_attempted",
         "pre_fit_total_s", "pre_fit_overshoot_pct", "delivered_s", "delivered_overshoot_pct", "shots", "distinct",
         "pre_fit_mean_s", "mean_s", "median_s", "fit_changes", "fit_dropped", "payoff_shots", "opening_is_payoff",
-        "unused_payoff_moments", "valid", "completion", "input_tokens", "output_tokens", "est_cost_usd", "job_latency_s"]
+        "unused_payoff_moments", "payoff_window_coverage", "narrative_candidate_coverage", "opening_role",
+        "native_keep", "native_duck", "native_mute", "dup_review_groups", "directive_keys", "exported_mp4_s", "valid", "completion", "input_tokens", "output_tokens", "est_cost_usd", "job_latency_s"]
 
 
 def to_markdown(rows: list[dict], warnings: list[str]) -> str:
@@ -282,6 +354,9 @@ def cmd_compare(a) -> int:
     au = load_au_moments(a.au)
     labels = a.labels.split(",") if a.labels else [None] * len(a.jobs)
     rows = [job_metrics(load_job(j), au, labels[i] if i < len(labels) else None) for i, j in enumerate(a.jobs)]
+    mp4 = dict(x.split("=", 1) for x in (a.mp4 or []))
+    for r in rows:   # exported MP4 duration is measured outside the planner (story-doc output or the file itself)
+        r["exported_mp4_s"] = _num(mp4.get(r["label"]) or mp4.get(r["job"]))
     warns = comparison_warnings(rows)
     md = to_markdown(rows, warns)
     print(md)
@@ -299,7 +374,8 @@ def main(argv=None) -> int:
     m = sub.add_parser("metrics"); m.add_argument("--job", required=True); m.add_argument("--au"); m.add_argument("--label")
     m.set_defaults(fn=cmd_metrics)
     c = sub.add_parser("compare"); c.add_argument("jobs", nargs="+"); c.add_argument("--au"); c.add_argument("--labels")
-    c.add_argument("--out"); c.set_defaults(fn=cmd_compare)
+    c.add_argument("--out"); c.add_argument("--mp4", nargs="*", help="LABEL=SECONDS exported MP4 durations")
+    c.set_defaults(fn=cmd_compare)
     a = ap.parse_args(argv)
     return a.fn(a)
 
