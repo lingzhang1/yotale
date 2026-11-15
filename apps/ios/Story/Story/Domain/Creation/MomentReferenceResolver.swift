@@ -243,10 +243,14 @@ enum MomentReferenceResolver {
     }
 
     // MARK: Chinese (简体中文) reference support — additive; English patterns above are untouched.
-    // A Chinese Moment reference: 片段8 / 片段 8 / 片段#8 / 片段八 / 第8个片段 / 第八段 / 第８段 (full-width digits,
-    // Chinese numerals 一…九十九 and 两 are accepted). Each form has ONE capture group (see `capturedNumbers`).
+    // A Chinese Moment reference: 瞬间8 / 瞬间 8 / 片段8 / 片段#8 / 片段八 / 第8个瞬间 / 第三个瞬间 / 第8个片段 / 第八段 /
+    // 第８段 (full-width digits, Chinese numerals 一…九十九 and 两 are accepted). 瞬间 is the UI's name for a Moment; 片段
+    // is kept because users (and older copy) also say it. "瞬间" + a Chinese NUMERAL is deliberately NOT a reference:
+    // it is ordinary prose ("那一瞬间十分感人" must not become Moment 10), so bare 瞬间 takes digits only. Each
+    // alternative has ONE capture group and `capturedNumbers` reads whichever matched.
     private static let zhNum = "[0-9０-９一二三四五六七八九十两]+"
-    private static let zhRef = "(?:片段\\s*#?\\s*(\(zhNum))|第\\s*(\(zhNum))\\s*(?:个\\s*片段|段|片段))"
+    private static let zhDigits = "[0-9０-９]+"
+    private static let zhRef = "(?:片段\\s*#?\\s*(\(zhNum))|瞬间\\s*#?\\s*(\(zhDigits))|第\\s*(\(zhNum))\\s*(?:个\\s*(?:瞬间|片段)|段|瞬间|片段))"
 
     private static var chinesePatterns: [(DirectiveSlot, String)] {
         let r = zhRef
