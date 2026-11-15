@@ -25,13 +25,16 @@ final class ReleaseConfigDefaultsTests: XCTestCase {
                        "availability must come ONLY from the baked value, never UserDefaults/env")
     }
 
-    /// The retained critique pass defaults ON (owner kept it to tune latency later) and is the ONLY remaining
-    /// planning switch; Explore never runs it and the removed Explore opt-in no longer exists.
-    func test_critiqueRevision_isRetainedAndDefaultsOn() {
-        XCTAssertTrue(StoryMultimodalPlanning.critiqueRevisionEnabled)
-        StoryMultimodalPlanning.setCritiqueOverride(false)
+    /// The retained critique pass defaults OFF (owner 2026-11-15: ~+20-28 s of planning for no demonstrated gain)
+    /// and can still be turned ON, and back OFF, without a code change.
+    func test_critiqueRevision_isRetainedAndDefaultsOff() {
+        UserDefaults.standard.removeObject(forKey: StoryMultimodalPlanning.critiqueFlagKey)
+        XCTAssertFalse(StoryMultimodalPlanning.critiqueRevisionEnabled, "a plain original create plans in ONE call")
         defer { UserDefaults.standard.removeObject(forKey: StoryMultimodalPlanning.critiqueFlagKey) }
-        XCTAssertFalse(StoryMultimodalPlanning.critiqueRevisionEnabled, "the retained latency lever still works")
+        StoryMultimodalPlanning.setCritiqueOverride(true)
+        XCTAssertTrue(StoryMultimodalPlanning.critiqueRevisionEnabled, "the retained setting can turn the 3-call path on")
+        StoryMultimodalPlanning.setCritiqueOverride(false)
+        XCTAssertFalse(StoryMultimodalPlanning.critiqueRevisionEnabled)
     }
 
     /// The critique-pass rules that the removed STORY_CRITIQUE_EXPLORE / kept STORY_CRITIQUE_REVISION settings
@@ -49,7 +52,7 @@ final class ReleaseConfigDefaultsTests: XCTestCase {
                                          reviseScope: .targeted(needsImages: false)),
                        "a targeted revise is a bounded change, no critique")
         XCTAssertFalse(P.critiqueApplies(wantMultimodal: true, critiqueEnabled: false, isExplore: false, reviseScope: nil),
-                       "the retained setting still switches it off (latency lever)")
+                       "with the setting off (the default) even an original Create plans in one call")
         XCTAssertFalse(P.critiqueApplies(wantMultimodal: false, critiqueEnabled: true, isExplore: false, reviseScope: nil),
                        "text-only planning never runs a multimodal critique")
     }

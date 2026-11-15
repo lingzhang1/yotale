@@ -44,7 +44,7 @@ value to a baked value (relocated, not deleted).
 
 | Setting | Where | Why |
 |---|---|---|
-| `STORY_CRITIQUE_REVISION` | iOS env + UserDefaults | **Owner decision**: kept for latency optimisation. Default ON. Decision logic extracted to `critiqueApplies(...)` and unit-tested. |
+| `STORY_CRITIQUE_REVISION` | iOS env + UserDefaults | **Owner decision**: retained as the only planning switch. Default OFF since 2026-11-15 (original create = 1 call); set `STORY_CRITIQUE_REVISION=1` to enable the 3-call critique path. Decision logic extracted to `critiqueApplies(...)` and unit-tested. |
 | `STORY_REFERENCE_MEDIA_MODE` | CDK/service + iOS | Parked video reference feature; `image` is required by `release.json`. |
 | `STORY_EVIDENCE_PERSIST_ENABLED` | CDK/service | **Operational privacy kill-switch**, not a product flag. Beta stores personal frames; account deletion is still design-only. OFF = graceful full re-analysis, and the gate rejects it unless `approved_degradations` lists it. |
 | `STORY_OPENAI_MODEL`, `STORY_GEMINI_MODEL` | CDK API + worker | The only provider knobs; gate requires API == worker and rejects Anthropic ids. |
