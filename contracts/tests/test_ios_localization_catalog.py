@@ -83,7 +83,7 @@ def test_story_count_label_is_not_concatenated_awkwardly():
 def test_coverage_status_labels_match_semantics():
     z = _zh_values()
     assert z["Not captured"] == "尚未拍摄"
-    assert z["Covered"] == "已拍摄"
+    assert z["Covered"] == "素材充足"
     assert z["Looking strong"] == "已有相关素材"    # owner decision; was 看起来不错 (a generic positive)
 
 

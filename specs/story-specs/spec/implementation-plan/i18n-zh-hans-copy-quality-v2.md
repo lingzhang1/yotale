@@ -40,7 +40,7 @@ Scope: Simplified Chinese copy only. English values, catalog keys of existing st
 
 | State | Contract meaning | Label |
 |---|---|---|
-| `strong` | "the dimension's purpose is already well served by the understood material" — may be satisfied by a *different composition* that serves the purpose (prompts/story_coverage/v2) | 已拍摄 |
+| `strong` | "the dimension's purpose is already well served by the understood material" — may be satisfied by a *different composition* that serves the purpose (prompts/story_coverage/v2) | **素材充足** (owner decision; was 已拍摄) |
 | `looking_good` | good material meaningfully serves it; more optional | **已有相关素材** |
 | `could_use_more` | relevant; more would help | 可以多拍一些 |
 | `unknown` / none yet | — | 尚未拍摄 |
@@ -94,7 +94,7 @@ Build `feat/zh-hans-copy-v2` from the main checkout (Pull, Clean Build Folder, C
 | 3 | Story gallery (穿裙子的女孩, 20) | 穿裙子的女孩 · 20 个瞬间; + 添加瞬间; remove dialog 移除这个瞬间？ |
 | 4 | Empty states | library 还没有瞬间 + 拍下或导入一些照片、视频，故事就从这里开始。; empty Story home 故事已建好，去拍下第一个瞬间吧。 |
 | 5 | Story Home (ready) | 你的故事，正慢慢成形。 · N 个瞬间 → · 去拍摄 · 制作影片 · 可以把这些瞬间剪成影片了。 · pending state 「N 个已就绪 · N 个仍在分析中」 |
-| 6 | Story Guide | 拍摄指南 · 共 N 个场景 · 调整指南 / 说说你想调整什么 · 场景 01 · 开场 · 这样拍 · 为什么拍这一幕 · 去拍摄 → · 更多场景 · statuses 尚未拍摄 / 可以多拍一些 / 已有相关素材 / 已拍摄 (confirm a scene with no footage never shows 已拍摄) |
+| 6 | Story Guide | 拍摄指南 · 共 N 个场景 · 调整指南 / 说说你想调整什么 · 场景 01 · 开场 · 这样拍 · 为什么拍这一幕 · 去拍摄 → · 更多场景 · statuses 尚未拍摄 / 可以多拍一些 / 已有相关素材 / 素材充足 (confirm a scene with no footage never shows 已拍摄) |
 | 7 | Customize | 制作你的影片 · 告诉 AI，你想怎么剪。 · 影片类型 精彩集锦 / 完整故事 + blurbs · chips 调整瞬间顺序, 从某个瞬间开始, 用某个瞬间结尾, 包含所有瞬间 · row 瞬间顺序 + 调整顺序 · 交给 AI 安排 · 影片氛围 · 不指定 · 音乐与原声平衡 · 开始制作 |
 | 8 | Arrange sheet | title 调整顺序 · tiles 瞬间 3 · disclosure 「第 3 个瞬间作为开场，第 5 个瞬间作为结尾。第 3、5 个瞬间会按这个顺序…」 · VoiceOver on a tile: 移动第 3 个瞬间 |
 | 9 | Typed instruction | type 「从第 3 个瞬间开始，去掉瞬间 7」 → saved lines 从第 3 个瞬间开始 / 去掉第 7 个瞬间; same result as chip 「从瞬间 3 开始」 |
@@ -115,7 +115,7 @@ Build `feat/zh-hans-copy-v2` from the main checkout (Pull, Clean Build Folder, C
 4. 调整顺序 inside the sequence UI; 调整瞬间顺序 standalone / messages / accessibility.
 5. AI Chinese style → separate milestone; no prompt change in this PR.
 
-Open: `strong` → keep 已拍摄?; location-explainer English wording (§6).
+Open: location-explainer English wording (§6).
 
 ## 9. Before / after (all zh-Hans values changed vs master 575e81e)
 
