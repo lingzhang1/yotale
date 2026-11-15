@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // Customize Your Story — replaces the compact DurationChoiceView sheet. Two sections, both built from existing
 // intelligence (no new universal defaults): Section A Story Length (Highlights / Full Story / Custom) off the
@@ -167,6 +168,9 @@ struct CustomizeYourStoryView: View {
     // chooses order"); opening Arrange edits it. Persisted in the draft so close/reopen is non-destructive.
     @State private var momentSequence: MomentSequence
     @State private var showArrange = false
+    /// True while the software keyboard is up. The Create footer is removed then (not floated above the keyboard,
+    /// where it covered the content being typed); it returns when the keyboard goes away.
+    @State private var keyboardVisible = false
     @State private var showMoodSheet = false   // Customize UX v2 §9: compact single-select Mood sheet
     /// Selected SOFT quick shortcuts (shorter shots, cut to the beat, ...). Toggles that ride soft_direction at
     /// submit; deliberately never written into the instruction text the interpreter reads.
@@ -419,6 +423,31 @@ struct CustomizeYourStoryView: View {
         // 6. PERSISTENT CREATE ACTION (§3/§9/§13) — safe-area-aware bottom region that stays visible with the
         // keyboard open, More Options expanded, and across iPhone sizes. Carries the dynamic summary.
         .safeAreaInset(edge: .bottom) {
+            if !keyboardVisible { createFooter }
+        }
+        .scrollDismissesKeyboard(.interactively)   // drag the content to dismiss the keyboard and bring the footer back
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardVisible = false
+        }
+        .onDisappear { interpretToken = UUID() }   // drop any in-flight interpretation on dismissal (#1)
+        // Customize UX v2: the visual storyboard. Edits momentSequence in place; the draft persists in @State
+        // so closing/reopening Customize is non-destructive (owner §4).
+        .sheet(isPresented: $showArrange) {
+            ArrangeMomentsSheet(
+                numbering: numbering,
+                momentForId: momentForId,
+                initial: momentSequence,
+                onSave: { momentSequence = $0 })
+        }
+        .sheet(isPresented: $showMoodSheet) { moodSheet }   // Customize UX v2 §9
+        .cloudAuthGate(cloudGate)
+    }
+
+    /// The persistent Create action + dynamic summary (hidden while the keyboard is up).
+    private var createFooter: some View {
             VStack(spacing: 10) {
                 Text(directionSummary)
                     .font(StoryTheme.body(13)).foregroundStyle(StoryTheme.cream.opacity(0.78))
@@ -445,19 +474,6 @@ struct CustomizeYourStoryView: View {
             .padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 8)
             .background(.ultraThinMaterial)
             .overlay(Rectangle().frame(height: 1).foregroundStyle(StoryTheme.cream.opacity(0.08)), alignment: .top)
-        }
-        .onDisappear { interpretToken = UUID() }   // drop any in-flight interpretation on dismissal (#1)
-        // Customize UX v2: the visual storyboard. Edits momentSequence in place; the draft persists in @State
-        // so closing/reopening Customize is non-destructive (owner §4).
-        .sheet(isPresented: $showArrange) {
-            ArrangeMomentsSheet(
-                numbering: numbering,
-                momentForId: momentForId,
-                initial: momentSequence,
-                onSave: { momentSequence = $0 })
-        }
-        .sheet(isPresented: $showMoodSheet) { moodSheet }   // Customize UX v2 §9
-        .cloudAuthGate(cloudGate)
     }
 
     /// Resolve the typed references + chips against the stable snapshot. Hard references that cannot resolve
