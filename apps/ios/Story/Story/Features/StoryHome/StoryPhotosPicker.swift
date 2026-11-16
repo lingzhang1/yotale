@@ -90,52 +90,10 @@ private struct PhotosPickerModifier: ViewModifier {
                           maxSelectionCount: 100, matching: .videos)
             .onChange(of: selection) { _, items in
                 guard !items.isEmpty else { return }
-                Task { await importAll(items) }
+                // The copy runs in the app-scoped PhotoImportRunner, not in this view, so it keeps going when
+                // the user navigates away, leaves the app or locks the phone (iOS 26+ continued processing).
+                PhotoImportRunner.shared.enqueue(items, onPicked: onPicked, onProgress: onProgress)
+                selection = []
             }
-    }
-
-    private func importAll(_ items: [PhotosPickerItem]) async {
-        let total = items.count
-        // Phase 5: a brief "Preparing selected media…" before the first copy begins.
-        await report(ImportProgress(total: total, done: 0, failed: 0, finished: false, phase: .preparing))
-
-        var results: [ImportedMedia] = []
-        var failed = 0
-        for item in items {
-            guard let data = try? await item.loadTransferable(type: Data.self) else {
-                failed += 1
-                await report(ImportProgress(total: total, done: results.count, failed: failed,
-                                            finished: false, phase: .importing))
-                continue
-            }
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + ".mov")
-            do {
-                try data.write(to: tmp)
-                let avAsset = AVURLAsset(url: tmp)
-                let dur = CMTimeGetSeconds(avAsset.duration)
-                // Safeguard 5: recover the ORIGINAL capture date + location from the file's OWN embedded
-                // metadata (no Photos read-auth / asset-id dependency). nil when absent ("unknown").
-                let meta = await ImportedMediaMetadata.recover(from: avAsset)
-                let rel = try MediaStore.shared.adoptCapturedFile(tempURL: tmp)
-                results.append(ImportedMedia(path: rel, duration: dur.isFinite ? dur : 0, capturedAt: meta.capturedAt, latitude: meta.latitude, longitude: meta.longitude))
-            } catch {
-                failed += 1
-            }
-            await report(ImportProgress(total: total, done: results.count, failed: failed,
-                                        finished: false, phase: .importing))
-        }
-        let final = results
-        let finalFailed = failed
-        await MainActor.run {
-            selection = []
-            if !final.isEmpty { onPicked(final) }
-            onProgress(ImportProgress(total: total, done: final.count, failed: finalFailed,
-                                      finished: true, phase: .importing))
-        }
-    }
-
-    private func report(_ p: ImportProgress) async {
-        await MainActor.run { onProgress(p) }
     }
 }
