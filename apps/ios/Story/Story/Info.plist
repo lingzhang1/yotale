@@ -47,6 +47,8 @@
     <key>BGTaskSchedulerPermittedIdentifiers</key>
     <array>
         <string>$(PRODUCT_BUNDLE_IDENTIFIER).au.import</string>
+        <!-- Photo import copy phase (PhotoImportRunner.identifier), iOS 26+ continued processing. -->
+        <string>$(PRODUCT_BUNDLE_IDENTIFIER).photo.import</string>
     </array>
     <key>CFBundleURLTypes</key>
     <array>

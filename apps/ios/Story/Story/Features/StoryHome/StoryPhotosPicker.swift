@@ -1,9 +1,6 @@
 import SwiftUI
 import PhotosUI
 import AVFoundation
-import CoreTransferable
-import UniformTypeIdentifiers
-import os
 
 // StoryPhotosPicker — frozen Figma "+ Add photos or videos" (add-to-Moments
 // path). Wraps PhotosPicker, copies each picked VIDEO into MediaStore, and hands
@@ -69,22 +66,6 @@ struct ImportedMedia: Equatable {
     var longitude: Double? = nil
 }
 
-/// A picked video delivered as a FILE (streamed to disk by the system), never as an in-memory `Data`.
-/// A long 4K clip can be hundreds of MB; holding it as `Data` risked a memory kill mid-import.
-private struct PickedMovie: Transferable {
-    let url: URL
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .movie) { received in
-            let dest = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + ".mov")
-            try FileManager.default.copyItem(at: received.file, to: dest)
-            return PickedMovie(url: dest)
-        }
-    }
-}
-
-private let importLog = Logger(subsystem: "app.yotale", category: "photo-import")
-
 extension View {
     func photosPickerSheet(
         isPresented: Binding<Bool>,
@@ -109,77 +90,10 @@ private struct PhotosPickerModifier: ViewModifier {
                           maxSelectionCount: 100, matching: .videos)
             .onChange(of: selection) { _, items in
                 guard !items.isEmpty else { return }
-                Task { await importAll(items) }
+                // The copy runs in the app-scoped PhotoImportRunner, not in this view, so it keeps going when
+                // the user navigates away, leaves the app or locks the phone (iOS 26+ continued processing).
+                PhotoImportRunner.shared.enqueue(items, onPicked: onPicked, onProgress: onProgress)
+                selection = []
             }
-    }
-
-    private func importAll(_ items: [PhotosPickerItem]) async {
-        let total = items.count
-        // Phase 5: a brief "Preparing selected media…" before the first copy begins.
-        await report(ImportProgress(total: total, done: 0, failed: 0, finished: false, phase: .preparing))
-
-        // Keep the screen on and ask iOS for extra time while copying. Neither survives a long suspension,
-        // which is why Moments are persisted in chunks below instead of once at the end.
-        let awakeKey = "photo-import.\(UUID().uuidString.prefix(8))"
-        await MainActor.run { ScreenAwake.shared.hold(awakeKey) }
-        let bgTask = await MainActor.run {
-            UIApplication.shared.beginBackgroundTask(withName: "photo-import") {}
-        }
-        defer {
-            Task { @MainActor in
-                ScreenAwake.shared.release(awakeKey)
-                if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) }
-            }
-        }
-
-        // Persist Moments every `flushEvery` copied files (and at the end), so an interruption keeps
-        // everything already copied instead of orphaning it in storage with no Moment.
-        let flushEvery = 3
-        var pending: [ImportedMedia] = []
-        var copied = 0
-        var failed = 0
-        for (index, item) in items.enumerated() {
-            var tmp: URL?
-            do {
-                guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
-                    throw CocoaError(.fileReadUnknown)
-                }
-                tmp = movie.url
-                let avAsset = AVURLAsset(url: movie.url)
-                let dur = CMTimeGetSeconds(avAsset.duration)
-                // Safeguard 5: recover the ORIGINAL capture date + location from the file's OWN embedded
-                // metadata (no Photos read-auth / asset-id dependency). nil when absent ("unknown").
-                let meta = await ImportedMediaMetadata.recover(from: avAsset)
-                let rel = try MediaStore.shared.adoptCapturedFile(tempURL: movie.url)
-                tmp = nil
-                pending.append(ImportedMedia(path: rel, duration: dur.isFinite ? dur : 0, capturedAt: meta.capturedAt, latitude: meta.latitude, longitude: meta.longitude))
-                copied += 1
-                importLog.info("import item \(index + 1, privacy: .public)/\(total, privacy: .public) ok")
-            } catch {
-                failed += 1
-                if let tmp { try? FileManager.default.removeItem(at: tmp) }
-                importLog.error("import item \(index + 1, privacy: .public)/\(total, privacy: .public) failed: \(String(describing: error), privacy: .public)")
-            }
-            if pending.count >= flushEvery {
-                let batch = pending
-                pending = []
-                await MainActor.run { onPicked(batch) }
-            }
-            await report(ImportProgress(total: total, done: copied, failed: failed,
-                                        finished: false, phase: .importing))
-        }
-        let rest = pending
-        let finalCopied = copied
-        let finalFailed = failed
-        await MainActor.run {
-            selection = []
-            if !rest.isEmpty { onPicked(rest) }
-            onProgress(ImportProgress(total: total, done: finalCopied, failed: finalFailed,
-                                      finished: true, phase: .importing))
-        }
-    }
-
-    private func report(_ p: ImportProgress) async {
-        await MainActor.run { onProgress(p) }
     }
 }
