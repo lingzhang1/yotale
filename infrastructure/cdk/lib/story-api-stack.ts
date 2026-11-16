@@ -26,6 +26,8 @@ export interface StoryApiStackProps extends cdk.StackProps {
   /** TEST SEAM for the emergency planner rollback; production reads release/release.json (planner.emergency_override).
    *  `null` forces "no override" regardless of the manifest. */
   readonly plannerEmergencyOverride?: string | null;
+  /** TEST SEAM: replaces the parsed release/release.json (production always reads the committed file). */
+  readonly releaseManifestForTest?: any;
   readonly enableObservability?: boolean;
   readonly alarmDestination?: string;
   readonly monthlyBudgetUsd?: number;
@@ -285,11 +287,19 @@ export class StoryApiStack extends cdk.Stack {
     // code default). Because it lives in the repo and not on a command line, a LATER deploy cannot silently drop
     // an intentional rollback, and it reaches API and worker identically. scripts/release_config_gate.py rejects
     // an override with no approved_overrides entry, or a manifest override this stack failed to apply.
-    const releaseManifest = JSON.parse(
+    const releaseManifest = props.releaseManifestForTest ?? JSON.parse(
       fs.readFileSync(path.join(__dirname, "..", "..", "..", "release", "release.json"), "utf8"));
+    // A per-environment entry (planner.environment_overrides[<environment>]) pins ONE environment (e.g. a time-boxed
+    // development evaluation) and never reaches another; otherwise the global emergency_override applies to all.
+    // scripts/release_config_gate.py mirrors this exact rule (manifest_planner_override).
+    const plannerManifest = releaseManifest?.planner ?? {};
+    const perEnv = plannerManifest.environment_overrides ?? {};
+    const manifestEditPlanOverride: string | undefined =
+      (Object.prototype.hasOwnProperty.call(perEnv, environment) ? perEnv[environment] : plannerManifest.emergency_override)
+      ?? undefined;
     const emergencyEditPlanVersion: string | undefined = props.plannerEmergencyOverride !== undefined
       ? (props.plannerEmergencyOverride ?? undefined)
-      : (releaseManifest?.planner?.emergency_override ?? undefined);
+      : manifestEditPlanOverride;
     const emergencyEditPlanVersionEnv: Record<string, string> =
       emergencyEditPlanVersion ? { STORY_EDIT_PLAN_VERSION: String(emergencyEditPlanVersion) } : {};
 

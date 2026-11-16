@@ -1,9 +1,12 @@
 {
   "schema_version": 1,
-  "_comment": "Release INTENT only. Accepted product features are code (no switches). Infra identity lives in CDK / ios xcconfig and is cross-checked, not copied. Verified by scripts/release_config_gate.py (pre-deploy in CI + deploy workflows, post-deploy after cdk deploy). EMERGENCY ROLLBACK: set planner.emergency_override (e.g. \"5.2\") AND add a matching approved_overrides entry in the SAME reviewed PR; CDK then pins API and worker identically on every deploy until it is cleared.",
+  "_comment": "Release INTENT only. Accepted product features are code (no switches). Infra identity lives in CDK / ios xcconfig and is cross-checked, not copied. Verified by scripts/release_config_gate.py (pre-deploy in CI + deploy workflows, post-deploy after cdk deploy). EMERGENCY ROLLBACK: set planner.emergency_override (e.g. \"5.2\") AND add a matching approved_overrides entry in the SAME reviewed PR; CDK then pins API and worker identically on every deploy until it is cleared. A time-boxed evaluation of ONE environment uses planner.environment_overrides.<env> instead (it never reaches another environment) with a matching approved_overrides entry that carries an expires date.",
   "planner": {
     "version": "5.3",
-    "emergency_override": null
+    "emergency_override": null,
+    "environment_overrides": {
+      "development": "5.5"
+    }
   },
   "required_everywhere": {
     "STORY_REFERENCE_MEDIA_MODE": "image",
@@ -38,6 +41,16 @@
       "throttle_mode": "enforce"
     }
   },
-  "approved_overrides": [],
+  "approved_overrides": [
+    {
+      "setting": "STORY_EDIT_PLAN_VERSION",
+      "env": "development",
+      "value": "5.5",
+      "approved_by": "owner",
+      "approved_on": "2026-11-16",
+      "expires": "2026-11-30",
+      "reason": "Editorial vNext M1 matched evaluation of the edit_plan/5.5 candidate on DEVELOPMENT ONLY. Time-boxed: remove planner.environment_overrides.development and this entry when the evaluation ends (default planner 5.3)."
+    }
+  ],
   "approved_degradations": []
 }
