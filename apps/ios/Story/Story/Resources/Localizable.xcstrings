@@ -158,6 +158,41 @@
         }
       }
     },
+    "%lld videos" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld video"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld videos"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld 个视频"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "Arrange Moments (sheet title)" : {
       "comment" : "Title of the Moment-sequence sheet. English matches \"Arrange Moments\"; Chinese uses the short in-context form.",
       "extractionState" : "manual",
@@ -172,6 +207,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "调整顺序"
+          }
+        }
+      }
+    },
+    "Importing your videos" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在导入你的视频"
           }
         }
       }
