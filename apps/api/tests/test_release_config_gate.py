@@ -24,6 +24,12 @@ MANIFEST = gate.load_manifest()
 XC = {n: gate.parse_xcconfig(REPO / "apps/ios/Story/Config" / f"{n}.xcconfig") for n in ("Development", "Beta")}
 
 
+def _pin(env: str) -> dict:
+    """What a CORRECT deployment of `env` pins: exactly the planner version the manifest declares for it (if any)."""
+    v = gate.manifest_planner_override(MANIFEST, env)
+    return {"STORY_EDIT_PLAN_VERSION": v} if v else {}
+
+
 def _snapshot(env: str) -> "gate.Snapshot":
     pol = MANIFEST["environments"][env]
     xc = XC["Beta" if env == "beta" else "Development"]
@@ -44,12 +50,14 @@ def _snapshot(env: str) -> "gate.Snapshot":
         "STORY_OPENAI_MODEL": "gpt-5.1", "STORY_GEMINI_MODEL": "gemini-3.8-flash",
         "STORY_EVIDENCE_PERSIST_ENABLED": pol["evidence_persist"],
         **MANIFEST["required_everywhere"],
+        **_pin(env),
     }
     wrk = {
         "PYTHONPATH": "/var/task:/var/task/packages", "STORY_ENVIRONMENT": env,
         "STORY_JOBS_TABLE": f"story-{env}-edit-plan-jobs", "STORY_JOBS_QUEUE_URL": None, "STORY_STAGING_BUCKET": None,
         "STORY_USER_USAGE_TABLE": f"story-{env}-user-usage", "STORY_WORKER_DEADLINE_S": "840",
         "STORY_QUOTA_MODE": pol["quota_mode"], "STORY_OPENAI_MODEL": "gpt-5.1", "STORY_GEMINI_MODEL": "gemini-3.8-flash",
+        **_pin(env),
     }
     return gate.Snapshot(env, list(svc.items()), wrk)
 
@@ -224,9 +232,84 @@ def test_N13_unapproved_emergency_rollback_override_is_rejected_and_approval_unb
     assert "prompt_missing" in _codes(s9, manifest=ok9)
 
 
-def test_committed_manifest_ships_with_no_active_rollback_or_degradation():
-    assert MANIFEST["planner"]["emergency_override"] is None
-    assert MANIFEST["approved_overrides"] == [] and MANIFEST["approved_degradations"] == []
+def test_committed_manifest_never_overrides_beta_gamma_or_production_and_time_boxes_any_dev_override():
+    """Strengthened guard (replaces "no override at all"). The committed manifest may carry ONLY a time-boxed,
+    owner-approved, DEVELOPMENT-only planner pin (an evaluation). It never pins beta/gamma/production, never carries a
+    GLOBAL emergency rollback, and no degradation is approved."""
+    pl = MANIFEST["planner"]
+    assert pl["emergency_override"] is None, "no GLOBAL planner override may be committed"
+    pinned = pl.get("environment_overrides") or {}
+    assert set(pinned) <= {"development"}, f"only development may be pinned, got {sorted(pinned)}"
+    for env in ("beta", "gamma", "production"):
+        assert gate.manifest_planner_override(MANIFEST, env) is None, env
+    approved = MANIFEST["approved_overrides"]
+    assert {(o["setting"], o["env"], str(o["value"])) for o in approved} == \
+        {("STORY_EDIT_PLAN_VERSION", "development", str(v)) for v in pinned.values()}, \
+        "every committed approval must match a development pin, and every pin must be approved"
+    for o in approved:
+        assert o["env"] == "development"
+        assert o.get("approved_by") and o.get("reason") and o.get("expires"), "an approval must name who, why and when it ends"
+    assert MANIFEST["approved_degradations"] == []
+
+
+def test_manifest_planner_override_resolution():
+    m = {"planner": {"version": "5.3", "emergency_override": None}}
+    assert gate.manifest_planner_override(m, "development") is None
+    m = {"planner": {"version": "5.3", "emergency_override": None, "environment_overrides": {"development": "5.5"}}}
+    assert gate.manifest_planner_override(m, "development") == "5.5"
+    assert [gate.manifest_planner_override(m, e) for e in ("beta", "gamma", "production")] == [None, None, None]
+    g = {"planner": {"version": "5.3", "emergency_override": "5.2"}}                       # global still reaches every env
+    assert {gate.manifest_planner_override(g, e) for e in ("development", "beta", "production")} == {"5.2"}
+    both = {"planner": {"emergency_override": "5.2", "environment_overrides": {"development": "5.5"}}}
+    assert gate.manifest_planner_override(both, "development") == "5.5" and gate.manifest_planner_override(both, "beta") == "5.2"
+
+
+def _dev_pin_manifest(expires="2099-01-01"):
+    return {**MANIFEST,
+            "planner": {**MANIFEST["planner"], "emergency_override": None, "environment_overrides": {"development": "5.5"}},
+            "approved_overrides": [{"setting": "STORY_EDIT_PLAN_VERSION", "env": "development", "value": "5.5",
+                                    "approved_by": "owner", "reason": "evaluation", "expires": expires}]}
+
+
+def test_dev_only_pin_is_accepted_for_development_and_never_touches_beta():
+    m = _dev_pin_manifest()
+    dev = _with(_snapshot("development"), svc={"STORY_EDIT_PLAN_VERSION": "5.5"}, wrk={"STORY_EDIT_PLAN_VERSION": "5.5"})
+    assert _codes(dev, manifest=m) == set()
+    beta = _snapshot("beta")                                              # no pin: accepted, the manifest does not pin beta
+    assert "STORY_EDIT_PLAN_VERSION" not in dict(beta.service) and _codes(beta, manifest=m) == set()
+
+
+def test_dev_only_pin_cannot_leak_to_beta_or_be_dropped_from_dev():
+    m = _dev_pin_manifest()
+    leaked = _with(_snapshot("beta"), svc={"STORY_EDIT_PLAN_VERSION": "5.5"}, wrk={"STORY_EDIT_PLAN_VERSION": "5.5"})
+    codes = _codes(leaked, manifest=m)
+    assert "unapproved_override" in codes, "a 5.5 pin on beta must be rejected even though development is approved"
+    dropped = _snapshot("development")                                     # dev deploy that silently lacks the declared pin
+    dropped = _with(dropped, drop_svc=["STORY_EDIT_PLAN_VERSION"], drop_wrk=["STORY_EDIT_PLAN_VERSION"])
+    assert "rollback_not_applied" in _codes(dropped, manifest=m)
+
+
+def test_dev_pin_is_rejected_when_the_manifest_does_not_approve_it():
+    m = _dev_pin_manifest(); m["approved_overrides"] = []
+    dev = _with(_snapshot("development"), svc={"STORY_EDIT_PLAN_VERSION": "5.5"}, wrk={"STORY_EDIT_PLAN_VERSION": "5.5"})
+    assert "unapproved_override" in _codes(dev, manifest=m)
+
+
+def test_override_expiry(monkeypatch):
+    import datetime
+    dev = _with(_snapshot("development"), svc={"STORY_EDIT_PLAN_VERSION": "5.5"}, wrk={"STORY_EDIT_PLAN_VERSION": "5.5"})
+    m = _dev_pin_manifest(expires="2026-11-30")
+    monkeypatch.setattr(gate, "_today", lambda: datetime.date(2026, 11, 30))       # the expiry day itself is still valid
+    assert _codes(dev, manifest=m) == set()
+    monkeypatch.setattr(gate, "_today", lambda: datetime.date(2026, 12, 1))
+    assert "override_expired" in _codes(dev, manifest=m)
+    bad = _dev_pin_manifest(expires="next week")
+    assert "override_expiry_invalid" in _codes(dev, manifest=bad)
+
+
+def test_environment_overrides_must_name_a_defined_environment():
+    m = {**MANIFEST, "planner": {**MANIFEST["planner"], "environment_overrides": {"develpoment": "5.5"}}}
+    assert "unknown_environment" in _codes(_snapshot("beta"), manifest=m)
 
 
 def test_planner_default_drift_from_manifest_is_rejected(tmp_repo):

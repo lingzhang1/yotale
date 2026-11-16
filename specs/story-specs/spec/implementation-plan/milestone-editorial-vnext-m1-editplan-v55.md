@@ -249,3 +249,26 @@ chronology — chronology metadata is not implemented, so no claim of chronologi
 
 (1) Merge PR #122 after CI/review. (2) Dev deployment(s) via `deploy-dev` (after a no-job-in-flight check). (3) The override PR (Option A or B) and its deployment, then the revert.
 (4) The four live planner jobs on dev (and re-import of the TMB footage into dev). None has been done.
+
+---
+
+## I. Dev-only EditPlan 5.5 pin (per-environment manifest override) — 2026-11-16
+
+The global `planner.emergency_override` reached every environment, so pinning 5.5 for a development evaluation would have failed the beta gate in CI (and tripped
+`test_committed_manifest_ships_with_no_active_rollback_or_degradation`). The mechanism is now per-environment (owner decision B, 2026-11-16):
+
+- `release/release.json`: `planner.environment_overrides.<env>` pins ONE environment; `planner.emergency_override` (global) is unchanged and still reaches all. A per-environment
+  entry wins for its environment (a `null` entry clears the global pin there). **Committed now: `development` → `5.5` only**, with an `approved_overrides` entry
+  (`approved_by` owner, `approved_on` 2026-11-16, **`expires` 2026-11-30**, reason).
+- `infrastructure/cdk/lib/story-api-stack.ts`: reads the entry for the environment being synthesized; API and worker always get the same value. Test seam
+  `releaseManifestForTest`.
+- `scripts/release_config_gate.py`: `manifest_planner_override(manifest, env)` mirrors that rule. New rejections: `override_expired` (approval past its `expires` date),
+  `override_expiry_invalid`, and `unknown_environment` for a per-environment entry naming an environment the manifest does not define. Pins that are unapproved, dropped
+  (`rollback_not_applied`), or on another environment (`unapproved_override`) are rejected as before.
+- Guard test rewritten, not removed: the committed manifest may carry ONLY a time-boxed, owner-approved, development-only pin; no global override; beta/gamma/production
+  never pinned; every pin approved and every approval matching a pin; no degradations.
+- Verified offline: backend suite 1185 passed, jest 72 passed, `release_config_gate.py pre` ACCEPTED for development and beta with a fresh worker asset; the synthesized development
+  template pins 5.5 on API and worker, the beta template pins nothing.
+
+**While this is on `master`:** a development deploy runs 5.5; beta deploys are unaffected (still 5.3). **After 2026-11-30 the gate rejects the expired approval, so CI goes red
+until the pin is removed.** End of evaluation = a one-line revert: delete `planner.environment_overrides.development` and the `approved_overrides` entry, deploy dev, confirm 5.3.
