@@ -92,7 +92,7 @@ final class PhotoImportRunner {
         var failed = 0
         for (index, item) in job.items.enumerated() {
             do {
-                pending.append(try await copy(item))
+                pending.append(try await Self.copy(item, holder: itemProgress))
                 copied += 1
                 Self.log.info("import item \(index + 1, privacy: .public)/\(total, privacy: .public) ok app=\(Self.appState(), privacy: .public)")
             } catch {
@@ -111,9 +111,10 @@ final class PhotoImportRunner {
         job.onProgress(ImportProgress(total: total, done: copied, failed: failed, finished: true, phase: .importing))
     }
 
-    /// Copy one picked video into MediaStore. The file is streamed to disk by the system (never held as Data).
-    private func copy(_ item: PhotosPickerItem) async throws -> ImportedMedia {
-        let holder = itemProgress
+    /// Copy one picked video into MediaStore. `nonisolated` so the file work, AVAsset loads and the move run
+    /// OFF the main thread (only the hand-off to the UI is on main). The file is streamed to disk by the system,
+    /// never held as Data.
+    nonisolated private static func copy(_ item: PhotosPickerItem, holder: ProgressHolder) async throws -> ImportedMedia {
         let movie: PickedMovie = try await withCheckedThrowingContinuation { cont in
             let p = item.loadTransferable(type: PickedMovie.self) { result in
                 switch result {
@@ -126,7 +127,7 @@ final class PhotoImportRunner {
         }
         do {
             let avAsset = AVURLAsset(url: movie.url)
-            let dur = CMTimeGetSeconds(avAsset.duration)
+            let dur = CMTimeGetSeconds((try? await avAsset.load(.duration)) ?? .zero)
             // Safeguard 5: recover the ORIGINAL capture date + location from the file's OWN embedded metadata
             // (no Photos read-auth / asset-id dependency). nil when absent ("unknown").
             let meta = await ImportedMediaMetadata.recover(from: avAsset)

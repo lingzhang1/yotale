@@ -337,6 +337,9 @@ struct StoryHomeView: View {
             // success/partial-failure line is briefly visible, then falls away.
             importProgress = p.finished && p.done == 0 && p.failed == 0 ? nil : p
             if p.finished {
+                // Refresh Guide/Coverage ONCE per import, not once per 3-video batch (each batch changes the
+                // Moment set, so per-batch refreshes would recompute coverage and poll repeatedly).
+                if p.done > 0 { Task { await refreshAfterCapture() } }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                     if importProgress?.finished == true { importProgress = nil }
                 }
@@ -353,7 +356,7 @@ struct StoryHomeView: View {
                 AUContinuedProcessing.startAfterImport(queue: auQueue, context: context, momentIds: Set(created.map(\.id)))
                 // Auto Backup: back up each imported Moment when the account has it ON (no-op otherwise).
                 for m in created { MediaUploadQueue.sharedAutoEnroll(m) }
-                Task { await refreshAfterCapture() }  // reuse the capture poll: AU lands -> Coverage/Idea update
+                // Coverage/Idea refresh runs once when the whole import finishes (see onProgress above).
             }
         }
         .sheet(isPresented: $showMenu) {
