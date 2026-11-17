@@ -585,6 +585,8 @@ final class StoryCreationCoordinator {
 
         // ---- preparing: gather REAL persisted inputs; missing prerequisite -> honest failure ----
         state = .preparing
+        let tRun = RenderTiming.begin("create_total")
+        let tReq = RenderTiming.begin("build_request")
         let build: EditPlanRequestBuilder.Build
         do {
             // Imported My Music has no backend MusicPlan — its selection carries an empty music_plan object.
@@ -619,6 +621,7 @@ final class StoryCreationCoordinator {
         } catch {
             return finishFailed(.missingPrerequisite(L10n.t("Couldn't assemble the creation request: \(String(describing: error))")))
         }
+        tReq.end("moments=\(build.includedMedia.count)")
         if cancelRequested { return finishCancelled() }
 
         // ---- feasibility preflight: deterministic, BEFORE the planner. If the material can't reach the
@@ -687,6 +690,7 @@ final class StoryCreationCoordinator {
                     .filter { eligibleSet.contains($0.id) }
                     .sorted { $0.createdAt < $1.createdAt }
                 let momentById = Dictionary(eligibleMoments.map { ($0.id, $0) }) { a, _ in a }
+                let tRefs = RenderTiming.begin("evidence_refs")
                 let refs: [EvidenceMomentRef] = eligibleMoments.map { m in
                     let cand = Self.editorialCandidates(for: m.id, context: context)
                     return EvidenceMomentRef(
@@ -696,6 +700,8 @@ final class StoryCreationCoordinator {
                         guidance: EditorialFrameGuidance(videoType: evVideoType, visual: cand.visual,
                                                          narrative: cand.narrative, events: cand.events))
                 }
+                tRefs.end("moments=\(refs.count)")
+                let tPrep = RenderTiming.begin("evidence_prepare")
                 let localMediaById = Dictionary(build.includedMedia.map { ($0.momentId, $0) }) { a, _ in a }
                 let prepared = await VisualEvidencePreparation.prepare(
                     moments: refs,
@@ -720,6 +726,7 @@ final class StoryCreationCoordinator {
                         }
                         return (urls, restored.unavailable.map { $0.momentId })
                     })
+                tPrep.end("eligible=\(prepared.eligibleCount) cacheHit=\(prepared.cacheHitCount) sheets=\(prepared.sheets.count) bytes=\(prepared.budget.totalImageBytes)")
                 sheets = prepared.sheets
                 sheetMissReasons = prepared.sheetMissReasons
                 restoreUnavailableIds = prepared.restoreUnavailableIds
@@ -792,17 +799,20 @@ final class StoryCreationCoordinator {
                 // locked screen or a killed app is then recoverable: the retries below and any later resume
                 // re-send these SAME bytes, which the server matches to the SAME job (deterministic job id +
                 // payload fingerprint) — never a second inference.
+                let tEnc = RenderTiming.begin("encode_request")
                 let prepared = jobClient.prepareSubmit(build.request, operationId: opId, owner: "dev",
                                                        approach: requested, sheets: sheets,
                                                        creativeBrief: brief, critiqueRevision: critique,
                                                        evidenceAccounting: evidenceDict,
                                                        buildProvenance: provenanceDict)
+                tEnc.end()
                 if let prepared {
                     PendingJobSubmitStore.save(prepared, operationId: opId)
                     upsertPending(story: story, operationId: opId, jobId: nil, phase: "submitting",
                                   jobStatus: nil, fingerprint: Self.fingerprint(
                                     for: build.includedMedia.map(\.momentId), story: story))
                 }
+                let tSubmit = RenderTiming.begin("submit_job")
                 for attempt in 0..<3 {
                     if cancelRequested { return finishCancelled() }
                     do {
@@ -827,6 +837,7 @@ final class StoryCreationCoordinator {
                         try? await Task.sleep(nanoseconds: UInt64(600_000_000 * (attempt + 1)))  // 0.6s,1.2s
                     }
                 }
+                tSubmit.end("ok=\(submitted != nil)")
                 guard let jid = submitted else {
                     // Keep the cached bytes + "submitting" row: the job may exist server-side (the reply was
                     // lost), and reopening the Story resumes it by re-sending the same bytes.
@@ -854,6 +865,7 @@ final class StoryCreationCoordinator {
             // the stale handle and submit ONE fresh job for the same operation_id (idempotent), then poll that.
             var activeJobId = jobId
             var final: EditPlanJobState
+            let tPoll = RenderTiming.begin("plan_poll")
             do {
                 final = try await pollWithStatusUpdates(jobId: activeJobId, story: story)
             } catch EditPlanJobError.badStatus(404) where reusedExistingJob {
@@ -878,6 +890,7 @@ final class StoryCreationCoordinator {
                 }
             }
 
+            tPoll.end("status=\(final.status.rawValue) sheets=\(Int(final.diagnostics?["sheet_count"]?.doubleValue ?? 0))")
             switch final.status {
             case .completed:
                 guard let p = final.plan else { return finishFailed(.planUnavailable) }
@@ -976,6 +989,7 @@ final class StoryCreationCoordinator {
         // renderer DOES need the bytes, so restore (R6) the originals for exactly the Moments the plan selected
         // BEFORE validating/resolving — never a bulk download, only the chosen set. A Moment that cannot be
         // restored is reported by validate() below as an unresolved asset (honest failure), never a silent skip.
+        let tRestore = RenderTiming.begin("pre_render_restore")
         let selectedAssetIds = Set(plan.segments.map { $0.assetId.lowercased() })
         let selectedMoments = story.moments.filter { selectedAssetIds.contains($0.id.uuidString.lowercased()) }
         let restoreResult = await MomentResolver.resolveEnsuringLocal(
@@ -987,6 +1001,7 @@ final class StoryCreationCoordinator {
         var renderMediaById = Dictionary(build.includedMedia.map { ($0.momentId, $0) }) { a, _ in a }
         for md in restoreResult.media { renderMediaById[md.momentId] = md }
         let renderMedia = Array(renderMediaById.values)
+        tRestore.end("selected=\(selectedMoments.count)")
         if !restoreResult.unavailable.isEmpty {
             MediaEngineV1.beacon("pre-render restore: \(restoreResult.unavailable.count) selected Moment(s) could not be restored")
         }
@@ -994,10 +1009,13 @@ final class StoryCreationCoordinator {
         // ---- validating: deterministic, BEFORE AVFoundation; renderer never runs on an invalid plan ----
         planningSubstatus = nil   // planning is done; drop the backend-status sub-line
         state = .validating
+        let tValidate = RenderTiming.begin("validate_plan")
         let resolver = MomentResolver.urlResolver(for: renderMedia)
         if let reason = Self.validate(plan: plan, resolver: resolver, includedMedia: renderMedia) {
+            tValidate.end("ok=false")
             return finishFailed(.invalidPlan(reason))
         }
+        tValidate.end("ok=true segments=\(plan.segments.count)")
         if cancelRequested { return finishCancelled() }
 
         // ---- creative refinement (V2-b, architecture B): DETERMINISTIC, opt-in, OFF by default ----
@@ -1006,6 +1024,7 @@ final class StoryCreationCoordinator {
         // (or when disabled) the ORIGINAL executable plan is used unchanged. Narrative selection, order,
         // output durations, speed, transitions and music alignment are all preserved. A straight cut remains
         // a valid result. Always runs (deterministic, no model call; a no-op when it has nothing to improve).
+        let tRefine = RenderTiming.begin("creative_refine")
         do {
             let sourceDur: (String) -> Double? = { aid in
                 renderMedia.first { $0.momentId.uuidString.lowercased() == aid.lowercased() }?.durationSeconds
@@ -1019,6 +1038,7 @@ final class StoryCreationCoordinator {
             StoryCreativeRefinement.lastOutcomeNotes = outcome.validationNotes
             plan = outcome.plan                                 // refined OR original (safe either way)
         }
+        tRefine.end("segments=\(plan.segments.count)")
 
         // ---- rendering: real renderer with progress + cancel flag (music seam threaded) ----
         state = .rendering(progress: 0)
@@ -1073,7 +1093,9 @@ final class StoryCreationCoordinator {
             lastDiversity = RevisionContextBuilder.diversity(parent: parent, newPlan: plan)
         }
 
+        let tPersist = RenderTiming.begin("persist_output")
         let output = persist(result: result, plan: plan, story: story, build: build)
+        tPersist.end()
         // The attempt is done — clear the in-flight job handles so a reopened completed Story never re-polls.
         // (A deliberate new version mints a fresh operation_id on its next create.)
         story.planOperationId = nil; story.planJobId = nil; story.planJobStatus = "completed"
@@ -1082,6 +1104,7 @@ final class StoryCreationCoordinator {
         finalizePending(story: story)
         try? context.save()
         state = .completed(output)
+        tRun.end("segments=\(plan.segments.count)")
     }
 
     // MARK: - Deterministic validator (pre-AVFoundation)
