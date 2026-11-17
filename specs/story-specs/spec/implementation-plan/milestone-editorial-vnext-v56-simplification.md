@@ -185,3 +185,19 @@ C (5.5) and D (5.6) both open on gear/church, move through town, forest, fog and
 
 ### Prepared (not run): one frozen validation, arm B4
 Same frozen Highlights request (`c2_1_highlights_35s`, source hash `36f7984f9087e130`, 14 components verified, 38 Moments, 38 sheets, Custom 35 s, Original, critique off, balanced sound, same tempo-only track, no directives). Command: `editorial_replay.py run --case <case> --arm B4 --version 5.6` using the venv interpreter; one attempt, one model call, a repair call reported separately, no reruns. Compare B4 with B2 and B3 on: first 3 s / 6 s / 10 s frames, strongest visible hook, action diversity in the first ten seconds, near-duplicate neighbors, median shot, pre/post-fit duration, model calls, tokens, latency, cost, and the ffmpeg preview. Estimated cost about $0.06. Needs owner approval; no Moment id is forced.
+
+## 15. Highlights B4: the one validation run of the refined strategy (2026-11-17)
+Same frozen request (source hash `36f7984f9087e130`, 14 components verified), commit `872c62f`, one attempt, one model call, no repair, critique off. Plan-level result, not quality acceptance.
+
+| | B2 (B plan, corrected fit, offline) | B3 | B4 (refined strategy + roles dropped) |
+|---|---|---|---|
+| Model plan / fitted (s) | 54.6 / 37.9 | 44.2 / 35.0 | 51.4 / 35.65 |
+| Shots / Moments | 20 / 20 | 18 / 15 | 20 / 18 |
+| Median / mean shot (s) | 1.93 / 1.89 | 2.12 / 1.94 | 1.50 / 1.78 |
+| Anchors set | 13 unsupported | 0 | 0 |
+| Fit trims / drops | 16 / 0 | 17 / 0 | 16 / 0 |
+| Input / output tokens, wall, cost | 33.5k / 2.0k, 22.0 s, $0.062 (B) | 33.6k / 1.8k, 24.6 s, $0.060 | 33.4k / 1.9k, 22.1 s, $0.061 |
+
+Visual result (frames viewed): the first ~11 s are scenery with no person: cloud-covered slope (`6a51e809`, the same first shot as B3), sunbeams over a valley, a distant hiker on a ridge, tiny hikers, a paraglider, a panorama, an orbit. The yellow-jacket (`8c43b8c9`, t=11.3), red-jacket close (`0bc5f375`, 13.4) and red-jacket wide (`c8b27de6`, 15.3) shots begin at 11-17 s, earlier than B3's 22-28 s but still not an opening; the tiny meadow figure (`6447f6d1`) and a laughing turn follow. The ending is a 1.0 s shot of tiny hikers, a weak final image. B4 does not meet "strongest footage first": the strongest human footage is not in the first ten seconds, and B2's opening is still the better reference.
+Reading: removing the story-position roles did not change B3's and B4's shared first pick (`6a51e809`), so the role-label hypothesis in §14 is at best incomplete. The first v5.6 prompt (B) produced the strong opening and the two later prompts did not, but each variant is one sample at one setting, so the differences cannot be attributed to the wording with confidence. No further model attempts were made.
+Status: no dev pin, merge or deployment was performed. Open options, each needing owner approval: (a) accept B2's behavior as the reference and keep B's strategy text with the corrected fitter, accepting 20 shots and the repeated gestures; (b) an evaluation design with several samples per variant on the frozen request (a larger spend than authorized); (c) a deterministic, non-model hook rule, which the owner has so far declined because AU confidence does not measure appeal.
