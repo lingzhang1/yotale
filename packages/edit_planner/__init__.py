@@ -1984,12 +1984,48 @@ def _budget_block_v56(h: dict | None) -> str:
     lo, hi = h["suggested_shots"]
     return (f"\nBUDGET (advisory): target {h['target_s']:g}s; typical shots {a:g}–{b:g}s suggest roughly {lo}–{hi} "
             f"shots from {h['n_moments']} Moments ({h['useful_s']:.0f}s of useful footage). This is a pace guide, "
-            "not a quota or a limit on shot length. If the strongest footage runs out, end somewhat short rather "
-            "than add weak or repeated footage.\n")
+            "not a quota or a limit on shot length. If the footage you consider strong enough runs out, ending somewhat short is "
+            "acceptable; do not add weak or repeated footage just to reach the length.\n")
 
 
-def _build_user_v56(inputs: "EditPlanInputs", etype: str, revision_block: str) -> str:
+def _revision_block_v56(ctx: dict | None) -> str:
+    """v5.6 rendering of the version/creative context so the USER'S OWN instructions are never lost or mis-framed.
+    Differences from `_revision_context_block` (which stays byte-identical for 5.3/5.5):
+      - EXPLORE also renders `soft_direction` (a directed Create-Another-Version carries the user's text there; the
+        older renderer printed it only for Revise).
+      - an ORIGINAL create with Customize text arrives as mode=revise WITHOUT a base plan; it is rendered as the
+        user's creative direction, not as "revise your existing edit ... the BASE PLAN below" (there is none).
+      - a REVISE with a base plan is unchanged.
+    HARD directives are rendered exactly as before (the deterministic validator enforces them)."""
+    if not isinstance(ctx, dict) or not ctx:
+        return ""
+    mode = (ctx.get("mode") or "explore").strip().lower()
+    soft = (ctx.get("soft_direction") or "").strip() if isinstance(ctx.get("soft_direction"), str) else ""
+    bp = ctx.get("base_plan")
+    has_base = isinstance(bp, dict) and bool(bp.get("segments"))
+    if mode == "revise" and has_base:
+        return _revision_context_block(ctx)
+    note = ("These are the user's own instructions. They win over the STRATEGY and every default; HARD REQUIREMENTs "
+            "are also enforced by a validator.")
+    if mode == "revise":          # an original create carrying Customize text/directives: no base edit exists
+        lines = ["\n=== USER INSTRUCTIONS ==="]
+        if soft:
+            lines.append("USER CREATIVE DIRECTION (soft): " + soft)
+        lines.extend(_directive_lines(ctx.get("directives")))
+        lines.append(note)
+        lines.append("=== END USER INSTRUCTIONS ===\n")
+        return "\n".join(lines) if (soft or ctx.get("directives")) else ""
+    block = _revision_context_block(ctx)
+    if soft:
+        end = "=== END VERSION CONTEXT ==="
+        add = "USER CREATIVE DIRECTION (soft): " + soft + "\n" + note + "\n"
+        block = block.replace(end, add + end) if end in block else block + add
+    return block
+
+
+def _build_user_v56(inputs: "EditPlanInputs", etype: str, revision_block: str = "") -> str:
     import json
+    revision_block = _revision_block_v56(inputs.revision_context)
     payload = _v56_payload(inputs, etype)
     image_block = ""
     if inputs.images and inputs.image_moment_order:
@@ -2920,8 +2956,9 @@ def _under_length(plan: dict, inputs: "EditPlanInputs") -> tuple[float, float] |
 
 
 def _under_length_disclosure(delivered: float, target: float) -> str:
-    return (f"It runs about {delivered:.0f}s instead of the requested {target:.0f}s — the strongest footage ran out, "
-            "and adding weaker or repeated footage would make the video worse.")
+    """Neutral, factual note. It states only the measured difference: it does not claim the footage was exhausted
+    or that nothing better existed (the planner cannot prove that)."""
+    return f"It runs about {delivered:.0f}s instead of the requested {target:.0f}s."
 
 
 def _duration_disclosure(fit: dict) -> str:

@@ -25,9 +25,9 @@ EVIDENCE.
   is import order, not chronology.
 - Candidate ranges are hints, not cut boundaries: shorten, shift, extend, combine or ignore them.
 
-PRIORITY. The user's explicit directives (opening, ending, must-include, ordering, what to avoid) win over the
-STRATEGY, and the STRATEGY wins over any default below. A REVISE context means: preserve the base edit and change
-only what was asked.
+PRIORITY. The user's own instructions win over the STRATEGY, and the STRATEGY wins over any default below. User
+instructions are: HARD REQUIREMENTs, USER CREATIVE DIRECTION, a Revise or Explore request, the Sound preference, and
+the requested duration. A REVISE with a BASE PLAN means: preserve the base edit and change only what was asked.
 
 DURATION. target_duration_seconds is the user's chosen length and a strong objective: choose your shots first, add
 their output durations, and land within about ±10% of it when the footage supports that. Never pad, repeat, slow

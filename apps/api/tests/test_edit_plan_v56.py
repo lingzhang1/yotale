@@ -32,6 +32,7 @@ F = fx.CASES["full_story_explore"]
 @pytest.fixture
 def v56(monkeypatch):
     monkeypatch.setattr(ep, "_EDIT_PLAN_VERSION", "5.6")
+    monkeypatch.setattr(ep, "PROMPT_VERSION", "edit_plan/5.6")
 
 
 @pytest.fixture
@@ -162,7 +163,7 @@ def test_56_system_prompt_keeps_every_mechanical_rule():
                    "(source_end_seconds - source_start_seconds) / speed", "0.5x–2.0x",
                    "keep = full presence", "duck", "mute", "never set a music_alignment anchor",
                    "MusicAnalysis", "straight cuts", "narrative_role", "feasible=false", "Return ONLY the EditPlan via the tool",
-                   "explicit directives", "trust the frames", "Never invent"):
+                   "HARD REQUIREMENTs", "trust the frames", "Never invent"):
         assert needle.lower() in t.lower(), needle
     assert "never rejected for its length" in t
 
@@ -170,6 +171,7 @@ def test_56_system_prompt_keeps_every_mechanical_rule():
 def test_56_system_prompt_does_not_tell_the_model_to_declare_infeasible_for_a_short_cut():
     t = " ".join(_sys("5.6").split())
     assert "do not use it merely for ending somewhat short" in t
+    assert "user's own instructions win over the STRATEGY" in t
     assert "A shorter, stronger edit is better" in t
 
 
@@ -325,7 +327,7 @@ def test_pacing_hint_numbers_per_type_and_version(v56, monkeypatch):
 def test_pacing_hint_text_is_advisory(v56):
     u = _build_user(_inp(creative_intent={"target_duration_seconds": 30}))
     b = u[u.index("BUDGET"):u.index("INPUT:")]
-    assert "advisory" in b and "not a quota or a limit on shot length" in b and "end somewhat short" in b
+    assert "advisory" in b and "not a quota or a limit on shot length" in b and "ending somewhat short is acceptable" in b
     assert "±10%" not in b                                              # the system prompt owns the duration rule
 
 
@@ -395,7 +397,9 @@ def test_short_cut_ships_and_is_disclosed_never_rejected(v56):
     d = eng.last_diagnostics
     assert out.segments and d["final"] == "executable" and d["completion"] == "partial" and d["model_calls"] == 1
     assert any(m["code"] == "approx_duration" for m in d["material_unmet"])
-    assert "instead of the requested 90s" in d["partial_disclosure"] and "ran out" in d["partial_disclosure"]
+    assert d["partial_disclosure"].endswith("It runs about 6s instead of the requested 90s.")
+    for claim in ("ran out", "no more", "strongest footage", "nothing better", "weaker"):   # no unprovable claim
+        assert claim not in d["partial_disclosure"]
 
 
 def test_near_target_cut_is_complete_and_55_never_adds_the_disclosure(monkeypatch):
@@ -457,3 +461,128 @@ def test_56_text_is_far_smaller_than_55_on_a_realistic_payload(monkeypatch):
                                     creative_intent={"target_duration_seconds": 90}))
         sizes[ver] = len(_sys(ver)) + len(_build_user(inp))
     assert sizes["5.6"] < 0.5 * sizes["5.5"], sizes
+
+
+# --------------------------------------------------------------------------------------------------------------
+# 10. user-authored Creative Direction survives, through the REAL worker request path (envelope -> EditPlanInputs
+#     -> _build_user), with the right precedence. The generic app brief is boilerplate; user text is not.
+# --------------------------------------------------------------------------------------------------------------
+import importlib.util                                                # noqa: E402
+from pathlib import Path                                             # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("v56worker", str(Path(ROOT) / "apps/api/app/worker.py"))
+worker = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(worker)
+import edit_plan_jobs as _jobs                                       # noqa: E402
+
+M15 = "bbbbbbbb-0000-4000-8000-000000000002"
+M1 = "bbbbbbbb-0000-4000-8000-000000000001"
+
+
+class _Store:
+    def __init__(self, job, env):
+        self.job, self.env, self.done, self.err = dict(job), env, None, None
+
+    def get(self, j): return self.job
+    def claim_lease(self, j): self.job["status"] = "running"; return "tok"
+    def is_cancel_requested(self, j): return False
+    def mark_cancelled(self, j): return True
+    def load_request(self, prefix, order): return json.dumps(self.env), []
+    def complete(self, j, plan, diag, tok): self.done = (plan, diag); return True
+    def fail(self, j, cat, detail, token=None): self.err = (cat, detail); return True
+    def delete_staging(self, p): pass
+
+
+def _run_worker(monkeypatch, *, etype, rc=None, intent_extra=None, target=30.0, sound="balanced", legacy_brief=True):
+    ms = _rich_moments()
+    ci = {"target_duration_seconds": target, "tone": "adventurous", "raw_text": "8 days hiking"}
+    ci.update(intent_extra or {})
+    body = {"story_id": "11111111-1111-4111-8111-111111111111", "creative_intent_id": "22222222-2222-4222-8222-222222222222",
+            "creative_intent": ci, "story_guide": {"framing_summary": "g"}, "story_coverage": {}, "moments": ms,
+            "music_plan": {}, "sound_preference": sound, "editorial_type": etype,
+            "editorial_mode": "highlights" if etype == "highlights" else "full"}
+    if rc is not None:
+        body["revision_context"] = rc
+    env = {"body": json.dumps(body), "sheet_order": [], "approach": "storytelling",
+           "creative_brief": fx.LEGACY_BRIEF if legacy_brief else None}
+    plan = {"target_duration_seconds": 6, "feasible": True, "segments": [
+        {"order": 0, "asset_id": M15, "source_start_seconds": 1.0, "source_end_seconds": 3.0, "output_duration_seconds": 2.0,
+         "speed": 1.0, "native_audio": "keep"}]}
+    gw = FakeModelGateway(response=plan)
+    monkeypatch.setattr(worker, "_build_engine", lambda: RealEditPlannerEngine(gw))
+    job = {"job_id": "J1", "status": "queued", "operation_type": _jobs.OP_EDIT_PLAN,
+           "request_ref": {"staging_prefix": "jobs/J1/", "sheet_order": "[]"}}
+    st = _Store(job, env)
+    worker._run_edit_plan(st, "J1", st.job)
+    assert len(gw.calls) == 1                                                       # one planner call, no critique
+    return gw.calls[0].user_content, gw.calls[0].system, st
+
+
+@pytest.mark.parametrize("etype", ["highlights", "full_story"])
+def test_original_with_customize_text_and_directives_survives(v56, monkeypatch, etype):
+    rc = {"mode": "revise", "soft_direction": "Use the most beautiful views first. Make it cinematic and emotional.",
+          "directives": {"opening": M15, "must_include": [M1], "order_after": [[M1, M15]]},
+          "duration_target_source": "user_exact"}
+    u, system, st = _run_worker(monkeypatch, etype=etype, rc=rc, target=90.0)
+    assert "Use the most beautiful views first. Make it cinematic and emotional." in u
+    assert f"the FIRST segment (order 0) MUST be Moment id {M15}" in u
+    assert f"you MUST include a segment from each of these Moment ids: {M1}" in u
+    assert f"a segment from Moment id {M1} MUST appear somewhere AFTER" in u
+    assert u.index("USER INSTRUCTIONS") < u.index("STRATEGY —")                        # user text is read first
+    assert "win over the STRATEGY" in u
+    assert "REVISE of the user's EXISTING edit" not in u and "BASE PLAN below" not in u   # no phantom base edit
+    assert "creative_intent" in u and "8 days hiking" in u and '"target_duration_seconds":90' in u
+    assert fx.LEGACY_BRIEF[:40] not in u and "CREATIVE DIRECTION ===" not in u          # generic brief gone, user text kept
+
+
+@pytest.mark.parametrize("etype", ["highlights", "full_story"])
+def test_directed_explore_keeps_the_users_soft_text_and_hard_pins(v56, monkeypatch, etype):
+    rc = {"mode": "explore", "base_version_id": "v1", "prior_edit_summaries": [{"moment_sequence": [M1]}],
+          "soft_direction": "Start with Moment 15 and keep it cinematic.", "directives": {"opening": M15}}
+    u, _, _ = _run_worker(monkeypatch, etype=etype, rc=rc)
+    assert "Start with Moment 15 and keep it cinematic." in u
+    assert f"the FIRST segment (order 0) MUST be Moment id {M15}" in u
+    assert "MEANINGFULLY DIFFERENT" in u                                                # explore objective kept
+    assert u.count("STRATEGY —") == 1 and "PREVIOUS VERSION(S)" in u
+
+
+def test_older_versions_still_drop_explore_soft_text_which_is_why_56_renders_it_itself(monkeypatch):
+    """Documents pre-existing behavior (unchanged in 5.3/5.5): an Explore context's soft_direction is not rendered."""
+    rc = {"mode": "explore", "base_version_id": "v1", "soft_direction": "SOFTTEXT-X", "directives": {"opening": M15}}
+    monkeypatch.setattr(ep, "_EDIT_PLAN_VERSION", "5.5")
+    assert "SOFTTEXT-X" not in _build_user(_inp(H, revision_context=rc))
+    monkeypatch.setattr(ep, "_EDIT_PLAN_VERSION", "5.6")
+    assert "SOFTTEXT-X" in _build_user(_inp(H, revision_context=rc))
+
+
+@pytest.mark.parametrize("etype", ["highlights", "full_story"])
+def test_revise_with_base_plan_is_unchanged_and_latest_intent_wins(v56, monkeypatch, etype):
+    rc = {"mode": "revise", "soft_direction": "Keep the original sound and cut the second shot.",
+          "base_plan": {"segments": [{"order": 0, "asset_id": M1, "source_start_seconds": 0, "source_end_seconds": 2}]}}
+    u, _, _ = _run_worker(monkeypatch, etype=etype, rc=rc)
+    assert "LATEST REVISE INTENT (soft): Keep the original sound and cut the second shot." in u
+    assert "BASE PLAN (the exact current edit to revise" in u and "the LATEST request wins" in u
+    assert "USER INSTRUCTIONS" not in u and u.count("STRATEGY —") == 1
+
+
+def test_sound_preference_and_custom_duration_reach_the_model(v56, monkeypatch):
+    u, _, st = _run_worker(monkeypatch, etype="highlights", sound="immersive", target=35.0,
+                           rc={"mode": "revise", "duration_target_source": "user_exact"})
+    assert "SOUND PREFERENCE = immersive" in u and '"sound_preference":"immersive"' in u
+    assert '"target_duration_seconds":35.0' in u or '"target_duration_seconds":35' in u
+    assert st.done is not None and st.err is None
+
+
+def test_no_critique_no_extra_call_and_a_valid_job_completes(v56, monkeypatch):
+    u, _, st = _run_worker(monkeypatch, etype="full_story")
+    plan, diag = st.done
+    assert diag["model_calls"] == 1 and not diag.get("critique_attempted") and diag["prompt_version"] == "edit_plan/5.6"
+
+
+def test_worker_and_api_share_one_planner_module():
+    """The API (App Runner) and the worker (Lambda) import the SAME `edit_planner`; both resolve the version from
+    STORY_EDIT_PLAN_VERSION, which the release gate keeps identical on both."""
+    assert _py("import edit_planner as e, importlib.util as u;print(e.PROMPT_VERSION)",
+               {"STORY_EDIT_PLAN_VERSION": "5.6"}) == "edit_plan/5.6"
+    api = open(os.path.join(ROOT, "apps", "api", "app", "deps.py")).read()
+    assert "edit_planner" in api and "RealEditPlannerEngine" in api
