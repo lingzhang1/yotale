@@ -103,7 +103,7 @@ Frozen requests captured from two real dev jobs (same Story, 38 Moments, 38 cont
 | Native audio keep / duck / mute | 5 / 3 / 0 | 5 / 12 / 3 | 15 / 14 / 0 | 13 / 16 / 1 |
 | Model / repair calls, critique | 1 / 0, off | 1 / 0, off | 1 / 0, off | 1 / 0, off |
 | Input / output tokens | 84,396 / 730 | 33,511 / 2,025 | 83,533 / 2,947 | 40,423 / 2,995 |
-| System / user-text / AU-projection tokens | 2,960 / 51,078 / 49,641 | 1,294 / 6,527 / 5,644 | 2,960 / 50,656 / 49,333 | 1,294 / 12,732 / 11,916 |
+| System / user-text / AU-projection tokens (chars/4 ESTIMATE; see §14) | 2,960 / 51,078 / 49,641 | 1,294 / 6,527 / 5,644 | 2,960 / 50,656 / 49,333 | 1,294 / 12,732 / 11,916 |
 | Planner wall time (s) | 18.4 | 22.0 | 32.2 | 26.1 |
 | Est. cost (USD) | 0.113 | 0.062 | 0.134 | 0.081 |
 
@@ -146,3 +146,42 @@ Visual review of B3 (frames; the owner decides): the first 10 s are a foggy slop
 
 ## 13. Full Story: recorded limitation (no change made)
 155 s requested; planner 205.3 s; fitted 189.1 s. Remaining shots are protected by AU candidate/complete-action rules (13.8 s trim slack against 18.6 s needed; no unannotated filler left to drop). This is an upstream selection and duration-allocation problem. A future Full Story strategy should select fewer, more meaningful scenes when the budget requires, instead of protecting an excessive set and trimming afterwards. The type-aware Sizing milestone complements this but does not by itself fix a Custom 155 s overshoot, because an explicit Custom duration stays authoritative and the planner must still select to it.
+
+
+## 14. Owner review of B/B2/B3/C/D and the Highlights refinement (offline, 2026-11-17)
+**Token-method correction.** The component rows in §9 and §12 (system / user-text / AU-projection) came from the replay child process, which had no tiktoken and so used a chars/4 estimate (recorded as `token_method`). The provider-reported input/output totals are exact and unaffected. With tiktoken on the saved prompts: A (5.5) system 2,644 / user 57,552 / AU 55,710; B (5.6) 1,169 / 8,086 / 6,678; B3 (5.6) 1,191 / 8,141 / 6,678. Run replay with the venv interpreter for exact splits.
+
+**Owner decision.** B2 is the better creative reference; B3 hits the duration but has the weaker opening, with the strongest yellow/red-jacket footage at 22-28 s. Full Story D is not clearly better than C: both read as broad scenic travel edits with an atmospheric hiking section, not a structured personal story.
+
+### First-ten-second comparison (frames reviewed; editorial observations, not scores)
+| t (s) | B2 shot | Visible action | Notes |
+|---|---|---|---|
+| 0-1.7 | `8c43b8c9` src 4.11-5.8 (AU payoff, peak 5.36) | yellow-jacket hiker raises poles on a boulder, snowy range behind | clear action, strong sky/snow contrast, subject medium-small |
+| 1.7-3.7 | `0bc5f375` src 0.35-2.4 (payoff) | red jacket from behind, arms raised, close | large subject, strong color; closest thing to a human hook |
+| 3.7-6.1 | `c8b27de6` src 1.85-4.17 (payoff) | red jacket, arms spread, Mont Blanc behind | same gesture as the previous shot, wider |
+| 6.1-8.6 | `6447f6d1` src 9.15-11.65 (payoff) | tiny figure, arms out, in a large meadow under a gray cirque | weak: figure is a few pixels; AU "payoff" overstates appeal |
+| 8.6-10.8 | `59978263` src 0-2.2 (b_roll) | hiker crossing stream boulders | different action, low drama |
+
+| t (s) | B3 shot | Visible action | Notes |
+|---|---|---|---|
+| 0-1.5 | `6a51e809` src 2.15-3.65 (AU role `opening`) | cloud sweeping a slope, peak above | atmospheric, no subject; muted |
+| 1.5-3.0 | `4e9cc7f4` src 22.75-24.25 (payoff) | blue-jacket hiker on a cloudy ridge | clear, moderate impact |
+| 3.0-5.2 | `6fc10d4c` src 2.83-5.07 (progression) | hiker walking away under cliffs | walking footage |
+| 5.2-7.7 | `6447f6d1` src 8.87-11.3 (payoff) | the same tiny meadow figure as B2 | weak, now earlier |
+| 7.7-9.4 | `6fcdf1e0` src 1.25-3.0 (establishing) | paraglider, tiny, over a glacier | scenic, hard to read |
+| 9.4-11.7 | `cf6d09de` src 8.05-10.3 (payoff) | distant hiker on an empty ridge | scenic, small subject |
+
+First 3 s: B2 gives a clear human celebration then a large red-jacket gesture; B3 gives a cloud slope then a distant hiker. First 6 s: B2 holds three strong human shots; B3 holds one moderate human shot and two walking/scenic shots. First 10 s: B2 has the tiny-figure weak spot and repeated arms-up gestures (shots 0-2); B3 has no shot of the footage owner called strongest. In both, "four AU payoff Moments in the first ten seconds" overstates appeal (the tiny meadow figure counts as a payoff in both). Stronger available footage for B3's early slots, by frames viewed: the yellow-jacket (`8c43b8c9`), red-jacket close (`0bc5f375`) and red-jacket wide (`c8b27de6`) shots, which B3 itself placed at 22-28 s as three consecutive celebration shots.
+
+### Cause and change
+In B3 the first shot was the only candidate tagged `opening` and the penultimate shot the one tagged `closing` (`7a4cf3ef`); B3's titles echo AU story-position labels ("opening", "establishing", "closing"). The image-led Highlights projection still carried those narrative-function roles. Change (v5.6 Highlights only, projection plus strategy):
+1. Projection keeps only the neutral `payoff` tag per visual candidate; `opening`, `establishing`, `closing`, `progression`, `interaction`, `b_roll` are omitted (validation and the fitter still see the full Moment; Full Story keeps its roles).
+2. Strategy rewritten, not stacked: judge by frames on visible impact (prominence, clarity, expression, movement, drama, composition, contrast, speed of payoff), the `payoff` tag and text only say where to look, a close gesture beats the same gesture as a tiny figure; open with the most striking shot clear within 2 s and put the strongest few shots in the first ~10 s; do not open on weather/walking/establishing footage unless it is the most striking available; vary the action, avoid back-to-back near-identical gestures but allow a repeat that shows something different; cut fast (1-2.5 s preference, no speed-ups); select for the budget. The old sentence "show several distinct payoffs within the first ~10 seconds" was removed because it invited counting AU payoff tags.
+Highlights strategy length: 210 words before (no analysis) / 224 with a track; 244 / 258 now (+34), 289 tokens (was 275, tiktoken). Full Story strategy: byte-identical (hash pinned in tests). No new schema field, ranking JSON, model call or flag; system prompt unchanged.
+Limit: this is a hypothesis about the label effect, not proven. Only a model run on the frozen request can show whether the model now leads with its strongest shot.
+
+### Full Story (recorded, unchanged)
+C (5.5) and D (5.6) both open on gear/church, move through town, forest, fog and panorama blocks, and group summit-pose shots; D has a long atmospheric hiking stretch. Neither reads as a structured personal story. Improvement path stays separate: reliable relative chronology, meaningful narrative selection, a stronger story thread, upstream duration allocation, natural-audio preservation. Making shots longer is not a fix.
+
+### Prepared (not run): one frozen validation, arm B4
+Same frozen Highlights request (`c2_1_highlights_35s`, source hash `36f7984f9087e130`, 14 components verified, 38 Moments, 38 sheets, Custom 35 s, Original, critique off, balanced sound, same tempo-only track, no directives). Command: `editorial_replay.py run --case <case> --arm B4 --version 5.6` using the venv interpreter; one attempt, one model call, a repair call reported separately, no reruns. Compare B4 with B2 and B3 on: first 3 s / 6 s / 10 s frames, strongest visible hook, action diversity in the first ten seconds, near-duplicate neighbors, median shot, pre/post-fit duration, model calls, tokens, latency, cost, and the ffmpeg preview. Estimated cost about $0.06. Needs owner approval; no Moment id is forced.

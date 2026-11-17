@@ -1851,8 +1851,10 @@ def _v56_moment_highlights(m: dict) -> dict:
     subs = _v56_subjects(m)
     if subs:
         out["subjects"] = subs
+    # Story-position roles (opening / establishing / closing / progression / b_roll ...) are narrative hints that pulled the
+    # model into placing those candidates first or last; an image-led edit keeps only the neutral `payoff` tag.
     vcs = [{"start": _num(v.get("start_time")), "end": _num(v.get("end_time")), "peak": _num(v.get("peak_time")),
-            "role": v.get("role"), "value": _clip(v.get("visual_value"), 140)}
+            **({"role": "payoff"} if v.get("role") == "payoff" else {}), "value": _clip(v.get("visual_value"), 140)}
            for v in _v56_candidates(m, "visual_candidates")]
     if vcs:
         out["visual_candidates"] = vcs
@@ -1963,16 +1965,18 @@ def _v56_strategy(etype: str, has_music_analysis: str | None) -> str:
                 "Pace the cuts to the music plan's energy arc.")
         return (
             "\nSTRATEGY — HIGHLIGHTS (image-led). MAKE THE MOST VISUALLY EXCITING SHORT VIDEO POSSIBLE.\n"
-            "- Judge the footage by the frames. Compare the visual quality of ALL Moments with each other (subject "
-            "and expression, composition, light and color, movement, scenic drama, a clearly visible payoff) and "
-            "choose the best. Confidence is not appeal; text candidates only tell you where to look.\n"
-            "- Front-load. Open on the single strongest payoff and show several distinct payoffs within the first "
-            "~10 seconds. Do not warm up.\n"
-            "- Cut fast. Typical shots run about 1–2.5 s (a preference, not a rule: a payoff that needs more time "
-            "may run longer). Start on the action and leave early. Never speed footage up to cut length: choose a "
-            "tighter sub-range and cut sooner.\n"
-            "- Be ruthless. No routine establishing shots. Do not force chronology. Do not include every Moment; a "
-            "second shot from the same place or action must show something clearly different.\n"
+            "- Judge by the frames. Compare ALL Moments on visible impact (subject prominence, action clarity, "
+            "expression, movement, scenic drama, composition, contrast, how fast the payoff reads). The `payoff` "
+            "tag and the text only say where to look, not how good the footage is. Of similar clips take the "
+            "clearest (a close, expressive gesture beats the same gesture as a tiny distant figure).\n"
+            "- Front-load. Open with the single most striking shot, clear within 2 seconds, and put your strongest "
+            "few shots in the first ~10 seconds. Do not open on weather, walking or establishing footage unless it "
+            "is the most striking thing available.\n"
+            "- Vary the action, not only the place; avoid back-to-back near-identical gestures when other strong "
+            "footage exists. A repeat is fine when it shows something different.\n"
+            "- Cut fast. Typical shots run about 1–2.5 s (a preference: a reveal that needs time may run longer). "
+            "Start on the action and leave early; never speed footage up, choose a tighter sub-range.\n"
+            "- Select for the budget: not every Moment, no weaker filler, no forced chronology.\n"
             f"- {pace}\n"
             "- Sound default: music-forward, with native audio kept only where a payoff's own sound is the point."
             + tail)

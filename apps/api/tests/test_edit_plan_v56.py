@@ -181,11 +181,51 @@ def test_56_system_prompt_does_not_tell_the_model_to_declare_infeasible_for_a_sh
 def test_highlights_strategy_text_and_exclusivity(v56):
     u = _build_user(_inp())
     assert "MAKE THE MOST VISUALLY EXCITING SHORT VIDEO POSSIBLE." in u
-    for needle in ("Compare the visual quality of ALL Moments", "Confidence is not appeal", "several distinct payoffs "
-                   "within the first ~10 seconds", "1–2.5 s", "a preference, not a rule", "No routine establishing shots",
-                   "Do not force chronology", "Do not include every Moment", "Never speed footage up"):
+    for needle in ("Compare ALL Moments on visible impact", "not how good the footage is", "tiny distant figure",
+                   "Open with the single most striking shot, clear within 2 seconds", "strongest few shots in the first ~10 seconds",
+                   "Do not open on weather, walking or establishing footage", "Vary the action, not only the place",
+                   "back-to-back near-identical gestures", "A repeat is fine when it shows something different",
+                   "1–2.5 s", "a preference", "never speed footage up", "no forced chronology", "not every Moment"):
         assert needle in u, needle
     assert "FULL STORY (narrative-led)" not in u and "4–10 s" not in u
+
+
+def test_highlights_strategy_is_concise_with_no_repeated_instruction(v56):
+    h = ep._v56_strategy("highlights", "tempo_only")
+    assert len(h.split()) <= 270, len(h.split())
+    low = h.lower()
+    for once in ("compare all moments", "most striking shot", "1–2.5 s", "speed footage up", "forced chronology", "near-identical"):
+        assert low.count(once.lower()) == 1, once
+    assert "several distinct payoffs" not in low and "confidence is not appeal" not in low   # old sentence replaced, not stacked
+
+
+def test_full_story_strategy_is_byte_identical_to_the_reviewed_text():
+    import hashlib
+    for kind in (None, "grid", "tempo_only"):
+        assert hashlib.sha256(ep._v56_strategy("full_story", kind).encode()).hexdigest() == \
+            "2193eac02ef70c94d0bb31d27c44cb34171159065aae60250c3da8fb7b969386"
+
+
+def test_highlights_projection_keeps_only_the_neutral_payoff_tag(v56):
+    ms = _rich_moments()
+    ms[0]["editorial"]["visual_candidates"] += [
+        {"start_time": 0, "end_time": 3, "role": "opening", "confidence": 0.9, "visual_value": "o"},
+        {"start_time": 1, "end_time": 3, "role": "closing", "confidence": 0.9, "visual_value": "c"},
+        {"start_time": 2, "end_time": 3, "role": "establishing", "confidence": 0.9, "visual_value": "e"}]
+    inp = _inp(H, moments=ms, image_moment_order=[m["id"] for m in ms])
+    _, p = _split(_build_user(inp))
+    vcs = p["moments"][0]["visual_candidates"]
+    assert [v.get("role") for v in vcs] == [None, "payoff", None, None, None]    # b_roll/opening/closing/establishing dropped
+    assert all("value" in v for v in vcs)
+    _, pf = _split(_build_user(_inp(F, moments=ms, image_moment_order=[m["id"] for m in ms])))
+    assert {v.get("role") for v in pf["moments"][0]["visual_candidates"]} == {"b_roll", "payoff", "opening", "closing", "establishing"}
+    assert inp.moments[0]["editorial"]["visual_candidates"][2]["role"] == "opening"           # validation data untouched
+
+
+def test_user_opening_directive_still_outranks_the_highlights_hook(v56):
+    u = _build_user(_inp(fx.CASES["highlights_opening_directive"]))
+    assert "the FIRST segment (order 0) MUST be Moment id aaaaaaaa-0000-4000-8000-000000000004" in u
+    assert "Explicit user directives always win" in u and "user's own instructions win" in " ".join(_sys("5.6").split())
 
 
 def test_full_story_strategy_text_and_exclusivity(v56):
@@ -234,8 +274,8 @@ def test_highlights_projection_is_compact_and_image_led(v56):
         assert s not in u, s
     m1 = p["moments"][0]
     assert m1["id"].startswith("bbbbbbbb") and m1["duration_seconds"] == 16.1 and m1["useful_segments"] == [[0, 9.5], [10.5, 16.07]]
-    assert [v["role"] for v in m1["visual_candidates"]] == ["b_roll", "payoff"]
     assert m1["visual_candidates"][1] == {"start": 11.9, "end": 16.07, "peak": 15.4, "role": "payoff", "value": "walks to camera"}
+    assert "role" not in m1["visual_candidates"][0]                                  # b_roll is a story-position tag: dropped
     assert len(m1["subjects"]) == 5
 
 
