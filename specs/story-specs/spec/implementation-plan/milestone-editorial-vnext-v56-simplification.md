@@ -123,3 +123,26 @@ Per-segment evidence for B (all 20 locked; the table was produced by the analysi
 Four ffmpeg previews (not the product renderer; no music; native audio only, duck = -9 dB; 1080x1920 center-crop; no effects) were built from the dev cloud copies of the 30 source Moments used, plus B2 = the same model plan after the corrected fit. See `scripts/editorial_preview.py`. Private files live outside the repo (paths in the owner message); nothing is uploaded.
 Highlights B opening (frames reviewed): shot 0 (0-1.9 s) wide hiker in a yellow jacket, poles up, Mont Blanc behind, a clear and attractive image; shots 1-2 (1.9-6.7 s) are the red-jacket subject with arms wide, one close from behind and one wide, so the second is close to a repeat of the first; shot 3 (6.7-9.7 s) is a tiny figure with arms up in a large gray cirque, with the payoff hard to read at this size; shot 4 (9.75 s) is a hiker crossing a stream and shot 5 a creek close-up. Four AU payoff Moments therefore occur early, but three are the same arms-up gesture and one is small in frame. Whether the opening is compelling is the owner's judgment; the evidence suggests the variety is partly in places, less in actions.
 Full Story: both plans open on the gear/church context and end on a look back to camera (C: Mont Blanc farewell vista; D: seated look to camera). D is not clearly more coherent than C: both move through town, ridge, fog, summit-pose and evening blocks (the video, not this note, must show whether that order is real); D lists several consecutive arms-up/celebration shots (21-24) like C (17-19), and C repeats Moment fbb64608 and 6a51e809 as "echo/same pass" shots. Whether any progression is invented is not decidable without chronology metadata (separate milestone).
+
+## 12. Highlights B3: one authorized rerun on the same frozen request (2026-11-17)
+Same frozen request as A and B (all 14 component hashes equal the manifest; source hash `36f7984f…`), Original, Custom 35 s, critique off, current v5.6 prompt and corrected fitter, one attempt, one model call, no repair. Local replay arm `B3` (no worker job id; plan and diagnostics are in the private result file). Plan-level metrics, not quality acceptance.
+
+| | B (first v5.6) | B2 (B's plan, corrected fit, offline) | B3 (new model plan, corrected fit) |
+|---|---|---|---|
+| Model plan before fit (s) | 54.6 | 54.6 | **44.2** |
+| Fitted (s) | 54.6 (unfitted) | 37.9 | **35.0** |
+| Shots / Moments | 20 / 20 | 20 / 20 | 18 / 15 |
+| Shot mean / median (s) | 2.73 / 2.90 | 1.89 / 1.93 | 1.94 / 2.12 |
+| Shots ≤ 2.5 s | 30% | 95% | 100% |
+| Anchors set (binding / unsupported) | 13 (0 / 13) | 13 (0 / 13) | **0** |
+| Fit trims / drops | none (locked) | 16 / 0 | 17 / 0 |
+| Distinct payoff Moments in first 10 s | 4 | 4 | 3 |
+| Native audio keep / duck / mute | 5 / 12 / 3 | 5 / 12 / 3 | 0 / 8 / 10 |
+| Input / output tokens, wall, cost | 33.5k / 2.0k, 22.0 s, $0.062 | n/a (offline) | 33.6k / 1.8k, 24.6 s, $0.060 |
+| Completion | partial | n/a | complete |
+
+Reading: the planner improved before fitting (54.6 → 44.2 s, no unsupported anchors, fewer shots and Moments) but still planned 26% over the 35 s budget, so the fitter still carried 9.2 s (17 trims, none dropped). The wording change moved the model toward the budget; it did not make it select to the budget. Nothing is rejected or disclosed: the fitted 35.0 s lies in the band and completion is `complete`.
+Visual review of B3 (frames; the owner decides): the first 10 s are a foggy slope reveal (no person), a hiker on a cloudy ridge, a hiker walking away on a trail, a tiny arms-up figure on a meadow, a distant paraglider and an empty ridge. These are varied but less human and less striking than B's opening; the yellow-jacket and red-jacket arms-up shots moved to 22-28 s and three celebration shots now run consecutively (V-pose, red jacket close, red jacket wide). One Moment (`6fc10d4c`) is used three times and `6fcdf1e0` twice. The ending is a quiet close-up of a face in a blue hood in whiteout: human and distinct, low energy. 10 of 18 shots are muted, so native sound is mostly absent. Preview is ffmpeg (not the product renderer).
+
+## 13. Full Story: recorded limitation (no change made)
+155 s requested; planner 205.3 s; fitted 189.1 s. Remaining shots are protected by AU candidate/complete-action rules (13.8 s trim slack against 18.6 s needed; no unannotated filler left to drop). This is an upstream selection and duration-allocation problem. A future Full Story strategy should select fewer, more meaningful scenes when the budget requires, instead of protecting an excessive set and trimming afterwards. The type-aware Sizing milestone complements this but does not by itself fix a Custom 155 s overshoot, because an explicit Custom duration stays authoritative and the planner must still select to it.
