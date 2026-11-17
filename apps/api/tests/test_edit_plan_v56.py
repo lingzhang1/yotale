@@ -181,22 +181,26 @@ def test_56_system_prompt_does_not_tell_the_model_to_declare_infeasible_for_a_sh
 def test_highlights_strategy_text_and_exclusivity(v56):
     u = _build_user(_inp())
     assert "MAKE THE MOST VISUALLY EXCITING SHORT VIDEO POSSIBLE." in u
-    for needle in ("Compare ALL Moments on visible impact", "not how good the footage is", "tiny distant figure",
-                   "Open with the single most striking shot, clear within 2 seconds", "strongest few shots in the first ~10 seconds",
-                   "Do not open on weather, walking or establishing footage", "Vary the action, not only the place",
-                   "back-to-back near-identical gestures", "A repeat is fine when it shows something different",
-                   "1–2.5 s", "a preference", "never speed footage up", "no forced chronology", "not every Moment"):
+    for needle in ("Compare the visual quality of ALL Moments", "Confidence is not appeal", "several distinct payoffs "
+                   "within the first ~10 seconds", "1–2.5 s", "a preference, not a rule", "No routine establishing shots",
+                   "Do not force chronology", "Do not include every Moment", "Never speed footage up"):
         assert needle in u, needle
     assert "FULL STORY (narrative-led)" not in u and "4–10 s" not in u
 
 
-def test_highlights_strategy_is_concise_with_no_repeated_instruction(v56):
-    h = ep._v56_strategy("highlights", "tempo_only")
-    assert len(h.split()) <= 270, len(h.split())
-    low = h.lower()
-    for once in ("compare all moments", "most striking shot", "1–2.5 s", "speed footage up", "forced chronology", "near-identical"):
-        assert low.count(once.lower()) == 1, once
-    assert "several distinct payoffs" not in low and "confidence is not appeal" not in low   # old sentence replaced, not stacked
+def test_highlights_strategy_is_the_restored_original_b_text_and_is_not_stacked(v56):
+    """The accepted creative reference (B2) came from this exact strategy; B3/B4's rewrites were reverted. Pinned by hash
+    for a request without a track and with a track that has timed structure (the music line is the only variable part)."""
+    import hashlib
+    h = lambda k: hashlib.sha256(ep._v56_strategy("highlights", k).encode()).hexdigest()
+    assert h(None) == "dd03d20b4a98fb74e67e552734cc7b1d70c2c062170a2f15aac89cd7caab6070"
+    assert h("grid") == "2c59bb284b92d3260564994bfb23f10f48fc175e0a799f7d01b5c0de9d42be6e"
+    assert len(ep._v56_strategy("highlights", None).split()) == 210
+    low = ep._v56_strategy("highlights", "tempo_only").lower()
+    for once in ("compare the visual quality of all moments", "single strongest payoff", "1–2.5 s", "speed footage up",
+                 "force chronology"):
+        assert low.count(once) == 1, once
+    assert "most striking shot" not in low and "back-to-back" not in low                  # B4 wording is gone
 
 
 def test_full_story_strategy_is_byte_identical_to_the_reviewed_text():
@@ -206,20 +210,14 @@ def test_full_story_strategy_is_byte_identical_to_the_reviewed_text():
             "2193eac02ef70c94d0bb31d27c44cb34171159065aae60250c3da8fb7b969386"
 
 
-def test_highlights_projection_keeps_only_the_neutral_payoff_tag(v56):
+def test_highlights_projection_is_the_restored_original_b_projection(v56):
+    """B's projection kept each candidate's AU role label; the B3/B4 role-stripping was reverted."""
     ms = _rich_moments()
-    ms[0]["editorial"]["visual_candidates"] += [
-        {"start_time": 0, "end_time": 3, "role": "opening", "confidence": 0.9, "visual_value": "o"},
-        {"start_time": 1, "end_time": 3, "role": "closing", "confidence": 0.9, "visual_value": "c"},
-        {"start_time": 2, "end_time": 3, "role": "establishing", "confidence": 0.9, "visual_value": "e"}]
     inp = _inp(H, moments=ms, image_moment_order=[m["id"] for m in ms])
     _, p = _split(_build_user(inp))
-    vcs = p["moments"][0]["visual_candidates"]
-    assert [v.get("role") for v in vcs] == [None, "payoff", None, None, None]    # b_roll/opening/closing/establishing dropped
-    assert all("value" in v for v in vcs)
-    _, pf = _split(_build_user(_inp(F, moments=ms, image_moment_order=[m["id"] for m in ms])))
-    assert {v.get("role") for v in pf["moments"][0]["visual_candidates"]} == {"b_roll", "payoff", "opening", "closing", "establishing"}
-    assert inp.moments[0]["editorial"]["visual_candidates"][2]["role"] == "opening"           # validation data untouched
+    assert [v["role"] for v in p["moments"][0]["visual_candidates"]] == ["b_roll", "payoff"]
+    assert set(p["moments"][0]["visual_candidates"][0]) == {"start", "end", "peak", "role", "value"}
+    assert "confidence" not in json.dumps(p) and "evidence" not in p["moments"][0]
 
 
 def test_user_opening_directive_still_outranks_the_highlights_hook(v56):
@@ -275,7 +273,7 @@ def test_highlights_projection_is_compact_and_image_led(v56):
     m1 = p["moments"][0]
     assert m1["id"].startswith("bbbbbbbb") and m1["duration_seconds"] == 16.1 and m1["useful_segments"] == [[0, 9.5], [10.5, 16.07]]
     assert m1["visual_candidates"][1] == {"start": 11.9, "end": 16.07, "peak": 15.4, "role": "payoff", "value": "walks to camera"}
-    assert "role" not in m1["visual_candidates"][0]                                  # b_roll is a story-position tag: dropped
+    assert [v["role"] for v in m1["visual_candidates"]] == ["b_roll", "payoff"]
     assert len(m1["subjects"]) == 5
 
 
@@ -338,7 +336,7 @@ def test_music_plan_compact_and_music_analysis_unchanged(v56):
     _, p = _split(u)
     assert p["music_analysis"] == ma and "NOTE-ARC" not in u and "PROV" not in u
     assert p["music_plan"]["energy_arc"][0]["intensity"] == "rising" and p["music_plan"]["audio_strategy"]
-    assert "Pace the cuts to the supplied beat/downbeat times" in u
+    assert "Pace the cuts to the real beats of the supplied music analysis" in u
     assert "Pace the cuts to the music plan" in _build_user(_inp(music_plan=mp))
 
 
@@ -356,7 +354,7 @@ def test_pacing_hint_numbers_per_type_and_version(v56, monkeypatch):
     big = [dict(_rich_moments()[0], id=f"cccccccc-0000-4000-8000-{i:012d}") for i in range(38)]
     inp = _inp(H, moments=big, image_moment_order=[m["id"] for m in big], creative_intent={"target_duration_seconds": 90})
     h = compute_budget_hint(inp)
-    assert h["typical_shot_s"] == [1.0, 2.5] and h["suggested_shots"] == [36, 51]        # 90/2.5 .. 90/1.75 (mid-range shot), under the 2 x Moments cap
+    assert h["typical_shot_s"] == [1.0, 2.5] and h["suggested_shots"] == [36, 76]        # 90/2.5 .. 90/1.0, capped at 2 x Moments
     f = compute_budget_hint(_inp(F, creative_intent={"target_duration_seconds": 90}))
     assert f["typical_shot_s"] == [4.0, 10.0] and f["suggested_shots"] == [6, 6]         # 9..13 both capped at 6 (3 Moments x 2)
     monkeypatch.setattr(ep, "_EDIT_PLAN_VERSION", "5.5")
@@ -637,16 +635,16 @@ from edit_planner import duration_fit as DF                          # noqa: E40
 def test_tempo_only_track_tells_the_model_to_set_no_anchors(v56):
     u = _build_user(_inp(music_analysis={"bpm": 105, "beats": [], "downbeats": [], "highlight_window": None}))
     assert "has no beat times" in u and "set no music anchors" in u
-    assert "supplied beat/downbeat times" not in u
+    assert "real beats" not in u
     assert ep._v56_music_kind({"beats": [], "downbeats": [], "highlight_window": None}) == "tempo_only"
     assert ep._v56_music_kind({"highlight_window": {"start": 1, "end": 9}}) == "grid" and ep._v56_music_kind(None) is None
 
 
-def test_budget_block_states_the_total_and_the_removal_rule(v56):
+def test_budget_block_is_the_restored_original_b_text(v56):
     u = _build_user(_inp(creative_intent={"target_duration_seconds": 35}))
     b = u[u.index("BUDGET"):u.index("INPUT:")]
-    assert "must add up to about 35s" in b and "passes 38.5s remove the weakest whole shots" in b
-    assert "not a quota or a limit on shot length" in b
+    assert "advisory" in b and "not a quota or a limit on shot length" in b and "ending somewhat short is acceptable" in b
+    assert "remove the weakest whole shots" not in b and "must add up to" not in b          # B4-era wording is gone
 
 
 def _pm(n, out=2.7, anchor=None, *, payoff=True, native="duck"):
