@@ -1,6 +1,15 @@
 # Highlights sizing v1 (`highlights_sizing/1`): rule-based, no model call
 
-**Status:** implemented on `feat/sizing-v2` (draft PR). Offline tests green. **Not merged or deployed.** iOS change is parse-checked and its extraction logic was run in isolation, but it is **not Xcode-built or XCTest-run**.
+**Status: PARKED (2026-11-17).** Designed and implemented on `feat/sizing-v2` as draft PR #128; offline backend tests green; **not merged, not deployed, owner will revisit.** The iOS half is parse-checked and its extraction logic was run in isolation, but it is **not Xcode-built or XCTest-run**. Nothing in `master` or on dev/beta depends on this work: the Create screen still shows the model's Highlights suggestion (about 80 s on the 38-Moment TMB Story) until this ships.
+
+**To resume:** the code is on branch `feat/sizing-v2` (PR #128, draft, CI green at `cdec80f`). Then (1) decide the open questions below, (2) build the app in Xcode and run `HighlightsSizingPayoffWindowsTests`, (3) merge, deploy-dev and check the Create screen on the TMB Story (expect 30-40 s), (4) only then consider beta. Backend-only deploy is safe (older apps fall back to the footage-only estimate).
+
+**Open questions for the owner (why it is parked):**
+1. Is a formula on AU payoff counts the right basis? An AU `payoff` tag marks where the analysis saw an action, not how appealing it is (a tiny distant figure was tagged `payoff`). The count can over- or under-state real opportunities.
+2. Are the constants right (2.2 s shot, 0.7 use fraction, 15 s minimum, 60 s maximum, +-15% spread)? They were tuned on three Stories only.
+3. Should Highlights and Full Story be sized in one place later (a fully rule-based Full Story, which would remove the model call), or should the model stay for Full Story?
+4. Should the fix instead be a `duration_recommendation/2` prompt that sees payoff evidence (keeps a model, avoids hard-coded constants, but is non-deterministic and costs a call)?
+5. Is a smaller interim change preferable: only lowering the floor given to the model (a one-line change, tried and reverted earlier because it also alters Full Story)?
 
 ## Problem
 The Create screen showed "about 80 s" for Highlights on the 38-Moment TMB Story. Cause (verified in code): `compute_duration_evidence` hands the model a feasible-band floor of `2 s x Moment count` (76 s), and the frozen `duration_recommendation/1` call anchored its Highlights range on it (observed 80-100 s). Highlights length therefore followed how many clips were imported, not how many attractive opportunities exist. At the v5.6 pace (1-2.5 s shots) 80 s means 30-80 shots, the montage the product is trying to avoid.
