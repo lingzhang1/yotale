@@ -20,7 +20,18 @@ gate = importlib.util.module_from_spec(_spec)
 sys.modules["release_config_gate"] = gate
 _spec.loader.exec_module(gate)
 
-MANIFEST = gate.load_manifest()
+COMMITTED = gate.load_manifest()
+
+
+def _without_beta_pin(m: dict) -> dict:
+    """The committed manifest minus its time-boxed beta planner pin. Most tests below model a beta that follows the
+    default planner (5.3); the committed beta pin has its own dedicated tests."""
+    per = {k: v for k, v in (m["planner"].get("environment_overrides") or {}).items() if k != "beta"}
+    return {**m, "planner": {**m["planner"], "environment_overrides": per},
+            "approved_overrides": [o for o in m["approved_overrides"] if o["env"] != "beta"]}
+
+
+MANIFEST = _without_beta_pin(COMMITTED)
 XC = {n: gate.parse_xcconfig(REPO / "apps/ios/Story/Config" / f"{n}.xcconfig") for n in ("Development", "Beta")}
 
 
@@ -232,24 +243,34 @@ def test_N13_unapproved_emergency_rollback_override_is_rejected_and_approval_unb
     assert "prompt_missing" in _codes(s9, manifest=ok9)
 
 
-def test_committed_manifest_never_overrides_beta_gamma_or_production_and_time_boxes_any_dev_override():
-    """Strengthened guard (replaces "no override at all"). The committed manifest may carry ONLY a time-boxed,
-    owner-approved, DEVELOPMENT-only planner pin (an evaluation). It never pins beta/gamma/production, never carries a
-    GLOBAL emergency rollback, and no degradation is approved."""
-    pl = MANIFEST["planner"]
+def test_committed_manifest_only_carries_time_boxed_dev_and_beta_planner_pins():
+    """Strengthened guard. The committed manifest may carry ONLY time-boxed, owner-approved, per-environment planner pins
+    for development and beta (evaluations). It never pins gamma/production, never carries a GLOBAL emergency rollback,
+    and no degradation is approved."""
+    pl = COMMITTED["planner"]
     assert pl["emergency_override"] is None, "no GLOBAL planner override may be committed"
     pinned = pl.get("environment_overrides") or {}
-    assert set(pinned) <= {"development"}, f"only development may be pinned, got {sorted(pinned)}"
-    for env in ("beta", "gamma", "production"):
-        assert gate.manifest_planner_override(MANIFEST, env) is None, env
-    approved = MANIFEST["approved_overrides"]
+    assert set(pinned) <= {"development", "beta"}, f"only development and beta may be pinned, got {sorted(pinned)}"
+    for env in ("gamma", "production"):
+        assert gate.manifest_planner_override(COMMITTED, env) is None, env
+    approved = COMMITTED["approved_overrides"]
     assert {(o["setting"], o["env"], str(o["value"])) for o in approved} == \
-        {("STORY_EDIT_PLAN_VERSION", "development", str(v)) for v in pinned.values()}, \
-        "every committed approval must match a development pin, and every pin must be approved"
+        {("STORY_EDIT_PLAN_VERSION", env, str(v)) for env, v in pinned.items()}, \
+        "every committed approval must match a pin, and every pin must be approved"
     for o in approved:
-        assert o["env"] == "development"
+        assert o["env"] in ("development", "beta")
         assert o.get("approved_by") and o.get("reason") and o.get("expires"), "an approval must name who, why and when it ends"
-    assert MANIFEST["approved_degradations"] == []
+    assert COMMITTED["approved_degradations"] == []
+
+
+def test_committed_beta_pin_is_accepted_for_beta_and_does_not_leak_to_development():
+    beta_pin = gate.manifest_planner_override(COMMITTED, "beta")
+    if beta_pin is None:
+        pytest.skip("no beta pin committed")
+    beta = _with(_snapshot("beta"), svc={"STORY_EDIT_PLAN_VERSION": beta_pin}, wrk={"STORY_EDIT_PLAN_VERSION": beta_pin})
+    assert _codes(beta, manifest=COMMITTED) == set()
+    assert "rollback_not_applied" in _codes(_snapshot("beta"), manifest=COMMITTED), "a beta deploy must not drop the pin"
+    assert gate.manifest_planner_override(COMMITTED, "gamma") is None
 
 
 def test_manifest_planner_override_resolution():
