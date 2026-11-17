@@ -122,10 +122,36 @@ def render_all() -> dict[str, str]:
     return out
 
 
+GOLDEN_55_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "edit_plan_v55_golden.json")
+
+
+def render_all_55() -> dict[str, str]:
+    """Every prompt string the planner builds for the fixture cases with the SELECTED version forced to 5.5. The
+    golden file was generated from master (929a060, before any v5.6 code) and pins that 5.5 stays unchanged."""
+    out: dict[str, str] = {}
+    orig = edit_planner._EDIT_PLAN_VERSION
+    edit_planner._EDIT_PLAN_VERSION = "5.5"
+    try:
+        for name, extra in CASES.items():
+            out[f"{name}::user"] = edit_planner._build_user(make_inputs(**extra))
+        inp = make_inputs(**CASES["highlights_original"])
+        out["repair"] = edit_planner._build_repair(inp, {"segments": []}, ["seg0: example error"])
+        out["critique"] = edit_planner._build_critique(inp, {"segments": []})
+        out["revision"] = edit_planner._build_revision(inp, {"segments": []}, "critique text")
+    finally:
+        edit_planner._EDIT_PLAN_VERSION = orig
+    return out
+
+
 def regenerate_golden() -> None:
     os.makedirs(os.path.dirname(GOLDEN_PATH), exist_ok=True)
     with open(GOLDEN_PATH, "w") as f:
         json.dump(render_all(), f, indent=1, sort_keys=True, ensure_ascii=False)
+
+
+def regenerate_golden_55() -> None:
+    with open(GOLDEN_55_PATH, "w") as f:
+        json.dump(render_all_55(), f, indent=1, sort_keys=True, ensure_ascii=False)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
     "version": "5.3",
     "emergency_override": null,
     "environment_overrides": {
-      "development": "5.5"
+      "development": "5.6"
     }
   },
   "required_everywhere": {
@@ -45,11 +45,11 @@
     {
       "setting": "STORY_EDIT_PLAN_VERSION",
       "env": "development",
-      "value": "5.5",
+      "value": "5.6",
       "approved_by": "owner",
-      "approved_on": "2026-11-16",
+      "approved_on": "2026-11-17",
       "expires": "2026-11-30",
-      "reason": "Editorial vNext M1 matched evaluation of the edit_plan/5.5 candidate on DEVELOPMENT ONLY. Time-boxed: remove planner.environment_overrides.development and this entry when the evaluation ends (default planner 5.3)."
+      "reason": "Editorial vNext: development-only device acceptance of the restored edit_plan/5.6 Highlights candidate (B2 is the visual reference). Time-boxed; beta, gamma and production stay on the default. ROLLBACK: set planner.environment_overrides.development back to \"5.5\" and this entry's value to \"5.5\" (or remove both for the 5.3 default) in one reviewed PR, then deploy-dev; no job migration is needed because the planner version is read per job."
     }
   ],
   "approved_degradations": []

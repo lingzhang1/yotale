@@ -84,7 +84,7 @@ def test_version_55_resolves_only_when_selected():
 
 def test_unknown_version_falls_back_to_default():
     assert _py("import edit_planner as e;print(e.PROMPT_VERSION, e._v55_active())",
-               {"STORY_EDIT_PLAN_VERSION": "5.6"}) == "edit_plan/5.3 False"
+               {"STORY_EDIT_PLAN_VERSION": "5.7"}) == "edit_plan/5.3 False"
 
 
 def test_existing_53_cand_dir_does_not_parse_as_55():
