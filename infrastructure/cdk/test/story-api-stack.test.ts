@@ -362,11 +362,10 @@ describe("StoryApiStack (Milestone A)", () => {
     // a null per-environment entry explicitly clears the global pin for that environment
     const cleared = manifest({ emergency_override: "5.2", environment_overrides: { development: null } });
     expect(both(stack("development", { releaseManifestForTest: cleared }))).toEqual([undefined, undefined]);
-    // the committed manifest never pins beta, gamma or production
-    expect(committedPin("beta")).toBeUndefined();
+    // the committed manifest never pins gamma or production; beta carries only the time-boxed reviewed pin (if any)
     expect(committedPin("gamma")).toBeUndefined();
     expect(committedPin("production")).toBeUndefined();
-    expect(both(stack("beta", {}))).toEqual([undefined, undefined]);
+    expect(both(stack("beta", {}))).toEqual([committedPin("beta"), committedPin("beta")]);
     // the old command-line context is no longer an input: it must NOT pin a version
     const ctxOnly = synth("test", { editPlanVersion: "5.2" });
     expect(workerVars(ctxOnly)["STORY_EDIT_PLAN_VERSION"]).toBeUndefined();
