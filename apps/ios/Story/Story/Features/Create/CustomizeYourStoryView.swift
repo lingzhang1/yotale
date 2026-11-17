@@ -168,9 +168,6 @@ struct CustomizeYourStoryView: View {
     // chooses order"); opening Arrange edits it. Persisted in the draft so close/reopen is non-destructive.
     @State private var momentSequence: MomentSequence
     @State private var showArrange = false
-    /// True while the software keyboard is up. The Create footer is removed then (not floated above the keyboard,
-    /// where it covered the content being typed); it returns when the keyboard goes away.
-    @State private var keyboardVisible = false
     @State private var showMoodSheet = false   // Customize UX v2 §9: compact single-select Mood sheet
     /// Selected SOFT quick shortcuts (shorter shots, cut to the beat, ...). Toggles that ride soft_direction at
     /// submit; deliberately never written into the instruction text the interpreter reads.
@@ -414,23 +411,27 @@ struct CustomizeYourStoryView: View {
 
                 // 5. MORE OPTIONS (§8) — collapsed by default: Duration · Sound · Music.
                 moreOptionsSection
+
+                // 6. CREATE ACTION + dynamic summary — the last item of the scrolling content, NOT a floating bar: it never
+                // covers the field being edited and never appears or disappears with the keyboard.
+                createActions
             }
             .padding(24)
             .padding(.bottom, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .presentationBackground(StoryTheme.ink)
-        // 6. PERSISTENT CREATE ACTION (§3/§9/§13) — safe-area-aware bottom region that stays visible with the
-        // keyboard open, More Options expanded, and across iPhone sizes. Carries the dynamic summary.
-        .safeAreaInset(edge: .bottom) {
-            if !keyboardVisible { createFooter }
-        }
-        .scrollDismissesKeyboard(.interactively)   // drag the content to dismiss the keyboard and bring the footer back
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            keyboardVisible = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardVisible = false
+        .scrollDismissesKeyboard(.interactively)   // dragging the content dismisses the keyboard
+        // The number pad has no Return key and a multi-line field's Return only adds a line, so give every keyboard an
+        // explicit way out.
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
+                .foregroundStyle(StoryTheme.gold)
+            }
         }
         .onDisappear { interpretToken = UUID() }   // drop any in-flight interpretation on dismissal (#1)
         // Customize UX v2: the visual storyboard. Edits momentSequence in place; the draft persists in @State
@@ -446,8 +447,8 @@ struct CustomizeYourStoryView: View {
         .cloudAuthGate(cloudGate)
     }
 
-    /// The persistent Create action + dynamic summary (hidden while the keyboard is up).
-    private var createFooter: some View {
+    /// The Create action + dynamic summary, shown inline at the end of the content.
+    private var createActions: some View {
             VStack(spacing: 10) {
                 Text(directionSummary)
                     .font(StoryTheme.body(13)).foregroundStyle(StoryTheme.cream.opacity(0.78))
@@ -471,9 +472,7 @@ struct CustomizeYourStoryView: View {
                     .font(StoryTheme.body(14)).foregroundStyle(StoryTheme.textMuted)
                     .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 8)
-            .background(.ultraThinMaterial)
-            .overlay(Rectangle().frame(height: 1).foregroundStyle(StoryTheme.cream.opacity(0.08)), alignment: .top)
+            .padding(.top, 8)
     }
 
     /// Resolve the typed references + chips against the stable snapshot. Hard references that cannot resolve
