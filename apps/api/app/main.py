@@ -99,6 +99,7 @@ from duration_planner import (
     DurationPlannerInputs,
     compute_duration_evidence,
 )
+from duration_planner.highlights import apply_highlights_sizing
 from music_plan import MusicPlanEngine, MusicPlanInputs
 import music_provider as _mp
 import scene_image as _scene_image
@@ -2263,6 +2264,11 @@ def create_app() -> FastAPI:
         except (StructuredOutputError, ProviderError) as e:
             error = str(e)[:300]
             log.warning("duration_recommendation_unavailable", extra={**base, "success": False, "error": error})
+        if recommendation is not None:
+            # highlights_sizing/1: the Highlights range is a deterministic function of the AU payoff windows, not the
+            # model's number (which was anchored on a 2 s x Moment-count floor). Full Story and the ceiling are the
+            # model's, unchanged; the model's own Highlights range is kept under recommendation.sizing for diagnosis.
+            recommendation = apply_highlights_sizing(recommendation, body.moments, evidence)
         diag = getattr(engine, "last_diagnostics", {}) or {}
         log.info("duration_recommendation_done",
                  extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
@@ -2271,6 +2277,8 @@ def create_app() -> FastAPI:
                         "feasible_ceiling_s": evidence.get("feasible_band_seconds", [0, 0])[1],
                         "longest_continuous_s": evidence.get("longest_continuous_span_seconds"),
                         "recommended": recommendation.get("recommended_range_seconds") if recommendation else None,
+                        "highlights": recommendation.get("highlights_range_seconds") if recommendation else None,
+                        "highlights_source": ((recommendation or {}).get("sizing") or {}).get("highlights", {}).get("source"),
                         "model_calls": diag.get("model_calls")})
         return {"evidence": evidence, "recommendation": recommendation,
                 "explicit_target_seconds": explicit,
