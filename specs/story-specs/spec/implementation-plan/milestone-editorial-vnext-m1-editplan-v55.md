@@ -252,6 +252,25 @@ chronology — chronology metadata is not implemented, so no claim of chronologi
 
 ---
 
+## H. DEBUG-only "Delete this version" (enables matched B/D runs) — branch `feat/debug-delete-version`
+
+Needed because a Story with an exported video reopens it on Create and the app had no way to remove a version, so a second **Original** (a different planner
+version on the SAME Story, Moments, Guide, Coverage and music plan) could not be produced. iOS only; compiled out of Release/TestFlight (`#if DEBUG`); no backend, flag or
+config change.
+
+- Where: result screen action panel, a dashed red "Delete this version (debug)" row with a confirmation. Code: `Domain/Creation/DebugOutputDeletion.swift`,
+  `Features/Create/StoryResultView.swift`, tests `StoryTests/DebugOutputDeletionTests.swift`.
+- Removes: the version row, its `rendered/` MP4 (only if no other version points at it), and its `GeneratedOutputBackupJobModel` rows.
+- Keeps: Story, Moments/media, Guide, Coverage, MusicPlan, intent, duration choice, editorial type, sound, Creative Direction, other versions, pending-operation history.
+- Refuses (and changes nothing): an operation in flight on the Story; newer versions derived from this one (Explore/Revise/Change Music) — delete those first.
+- Sync: marks the Story dirty so the next push writes the doc without the version. A pull cannot re-add it: pulls apply only to clean records and skip a revision not newer
+  than the base. A saved pending-operation row is not recoverable, so recovery cannot re-render it. The cloud copy of the MP4 and any externalized plan artifacts are NOT deleted
+  (account-deletion policy is design-only).
+- A fresh Original mints a new operation id (`planOperationId` is cleared at completion), so it is a new job, not a replay.
+
+Evaluation procedure per pair (same Story each time): export the baseline video → open it → "Delete this version (debug)" → Home → Create → choose the SAME type, Custom
+duration, sound and music track → Create → export. Then compare with `scripts/editorial_eval.py compare`; the pair is matched only when `payload_fingerprint` is equal.
+
 ## I. Dev-only EditPlan 5.5 pin (per-environment manifest override) — 2026-11-16
 
 The global `planner.emergency_override` reached every environment, so pinning 5.5 for a development evaluation would have failed the beta gate in CI (and tripped
