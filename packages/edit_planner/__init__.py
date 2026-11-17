@@ -1406,6 +1406,8 @@ def _build_user(inputs: EditPlanInputs) -> str:
             "Moment, labeled with Moment id and source timestamp. Use them to judge visual distinctness, "
             "composition, expressiveness and precise source ranges. Frames are evidence for the SAME Moments "
             "in the JSON — never invent footage not present.\n")
+    if _t55 and _v56_active():
+        return _build_user_v56(inputs, _t55, revision_block)
     if _t55:
         return _build_user_v55(inputs, _t55, payload, revision_block)
     return ("Plan the EditPlan for THIS Story from the material below. Use only the given Moment ids and their "
@@ -1633,7 +1635,7 @@ def compute_budget_hint(inputs: "EditPlanInputs", etype: str | None = None) -> d
         return None
     if target <= 0:
         return None
-    a, b = _V55_TYPICAL_SHOT_S[t]
+    a, b = _typical_shot_s(t)
     n_m = len(inputs.moments or [])
     lo = max(1, int(round(target / b)))
     hi = max(lo, int(round(target / a)))
@@ -1772,6 +1774,240 @@ def _build_user_v55(inputs: "EditPlanInputs", etype: str, payload: dict, revisio
             + "\nINPUT:\n"
             + json.dumps(payload, indent=2) + "\n\nReturn ONLY the EditPlan via the tool.")
 
+
+
+# ---------------------------------------------------------------------------
+# EditPlan v5.6 (Editorial vNext "radical simplification") — ISOLATED candidate, reachable ONLY when the selected
+# version is >= 5.6 (`_v56_active`) AND the request carries a known editorial_type. The system prompt is shared +
+# mechanical only; the user message carries exactly ONE strategy block and ONE type-specific INPUT projection built
+# from `inputs.moments` (which, like validation, is never modified). There is no CREATIVE DIRECTION block, no legacy
+# editorial_mode line and no editorial_type field in the payload, so nothing competes with the strategy. No extra
+# model call, no schema change, no new flag. v5.3/v5.5 prompt strings are untouched (golden-tested).
+# ---------------------------------------------------------------------------
+_V56_TYPICAL_SHOT_S = {"highlights": (1.0, 2.5), "full_story": (4.0, 10.0)}
+_V56_UNDER_LENGTH_PCT = 20.0     # disclose (never reject) when the delivered cut is more than this far under target
+
+
+def _v56_active() -> bool:
+    """True when the SELECTED edit-plan version is >= 5.6 (isolated candidate; never the default)."""
+    try:
+        return float(_EDIT_PLAN_VERSION) >= 5.6
+    except (TypeError, ValueError):
+        return False
+
+
+def _typical_shot_s(etype: str) -> tuple[float, float]:
+    return (_V56_TYPICAL_SHOT_S if _v56_active() else _V55_TYPICAL_SHOT_S)[etype]
+
+
+def _clip(s, n: int) -> str:
+    s = " ".join(str(s or "").split())
+    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+
+def _num(v):
+    try:
+        return round(float(v), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _v56_candidates(m: dict, key: str) -> list[dict]:
+    ed = m.get("editorial")
+    vs = ed.get(key) if isinstance(ed, dict) else None
+    return [v for v in (vs or []) if isinstance(v, dict)]
+
+
+def _v56_events(m: dict, limit: int, chars: int) -> list[dict]:
+    out = []
+    evs = m.get("events")
+    if isinstance(evs, list) and evs:
+        for e in evs:
+            if isinstance(e, dict):
+                out.append({"start": _num(e.get("start_time")), "end": _num(e.get("end_time")),
+                            "what": _clip(e.get("description"), chars)})
+    else:
+        ev = m.get("evidence")
+        for e in ((ev or {}).get("events") or []) if isinstance(ev, dict) else []:
+            if isinstance(e, dict):
+                out.append({"start": _num(e.get("t")), "end": _num(e.get("t_end")),
+                            "what": _clip(e.get("what"), chars)})
+    return out[:limit]
+
+
+def _v56_subjects(m: dict) -> list[str]:
+    ev = m.get("evidence")
+    subs = (ev or {}).get("subjects") if isinstance(ev, dict) else None
+    return [_clip(s, 60) for s in (subs or [])[:5] if s]
+
+
+def _v56_moment_highlights(m: dict) -> dict:
+    """Image-led projection: identity + bounds + where the visual payoffs are. No narrative text, no summary, no
+    evidence block, no sampled_frame_ms (the contact sheets already burn in timestamps), no confidence."""
+    out: dict = {"id": m.get("id"), "duration_seconds": m.get("duration_seconds"),
+                 "useful_segments": m.get("useful_segments")}
+    subs = _v56_subjects(m)
+    if subs:
+        out["subjects"] = subs
+    vcs = [{"start": _num(v.get("start_time")), "end": _num(v.get("end_time")), "peak": _num(v.get("peak_time")),
+            "role": v.get("role"), "value": _clip(v.get("visual_value"), 140)}
+           for v in _v56_candidates(m, "visual_candidates")]
+    if vcs:
+        out["visual_candidates"] = vcs
+    else:   # no visual analysis for this Moment: a short factual event line is the only text hint available
+        evs = _v56_events(m, 2, 100)
+        if evs:
+            out["events"] = evs
+        elif m.get("summary"):
+            out["summary"] = _clip(m.get("summary"), 160)
+    return out
+
+
+def _v56_moment_full(m: dict) -> dict:
+    """Narrative-led projection: what happened (summary, timed events, narrative candidates) plus compact visual
+    ranges. No sampled_frame_ms, no duplicated evidence block."""
+    ev = m.get("evidence")
+    summary = (ev or {}).get("summary") if isinstance(ev, dict) else None
+    out: dict = {"id": m.get("id"), "duration_seconds": m.get("duration_seconds"),
+                 "useful_segments": m.get("useful_segments"),
+                 "summary": _clip(summary or m.get("summary"), 240)}
+    subs = _v56_subjects(m)
+    if subs:
+        out["subjects"] = subs
+    evs = _v56_events(m, 6, 120)
+    if evs:
+        out["events"] = evs
+    ncs = [{"start": _num(n.get("start_time")), "end": _num(n.get("end_time")), "role": n.get("role"),
+            "what_happens": _clip(n.get("what_happens"), 200)} for n in _v56_candidates(m, "narrative_candidates")]
+    if ncs:
+        out["narrative_candidates"] = ncs
+    vcs = [{"start": _num(v.get("start_time")), "end": _num(v.get("end_time")), "role": v.get("role")}
+           for v in _v56_candidates(m, "visual_candidates")]
+    if vcs:
+        out["visual_candidates"] = vcs
+    return out
+
+
+def _v56_guide(g) -> dict | None:
+    if not isinstance(g, dict):
+        return None
+    scenes = [{"id": s.get("id"), "title": _clip(s.get("title"), 80), "why_it_matters": _clip(s.get("why_it_matters"), 140)}
+              for s in (g.get("scenes") or []) if isinstance(s, dict)]
+    return {"framing_summary": _clip(g.get("framing_summary"), 200), "scenes": scenes}
+
+
+def _v56_coverage(c) -> dict | None:
+    if not isinstance(c, dict):
+        return None
+    suff = c.get("sufficiency") if isinstance(c.get("sufficiency"), dict) else {}
+    return {
+        "dimensions": [{"id": d.get("story_guide_dimension_id") or d.get("id"), "state": d.get("state")}
+                       for d in (c.get("dimension_coverage") or []) if isinstance(d, dict)],
+        "strengths": [_clip(s, 200) for s in (c.get("strengths") or [])[:4]],
+        "redundancies": [_clip(s, 200) for s in (c.get("redundancies") or [])[:4]],
+        "sufficiency": {"status": suff.get("status"), "reason": _clip(suff.get("reason"), 240)} if suff else None,
+    }
+
+
+def _v56_music_plan(mp) -> dict | None:
+    if not isinstance(mp, dict):
+        return None
+    ch = mp.get("character") if isinstance(mp.get("character"), dict) else {}
+    out = {"audio_strategy": mp.get("audio_strategy"),
+           "character": {"energy": ch.get("energy"), "mood_tags": ch.get("mood_tags")},
+           "energy_arc": [{"start": a.get("start_fraction"), "end": a.get("end_fraction"),
+                           "intensity": a.get("intensity"), "label": a.get("label")}
+                          for a in (mp.get("energy_arc") or []) if isinstance(a, dict)]}
+    return out
+
+
+def _v56_payload(inputs: "EditPlanInputs", etype: str) -> dict:
+    ci = {k: v for k, v in (inputs.creative_intent or {}).items() if v not in (None, [], "")}
+    mk = _v56_moment_highlights if etype == "highlights" else _v56_moment_full
+    payload: dict = {"creative_intent": ci, "target_duration_seconds": inputs.creative_intent["target_duration_seconds"]}
+    if etype == "full_story":
+        g, c = _v56_guide(inputs.story_guide), _v56_coverage(inputs.story_coverage)
+        if g:
+            payload["story_guide"] = g
+        if c:
+            payload["story_coverage"] = c
+    payload["moments"] = [mk(m) if isinstance(m, dict) else m for m in inputs.moments]
+    mp = _v56_music_plan(inputs.music_plan)
+    if mp:
+        payload["music_plan"] = mp
+    if inputs.music_analysis is not None:
+        payload["music_analysis"] = inputs.music_analysis
+    if inputs.sound_preference:
+        payload["sound_preference"] = inputs.sound_preference
+    return payload
+
+
+def _v56_strategy(etype: str, has_music_analysis: bool) -> str:
+    tail = ("\nThese strategies guide NEW edits. When a VERSION CONTEXT above says REVISE, preserve the base edit and "
+            "change only what the user asked. Explicit user directives always win.\n")
+    if etype == "highlights":
+        pace = ("Pace the cuts to the real beats of the supplied music analysis." if has_music_analysis else
+                "Pace the cuts to the music plan's energy arc.")
+        return (
+            "\nSTRATEGY — HIGHLIGHTS (image-led). MAKE THE MOST VISUALLY EXCITING SHORT VIDEO POSSIBLE.\n"
+            "- Judge the footage by the frames. Compare the visual quality of ALL Moments with each other (subject "
+            "and expression, composition, light and color, movement, scenic drama, a clearly visible payoff) and "
+            "choose the best. Confidence is not appeal; text candidates only tell you where to look.\n"
+            "- Front-load. Open on the single strongest payoff and show several distinct payoffs within the first "
+            "~10 seconds. Do not warm up.\n"
+            "- Cut fast. Typical shots run about 1–2.5 s (a preference, not a rule: a payoff that needs more time "
+            "may run longer). Start on the action and leave early. Never speed footage up to cut length: choose a "
+            "tighter sub-range and cut sooner.\n"
+            "- Be ruthless. No routine establishing shots. Do not force chronology. Do not include every Moment; a "
+            "second shot from the same place or action must show something clearly different.\n"
+            f"- {pace}\n"
+            "- Sound default: music-forward, with native audio kept only where a payoff's own sound is the point."
+            + tail)
+    return (
+        "\nSTRATEGY — FULL STORY (narrative-led). TELL THE MEANINGFUL STORY OF WHAT HAPPENED.\n"
+        "- Build a thread from the Moments' events, narrative_candidates and interactions, using the Guide and "
+        "Coverage as context. Never invent events, dialogue or a departure/arrival structure.\n"
+        "- Keep complete actions and interactions. Typical shots run about 4–10 s, or longer when an action needs "
+        "it. Do not cut an action or exchange short for pace.\n"
+        "- Preserve natural audio for meaningful sequences. Sound default: keep.\n"
+        "- Use chronology only where the material shows it (timestamps or clear visible progression). moments[] "
+        "order is import order, not chronology.\n"
+        "- Choose by meaning: context, people, effort, place, reaction. A short insert is fine when it adds "
+        "context. Do not require every Moment and do not repeat a shot without adding something."
+        + tail)
+
+
+def _budget_block_v56(h: dict | None) -> str:
+    if not h:
+        return ""
+    a, b = h["typical_shot_s"]
+    lo, hi = h["suggested_shots"]
+    return (f"\nBUDGET (advisory): target {h['target_s']:g}s; typical shots {a:g}–{b:g}s suggest roughly {lo}–{hi} "
+            f"shots from {h['n_moments']} Moments ({h['useful_s']:.0f}s of useful footage). This is a pace guide, "
+            "not a quota or a limit on shot length. If the strongest footage runs out, end somewhat short rather "
+            "than add weak or repeated footage.\n")
+
+
+def _build_user_v56(inputs: "EditPlanInputs", etype: str, revision_block: str) -> str:
+    import json
+    payload = _v56_payload(inputs, etype)
+    image_block = ""
+    if inputs.images and inputs.image_moment_order:
+        order = "; ".join(inputs.image_moment_order)
+        image_block = (
+            f"\n(Contact-sheet images, one tiled JPEG per Moment, in this order: {order})\n"
+            "VISUAL EVIDENCE: each sheet is a sparse sample of one Moment, labeled with its id and source "
+            "timestamps. Use it to judge the footage and to pick source ranges.\n")
+    sound = _edit_sound_pref_directive(inputs.sound_preference)
+    return ("Plan the EditPlan for THIS Story from the material below. Use only the given Moment ids and their "
+            "useful ranges.\n"
+            + revision_block
+            + image_block
+            + (("\n" + sound + "\n") if sound else "")
+            + _v56_strategy(etype, inputs.music_analysis is not None)
+            + _budget_block_v56(compute_budget_hint(inputs, etype))
+            + "\nINPUT:\n"
+            + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n\nReturn ONLY the EditPlan via the tool.")
 
 
 def _editorial_type_directive(etype: str | None) -> str:
@@ -2460,6 +2696,11 @@ class RealEditPlannerEngine:
             cre = dict(cre, material_unmet=list(cre["material_unmet"]) + [{
                 "code": "approx_duration",
                 "detail": f"plan {fr['after_s']:.1f}s vs target {fr['target_s']:.1f}s"}])
+        _under = _under_length(plan, inputs) if (_v56_active() and not _is_revise) else None
+        if _under:
+            # v5.6: honest disclosure (never a rejection) when the playable cut ends well short of the target.
+            cre = dict(cre, material_unmet=list(cre["material_unmet"]) + [{
+                "code": "approx_duration", "detail": f"plan {_under[0]:.1f}s vs target {_under[1]:.1f}s"}])
         diag["creative_satisfaction"] = cre["satisfaction"]
         diag["creative_objective_count"] = cre["objective_count"]
         if cre["material_unmet"]:
@@ -2472,6 +2713,8 @@ class RealEditPlannerEngine:
                 _parts.append("A few of your creative requests couldn't all be applied: " + "; ".join(_codes) + ".")
             if _dur_fit_unmet:
                 _parts.append(_duration_disclosure(diag["duration_fit"]))
+            if _under:
+                _parts.append(_under_length_disclosure(*_under))
             if _continuity_disclosure:
                 _parts.append(_continuity_disclosure)
             diag["partial_disclosure"] = " ".join(_parts)
@@ -2557,6 +2800,44 @@ def _short_refs(ids, min_len: int = 8) -> dict[str, str]:
     return refs
 
 
+_PACING_OPENING_S = 10.0
+_PACING_SHORT_S = 2.5
+
+
+def _pacing_stats(segs: list[dict], by_id: dict) -> dict:
+    """Deterministic pacing numbers for a final plan (segments already ordered). Opening window = the first
+    _PACING_OPENING_S seconds of OUTPUT time; a shot counts when it starts inside the window. A "payoff shot" overlaps a
+    payoff-role visual candidate; distinct payoffs = distinct Moments with a payoff shot in the opening."""
+    outs, t = [], 0.0
+    open_shots = open_pay = 0
+    open_moments: set[str] = set()
+    for sg in segs:
+        try:
+            o = float(sg.get("output_duration_seconds"))
+        except (TypeError, ValueError):
+            continue
+        outs.append(o)
+        if t < _PACING_OPENING_S:
+            open_shots += 1
+            mid = str(sg.get("asset_id")).lower()
+            try:
+                a, b = float(sg.get("source_start_seconds")), float(sg.get("source_end_seconds"))
+            except (TypeError, ValueError):
+                a = b = 0.0
+            if _payoff_overlap(by_id.get(mid) or {}, a, b)[0]:
+                open_pay += 1
+                open_moments.add(mid)
+        t += o
+    n = len(outs)
+    buckets = {"le1": 0, "1_2.5": 0, "2.5_4": 0, "4_10": 0, "gt10": 0}
+    for o in outs:
+        k = ("le1" if o <= 1.0 else "1_2.5" if o <= 2.5 else "2.5_4" if o <= 4.0 else "4_10" if o <= 10.0 else "gt10")
+        buckets[k] += 1
+    return {"cuts": max(0, n - 1), "share_le_2_5": round(sum(1 for o in outs if o <= _PACING_SHORT_S) / n, 3) if n else None,
+            "buckets": buckets, "opening": {"window_s": _PACING_OPENING_S, "shots": open_shots, "payoff_shots": open_pay,
+                                             "distinct_payoffs": len(open_moments)}}
+
+
 def selection_diagnostics(plan: dict, inputs: "EditPlanInputs", diag: dict, pre_fit_plan: dict | None = None) -> dict:
     by_id = {str(m.get("id")).lower(): m for m in (inputs.moments or []) if isinstance(m, dict)}
     _refs = _short_refs(list(by_id) + [str(sg.get("asset_id")).lower()
@@ -2613,6 +2894,7 @@ def selection_diagnostics(plan: dict, inputs: "EditPlanInputs", diag: dict, pre_
         "budget": {"target_s": target, "pre_fit_total_s": pre_total, "pre_fit_overshoot_pct": pct(pre_total),
                    "delivered_s": delivered, "delivered_overshoot_pct": pct(delivered),
                    "hint": compute_budget_hint(inputs) if _v55_type(inputs) else None},
+        "pacing": _pacing_stats(segs, by_id) if _v56_active() else None,
         "opening": (used[0] if used else None),
         "used": used,
         "unused_payoff": unused[:_SEL_MAX_UNUSED],
@@ -2622,6 +2904,24 @@ def selection_diagnostics(plan: dict, inputs: "EditPlanInputs", diag: dict, pre_
                 "before_s": fit.get("before_s"), "after_s": fit.get("after_s"),
                 "changes": len(fit.get("changes") or []), "dropped": len(fit.get("dropped") or [])},
     }
+
+
+def _under_length(plan: dict, inputs: "EditPlanInputs") -> tuple[float, float] | None:
+    """(delivered_s, target_s) when the delivered cut is more than _V56_UNDER_LENGTH_PCT short of the target, else None.
+    v5.6 only. Disclosure, never a rejection: ending short on the strongest footage is a valid result."""
+    try:
+        target = float(inputs.creative_intent.get("target_duration_seconds"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    delivered = sum(_seg_outs(plan))
+    if target > 0 and delivered > 0 and (delivered / target - 1.0) * 100.0 < -_V56_UNDER_LENGTH_PCT:
+        return round(delivered, 1), round(target, 1)
+    return None
+
+
+def _under_length_disclosure(delivered: float, target: float) -> str:
+    return (f"It runs about {delivered:.0f}s instead of the requested {target:.0f}s — the strongest footage ran out, "
+            "and adding weaker or repeated footage would make the video worse.")
 
 
 def _duration_disclosure(fit: dict) -> str:
