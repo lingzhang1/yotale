@@ -385,12 +385,17 @@ enum EditPlanRequestBuilder {
             let dur = MomentResolver.plannerDuration(for: m)
             guard dur > 0, MomentResolver.isRenderableSource(m) else { continue }
             let understanding = JSONValue.object(fromJSONString: mu.understandingJSON)
-            moments.append(.object([
+            var sizingMoment: [String: JSONValue] = [
                 "id": .string(m.id.uuidString),
                 "duration_seconds": .number(dur),
                 "useful_segments": .array(usefulSegmentPairs(from: understanding, duration: dur)),
                 "summary": understandingSummary(understanding),
-            ].merging(Self.evidenceField(understanding)) { _, new in new }))
+            ].merging(Self.evidenceField(understanding)) { _, new in new }
+            // highlights_sizing/1: compact AU payoff windows [[start,end],...] so the backend can size Highlights from
+            // the number of distinct attractive opportunities. Omitted (not []) when this Moment's AU has no editorial
+            // visual candidates, so "no evidence" is never reported as "zero payoffs".
+            if let pw = Self.payoffWindowPairs(from: understanding) { sizingMoment["payoff_windows"] = pw }
+            moments.append(.object(sizingMoment))
         }
         guard !moments.isEmpty else { return nil }
         // CreativeIntent WITHOUT inventing a target — carry one ONLY if the Story already has it set.
@@ -559,6 +564,24 @@ enum EditPlanRequestBuilder {
             return JSONValue.object(fromJSONString: json)
         }
         return .object([:])
+    }
+
+    /// Compact AU payoff windows for Highlights sizing: `[[start,end], ...]` for editorial.visual_candidates whose role is
+    /// "payoff" and whose window is valid (end > start). Returns nil when the AU carries no editorial visual_candidates
+    /// array at all (older analysis), and an empty array when it has candidates but none is a payoff.
+    static func payoffWindowPairs(from understanding: JSONValue) -> JSONValue? {
+        guard case let .object(root) = understanding,
+              case let .object(editorial)? = root["editorial"],
+              case let .array(candidates)? = editorial["visual_candidates"] else { return nil }
+        var pairs: [JSONValue] = []
+        for candidate in candidates {
+            guard case let .object(c) = candidate,
+                  case let .string(role)? = c["role"], role == "payoff",
+                  case let .number(a)? = c["start_time"],
+                  case let .number(b)? = c["end_time"], b > a else { continue }
+            pairs.append(.array([.number(a), .number(b)]))
+        }
+        return .array(pairs)
     }
 
     /// Extract `[[start,end], ...]` pairs from a MomentUnderstanding's observed.useful_segments. Falls back to

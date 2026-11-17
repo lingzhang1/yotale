@@ -163,7 +163,7 @@ final class DurationService {
     /// stays put until the footage changes. `creativeIntent` is kept in the signature for call-site stability.
     static func durationFingerprint(creativeIntent: JSONValue, moments: [JSONValue],
                                     requestedScope: String?,
-                                    promptVersion: String = "duration_recommendation/1") -> String {
+                                    promptVersion: String = "duration_recommendation/1+highlights_sizing/1") -> String {
         let volatileKeys: Set<String> = ["generated_at", "created_at", "updated_at", "timestamp",
                                          "model_id", "prompt_version", "schema_version", "correlation_id"]
         func strip(_ v: JSONValue) -> JSONValue {
