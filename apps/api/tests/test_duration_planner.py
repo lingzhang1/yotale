@@ -47,6 +47,18 @@ def test_no_universal_default():
     long = compute_duration_evidence(GUITAR)
     assert short["feasible_band_seconds"][1] != long["feasible_band_seconds"][1]
 
+def test_floor_does_not_scale_with_moment_count():
+    """The old floor was n_moments * 2 s (38 Moments => a 76 s floor), which assumed every Moment appears for >= 2 s and
+    inflated Highlights recommendations. The floor is now only the smallest playable video."""
+    ms = [{"id": f"m{i}", "duration_seconds": 12, "useful_segments": [[0, 10]]} for i in range(38)]
+    ev = compute_duration_evidence(ms)
+    assert ev["feasible_band_seconds"] == [4.0, 380.0]
+    assert compute_duration_evidence(ms[:2])["feasible_band_seconds"][0] == 4.0       # independent of the count
+
+def test_floor_is_capped_by_the_material():
+    ev = compute_duration_evidence([{"id": "t", "duration_seconds": 3, "useful_segments": [[0, 2.5]]}])
+    assert ev["feasible_band_seconds"] == [2.5, 2.5]
+
 # ---- engine ----
 def _rec(**over):
     r = {"recommended_range_seconds": [55, 75], "highlights_range_seconds": [15, 25],
