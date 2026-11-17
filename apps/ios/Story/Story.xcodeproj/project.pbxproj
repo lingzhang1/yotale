@@ -32,7 +32,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		CCDF1FCA306F14540027AB1A /* Exceptions for "Story" folder in "Story" target */ = {
+		CCDF1FCA306F14540027AB1A = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
@@ -45,7 +45,7 @@
 		CCABE629306F0D9B0089312F /* Story */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				CCDF1FCA306F14540027AB1A /* Exceptions for "Story" folder in "Story" target */,
+				CCDF1FCA306F14540027AB1A,
 			);
 			path = Story;
 			sourceTree = "<group>";
