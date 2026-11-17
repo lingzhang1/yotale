@@ -712,3 +712,31 @@ def test_revise_is_not_fitted(v56):
     eng = RealEditPlannerEngine(FakeModelGateway(response=plan))
     eng.generate(inp)
     assert "duration_fit" not in eng.last_diagnostics
+
+
+def test_anchor_kinds_are_checked_independently_and_no_beats_are_invented():
+    only_downbeats = {"bpm": 100, "beats": [], "downbeats": [0.5, 2.5], "highlight_window": None}
+    s = {"music_alignment": {"anchor": "beat"}}
+    assert DF._anchor_has_grid(s, only_downbeats) is False                    # a beat anchor needs beats[]
+    assert DF._anchor_has_grid({"music_alignment": {"anchor": "downbeat"}}, only_downbeats) is True
+    assert DF._anchor_has_grid({"music_alignment": {"anchor": "highlight"}}, only_downbeats) is False
+    assert DF._anchor_has_grid({"music_alignment": {"anchor": "highlight"}}, {"highlight_window": {"start": 1, "end": 5}}) is True
+    assert DF._anchor_has_grid(s, None) is False and DF._anchor_has_grid({"music_alignment": {"anchor": "none"}}, GRID) is False
+    ms, plan = _pm(20, anchor={i: "beat" for i in range(20)})
+    before = json.dumps(plan, sort_keys=True)
+    DF.fit_plan_duration(plan, _fin(ms, ma=TEMPO_ONLY), grid_aware_anchors=True)
+    assert json.dumps(plan, sort_keys=True) == before                          # the fitter never rewrites the model's anchors
+
+
+def test_renderer_only_passes_music_alignment_through():
+    """Static check of the iOS source: no code outside decoding/copying reads a segment's musicAlignment, so an unsupported
+    anchor cannot move a cut. (Read from the repo; not a runtime proof.)"""
+    root = Path(ROOT) / "apps" / "ios" / "Story" / "Story"
+    users = []
+    for p in root.rglob("*.swift"):
+        for ln in p.read_text(errors="ignore").splitlines():
+            if "musicAlignment" in ln and "case musicAlignment" not in ln and "let musicAlignment" not in ln \
+                    and "self.musicAlignment" not in ln and "musicAlignment: nil" not in ln and "musicAlignment: MusicAlignment?" not in ln \
+                    and "musicAlignment: seg.musicAlignment" not in ln:
+                users.append((p.name, ln.strip()[:80]))
+    assert users == [], users
