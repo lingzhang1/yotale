@@ -89,3 +89,22 @@ Merged since: #124 and #126. Approved by the owner: bounded dev evaluation, repl
 
 ## 8. Separate Sizing milestone (`duration_recommendation/2`, not started)
 Direction: Highlights duration from the number of distinct attractive opportunities (compact AU payoff windows from iOS `momentsPayload`), not Moment count; Full Story from meaningful narrative material; no per-Moment floor; no second mandatory inference call; Custom stays authoritative; no creative-only rejection. Needs a new prompt version, evidence plumbing in iOS and the backend, and its own test and evaluation.
+
+## 9. Controlled replay results (2026-11-17; plan-level only, NOT quality-accepted)
+Frozen requests captured from two real dev jobs (same Story, 38 Moments, 38 contact sheets, Original, no directives, critique off). Component hashes verified before each arm; both arms of a pair share one source hash (Highlights `36f7984f…`, Full Story `44e9fb4f…`). One planner attempt per arm, gpt-5.1 via the existing gateway, validator unchanged. Aggregates only; the frozen data stays local and is purged after review.
+
+| | A 5.5 H 35s | B 5.6 H 35s | C 5.5 F 155s | D 5.6 F 155s |
+|---|---|---|---|---|
+| Model plan / fitted (s) | 50.5 / 42.0 | 54.6 / 54.6 | 204.4 / 182.6 | 205.3 / 189.1 |
+| Segments / Moments used | 8 / 8 | 20 / 20 | 29 / 25 | 30 / 26 |
+| Shot mean / median (s) | 5.25 / 4.46 | 2.73 / 2.90 | 6.30 / 4.97 | 6.30 / 5.40 |
+| Shots ≤ 2.5 s | 12.5% | 30% | 6.9% | 6.7% |
+| Distinct payoff Moments in first 10 s | 0 | 4 | 0 | 0 |
+| Native audio keep / duck / mute | 5 / 3 / 0 | 5 / 12 / 3 | 15 / 14 / 0 | 13 / 16 / 1 |
+| Model / repair calls, critique | 1 / 0, off | 1 / 0, off | 1 / 0, off | 1 / 0, off |
+| Input / output tokens | 84,396 / 730 | 33,511 / 2,025 | 83,533 / 2,947 | 40,423 / 2,995 |
+| System / user-text / AU-projection tokens | 2,960 / 51,078 / 49,641 | 1,294 / 6,527 / 5,644 | 2,960 / 50,656 / 49,333 | 1,294 / 12,732 / 11,916 |
+| Planner wall time (s) | 18.4 | 22.0 | 32.2 | 26.1 |
+| Est. cost (USD) | 0.113 | 0.062 | 0.134 | 0.081 |
+
+Findings (deterministic): 5.6 Highlights cuts about twice as often (20 vs 8 shots) with a lower median shot and more distinct AU-payoff Moments in the opening, at 60% fewer input tokens. It did not reach the 1–2.5 s tendency (no shot ≤1 s; 14 of 20 shots are 2.5–4 s) and it overshot 35 s by 56%; the deterministic fit did not trim it (5.5 was fitted from 50.5 to 42.0). Full Story 5.5 and 5.6 are nearly the same edit shape; the type gap (Full median ÷ Highlights median) rises from 1.11 under 5.5 to 1.86 under 5.6, mostly from the Highlights side. Both Full Story plans exceed 155 s. Not measured: opening-shot quality, visual variety, near-duplicates, narrative event coverage, rendered MP4 durations. Those need video review. Output-token and latency numbers are single samples.
