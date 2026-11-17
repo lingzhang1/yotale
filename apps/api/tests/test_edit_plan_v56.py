@@ -690,7 +690,7 @@ def test_unavoidable_overshoot_ships_with_a_neutral_measured_disclosure(v56):
     d = eng.last_diagnostics
     assert out.segments and d["final"] == "executable" and d["model_calls"] == 1
     assert d["completion"] == "partial" and any(m["code"] == "approx_duration" for m in d["material_unmet"])
-    assert "instead of the requested 20s" in d["partial_disclosure"]
+    assert "instead of the requested 20s" in d["partial_disclosure"] and "key moments" not in d["partial_disclosure"]
     for claim in ("music", "anchor", "protected", "ran out"):                   # no cause is asserted without a diagnostic
         assert claim not in d["partial_disclosure"].lower()
 

@@ -2979,6 +2979,8 @@ def _under_length_disclosure(delivered: float, target: float) -> str:
 
 def _duration_disclosure(fit: dict) -> str:
     """Plain-language, non-blocking note for a cut that still runs materially long after the duration fit."""
+    if _v56_active():   # measured difference only: the fitter's own report does not prove WHY nothing more could go
+        return f"It runs about {fit['after_s']:.0f}s instead of the requested {fit['target_s']:.0f}s."
     return (f"It runs about {fit['after_s']:.0f}s instead of the requested {fit['target_s']:.0f}s — "
             "shortening it further would cut key moments.")
 
