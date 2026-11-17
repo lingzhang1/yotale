@@ -115,3 +115,29 @@ def test_compare_requires_identical_request_fingerprints_for_a_prompt_only_claim
     assert "NOT MATCHED (highlights)" in w and "identical source evidence" in w
     b["payload_fingerprint"] = "f" * 64
     assert "NOT MATCHED" not in " ".join(E.comparison_warnings([E.job_metrics(a), E.job_metrics(b)]))
+
+
+# ---- v5.6 additions: pacing metrics and the Highlights-vs-Full-Story difference ----
+def _moments_with_payoffs(n=6):
+    return [{"id": f"{i:08x}-0000-4000-8000-000000000000", "duration_seconds": 20.0, "useful_segments": [[0, 20]],
+             "editorial": {"visual_candidates": [{"start_time": 0, "end_time": 20, "role": "payoff", "confidence": 0.9,
+                                                  "visual_value": "x"}]}} for i in range(n)]
+
+
+def test_pacing_metrics_in_the_row_and_independent_recomputation():
+    ms = _moments_with_payoffs()
+    job = _job("cccccccc", "highlights", None, 12, 12, 12, 6, ver="edit_plan/5.6", n_moments=6)   # 6 shots x 2 s
+    row = E.job_metrics(job, ms)
+    assert row["cuts"] == 5 and row["share_le_2_5"] == 1.0
+    assert row["opening10_shots"] == 5 and row["opening10_payoff_shots"] == 5 and row["opening10_distinct_payoffs"] == 5
+    assert row["mean_s"] == 2.0 and row["median_s"] == 2.0
+
+
+def test_type_difference_summarises_the_gap_per_version():
+    ms = _moments_with_payoffs()
+    h = E.job_metrics(_job("dddddddd", "highlights", None, 12, 12, 12, 6, ver="edit_plan/5.6", n_moments=6), ms)
+    f = E.job_metrics(_job("eeeeeeee", "full_story", None, 12, 12, 12, 2, ver="edit_plan/5.6", n_moments=6), ms)
+    td = E.type_difference([h, f])
+    assert len(td) == 1 and td[0]["prompt_version"] == "edit_plan/5.6"
+    assert td[0]["median_ratio_full_over_highlights"] == 3.0 and td[0]["shots_diff"] == 4
+    assert E.type_difference([h]) == []

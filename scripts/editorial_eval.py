@@ -60,6 +60,7 @@ def _system_text(version: str) -> str:
 def _inputs_from_case(case: dict) -> EditPlanInputs:
     from model_gateway import ImageInput
     c = dict(case)
+    c.pop("frozen_from", None)                       # provenance of a frozen case; not a planner input
     n_img = int(c.pop("n_placeholder_images", 0) or 0)
     c.setdefault("story_id", "00000000-0000-4000-8000-000000000001")
     c.setdefault("creative_intent_id", "00000000-0000-4000-8000-000000000002")
@@ -251,8 +252,8 @@ def job_metrics(job: dict, au_moments: list[dict] | None = None, label: str | No
     before, after = _num(fit.get("before_s")), _num(fit.get("after_s"))
     dropped = len(fit.get("dropped") or [])
     if isinstance(d.get("selection"), dict):          # recorded by the worker (v5.5-era jobs and later)
-        pre_total = d["selection"]["budget"]["pre_fit_total_s"]
-        pre_n = (d["selection"].get("pre_fit") or {}).get("n")
+        pre_total = _num(d["selection"]["budget"]["pre_fit_total_s"])
+        pre_n = _num((d["selection"].get("pre_fit") or {}).get("n"))
     else:                                             # baseline job recorded before M1: derive from the duration fit
         pre_total = before if before is not None else (sum(outs) if outs else None)
         pre_n = len(outs) + dropped
@@ -263,6 +264,10 @@ def job_metrics(job: dict, au_moments: list[dict] | None = None, label: str | No
         except Exception:
             valid = None
     pay = [u for u in (sel or {}).get("used", []) if "p" in u]
+    try:   # deterministic pacing numbers from the plan itself, so every version (5.3/5.5/5.6) is measured identically
+        pc = ep._pacing_stats(segs, {str(m["id"]).lower(): m for m in moments})
+    except Exception:
+        pc = None
     cost = None
     try:
         from observability import price_lookup
@@ -290,6 +295,10 @@ def job_metrics(job: dict, au_moments: list[dict] | None = None, label: str | No
         "shots": stats.get("n"), "distinct": len({str(s.get("asset_id")).lower() for s in segs}),
         "pre_fit_shots": pre_n, "pre_fit_mean_s": round(pre_total / pre_n, 2) if (pre_total and pre_n) else None,
         "mean_s": stats.get("mean_s"), "median_s": stats.get("median_s"), "p25_s": stats.get("p25_s"), "p75_s": stats.get("p75_s"),
+        "cuts": (pc or {}).get("cuts"), "share_le_2_5": (pc or {}).get("share_le_2_5"),
+        "opening10_shots": ((pc or {}).get("opening") or {}).get("shots"),
+        "opening10_payoff_shots": ((pc or {}).get("opening") or {}).get("payoff_shots") if moments else None,
+        "opening10_distinct_payoffs": ((pc or {}).get("opening") or {}).get("distinct_payoffs") if moments else None,
         "fit_applied": bool(fit.get("applied")), "fit_adopted": fit.get("adopted"),
         "fit_changes": len(fit.get("changes") or []), "fit_dropped": dropped,
         "payoff_shots": sum(1 for u in pay if u.get("p")) if pay else None,
@@ -336,7 +345,7 @@ def comparison_warnings(rows: list[dict]) -> list[str]:
 COLS = ["label", "prompt_version", "editorial_type", "operation", "target_s", "moments", "sheets", "model_calls",
         "planner_calls", "repair_calls", "critique_requested", "critique_attempted",
         "pre_fit_total_s", "pre_fit_overshoot_pct", "delivered_s", "delivered_overshoot_pct", "shots", "distinct",
-        "pre_fit_mean_s", "mean_s", "median_s", "fit_changes", "fit_dropped", "payoff_shots", "opening_is_payoff",
+        "pre_fit_mean_s", "mean_s", "median_s", "cuts", "share_le_2_5", "opening10_shots", "opening10_payoff_shots", "opening10_distinct_payoffs", "fit_changes", "fit_dropped", "payoff_shots", "opening_is_payoff",
         "unused_payoff_moments", "payoff_window_coverage", "narrative_candidate_coverage", "opening_role",
         "native_keep", "native_duck", "native_mute", "dup_review_groups", "directive_keys", "fingerprint", "exported_mp4_s", "valid", "completion", "input_tokens", "output_tokens", "est_cost_usd", "job_latency_s"]
 
@@ -347,6 +356,28 @@ def to_markdown(rows: list[dict], warnings: list[str]) -> str:
     wl = "".join(f"- **{x}**\n" for x in warnings)
     return (wl + "\n" if wl else "") + head + body + (
         "\nQuality is NOT measured here. Judge rendered videos; these are deterministic descriptors only.\n")
+
+
+def type_difference(rows: list[dict]) -> list[dict]:
+    """For each prompt version that has BOTH a Highlights and a Full Story row on the same operation, the deterministic
+    difference between the two products. The v5.6 goal is that this gap is large (Highlights: more, shorter cuts and
+    more distinct payoffs in the opening; Full Story: fewer, longer shots). Descriptive only; no quality claim."""
+    out = []
+    for v in sorted({r.get("prompt_version") for r in rows if r.get("prompt_version")}):
+        h = [r for r in rows if r.get("prompt_version") == v and r.get("editorial_type") == "highlights"]
+        f = [r for r in rows if r.get("prompt_version") == v and r.get("editorial_type") == "full_story"]
+        if not (h and f):
+            continue
+        h, f = h[0], f[0]
+        def d(k):
+            a, b = h.get(k), f.get(k)
+            return round(a - b, 2) if isinstance(a, (int, float)) and isinstance(b, (int, float)) else None
+        out.append({"prompt_version": v, "median_s_highlights": h.get("median_s"), "median_s_full": f.get("median_s"),
+                    "median_ratio_full_over_highlights": (round(f["median_s"] / h["median_s"], 2)
+                                                          if h.get("median_s") and f.get("median_s") else None),
+                    "share_le_2_5_diff": d("share_le_2_5"), "shots_diff": d("shots"),
+                    "opening10_distinct_payoffs_diff": d("opening10_distinct_payoffs")})
+    return out
 
 
 def cmd_metrics(a) -> int:
@@ -364,10 +395,13 @@ def cmd_compare(a) -> int:
         r["exported_mp4_s"] = _num(mp4.get(r["label"]) or mp4.get(r["job"]))
     warns = comparison_warnings(rows)
     md = to_markdown(rows, warns)
+    td = type_difference(rows)
+    if td:
+        md += "\nType difference (Highlights vs Full Story, per prompt version):\n```\n" + json.dumps(td, indent=1) + "\n```\n"
     print(md)
     if a.out:
         out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
-        (out / "compare.md").write_text(md); (out / "compare.json").write_text(json.dumps({"rows": rows, "warnings": warns}, indent=2))
+        (out / "compare.md").write_text(md); (out / "compare.json").write_text(json.dumps({"rows": rows, "warnings": warns, "type_difference": td}, indent=2))
     return 0
 
 
