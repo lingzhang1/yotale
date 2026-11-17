@@ -298,7 +298,7 @@ def test_music_plan_compact_and_music_analysis_unchanged(v56):
     _, p = _split(u)
     assert p["music_analysis"] == ma and "NOTE-ARC" not in u and "PROV" not in u
     assert p["music_plan"]["energy_arc"][0]["intensity"] == "rising" and p["music_plan"]["audio_strategy"]
-    assert "Pace the cuts to the real beats" in u
+    assert "Pace the cuts to the supplied beat/downbeat times" in u
     assert "Pace the cuts to the music plan" in _build_user(_inp(music_plan=mp))
 
 
@@ -316,9 +316,9 @@ def test_pacing_hint_numbers_per_type_and_version(v56, monkeypatch):
     big = [dict(_rich_moments()[0], id=f"cccccccc-0000-4000-8000-{i:012d}") for i in range(38)]
     inp = _inp(H, moments=big, image_moment_order=[m["id"] for m in big], creative_intent={"target_duration_seconds": 90})
     h = compute_budget_hint(inp)
-    assert h["typical_shot_s"] == [1.0, 2.5] and h["suggested_shots"] == [36, 76]        # capped at 2 x Moments
+    assert h["typical_shot_s"] == [1.0, 2.5] and h["suggested_shots"] == [36, 51]        # 90/2.5 .. 90/1.75 (mid-range shot), under the 2 x Moments cap
     f = compute_budget_hint(_inp(F, creative_intent={"target_duration_seconds": 90}))
-    assert f["typical_shot_s"] == [4.0, 10.0] and f["suggested_shots"] == [6, 6]         # 9..22 both capped at 6 (3 Moments x 2)
+    assert f["typical_shot_s"] == [4.0, 10.0] and f["suggested_shots"] == [6, 6]         # 9..13 both capped at 6 (3 Moments x 2)
     monkeypatch.setattr(ep, "_EDIT_PLAN_VERSION", "5.5")
     assert compute_budget_hint(inp)["typical_shot_s"] == [3.0, 5.0]
     assert compute_budget_hint(_inp(F))["typical_shot_s"] == [5.0, 9.0]
@@ -586,3 +586,129 @@ def test_worker_and_api_share_one_planner_module():
                {"STORY_EDIT_PLAN_VERSION": "5.6"}) == "edit_plan/5.6"
     api = open(os.path.join(ROOT, "apps", "api", "app", "deps.py")).read()
     assert "edit_planner" in api and "RealEditPlannerEngine" in api
+
+
+# --------------------------------------------------------------------------------------------------------------
+# 11. short-form duration reliability: music anchors that name nonexistent structure must not freeze the fitter
+# --------------------------------------------------------------------------------------------------------------
+from edit_planner import duration_fit as DF                          # noqa: E402
+
+
+def test_tempo_only_track_tells_the_model_to_set_no_anchors(v56):
+    u = _build_user(_inp(music_analysis={"bpm": 105, "beats": [], "downbeats": [], "highlight_window": None}))
+    assert "has no beat times" in u and "set no music anchors" in u
+    assert "supplied beat/downbeat times" not in u
+    assert ep._v56_music_kind({"beats": [], "downbeats": [], "highlight_window": None}) == "tempo_only"
+    assert ep._v56_music_kind({"highlight_window": {"start": 1, "end": 9}}) == "grid" and ep._v56_music_kind(None) is None
+
+
+def test_budget_block_states_the_total_and_the_removal_rule(v56):
+    u = _build_user(_inp(creative_intent={"target_duration_seconds": 35}))
+    b = u[u.index("BUDGET"):u.index("INPUT:")]
+    assert "must add up to about 35s" in b and "passes 38.5s remove the weakest whole shots" in b
+    assert "not a quota or a limit on shot length" in b
+
+
+def _pm(n, out=2.7, anchor=None, *, payoff=True, native="duck"):
+    """n Moments each with a payoff peak at 3.0 s and a plan of n shots of `out` seconds."""
+    ms, segs = [], []
+    for i in range(n):
+        mid = f"eeeeeeee-0000-4000-8000-{i:012d}"
+        ed = {"visual_candidates": [{"start_time": 0, "end_time": 8, "peak_time": 3.0, "role": "payoff" if payoff else "b_roll",
+                                     "confidence": 0.9, "visual_value": "x"}]}
+        ms.append({"id": mid, "duration_seconds": 12.0, "useful_segments": [[0, 12]], "editorial": ed})
+        s = {"order": i, "asset_id": mid, "source_start_seconds": 0.5, "source_end_seconds": 0.5 + out,
+             "output_duration_seconds": out, "speed": 1.0, "native_audio": native, "narrative_role": f"r{i}"}
+        if anchor and i in anchor:
+            s["music_alignment"] = {"anchor": anchor[i]}
+        segs.append(s)
+    return ms, {"target_duration_seconds": 35, "feasible": True, "segments": segs}
+
+
+def _fin(ms, target=35.0, ma=None, **kw):
+    return fx.make_inputs(moments=ms, image_moment_order=[m["id"] for m in ms], creative_intent={"target_duration_seconds": target},
+                          music_analysis=ma, **dict(H, **kw))
+
+
+TEMPO_ONLY = {"bpm": 105, "beats": [], "downbeats": [], "highlight_window": None, "duration_seconds": 170}
+GRID = {"bpm": 105, "beats": [0.5, 1.0, 1.5], "downbeats": [0.5], "highlight_window": {"start": 5, "end": 20}}
+
+
+def test_anchors_without_grid_freeze_the_fit_only_in_the_historical_mode():
+    ms, plan = _pm(20, anchor={i: "beat" for i in range(0, 20, 2)} | {19: "highlight"})
+    inp = _fin(ms, ma=TEMPO_ONLY)
+    _, old = DF.fit_plan_duration(plan, inp)                                   # 5.3/5.5 behavior, unchanged
+    assert old["applied"] is False and old["after_s"] == old["before_s"]
+    fitted, new = DF.fit_plan_duration(plan, inp, grid_aware_anchors=True)
+    assert new["applied"] is True and new["after_s"] < new["before_s"] and new["anchors_binding"] == 0
+    assert new["anchors_without_grid"] == 11
+    assert not validate_plan(fitted, inp)
+
+
+def test_real_anchors_still_lock_their_shots_and_everything_before_them():
+    ms, plan = _pm(20, anchor={i: "beat" for i in range(0, 20, 2)} | {19: "highlight"})
+    inp = _fin(ms, ma=GRID)
+    f, rep = DF.fit_plan_duration(plan, inp, grid_aware_anchors=True)
+    assert rep["applied"] is False and rep["anchors_binding"] == 11 and rep["anchors_without_grid"] == 0
+    # anchors only in the middle: shots after the last real anchor may still be fitted
+    ms2, plan2 = _pm(20, anchor={4: "beat"})
+    f2, rep2 = DF.fit_plan_duration(plan2, _fin(ms2, ma=GRID), grid_aware_anchors=True)
+    assert rep2["applied"] is True
+    kept = {s["asset_id"]: s for s in f2["segments"]}
+    for s in plan2["segments"][:5]:
+        assert kept[s["asset_id"]]["source_start_seconds"] == s["source_start_seconds"] and kept[s["asset_id"]]["source_end_seconds"] == s["source_end_seconds"]
+
+
+def test_fit_keeps_payoff_cores_directives_and_edges_and_validates():
+    ms, plan = _pm(20)
+    opening, ending = plan["segments"][0]["asset_id"], plan["segments"][-1]["asset_id"]
+    inp = _fin(ms, ma=TEMPO_ONLY, revision_context={"mode": "revise", "directives": {"opening": opening, "ending": ending}})
+    f, rep = DF.fit_plan_duration(plan, inp, protected_ids={opening, ending}, grid_aware_anchors=True)
+    assert f["segments"][0]["asset_id"] == opening and f["segments"][-1]["asset_id"] == ending
+    for s in f["segments"]:                                                   # every payoff peak (3.0 s +-1.25) stays inside its shot
+        assert s["source_start_seconds"] <= 3.0 + 1e-6 and s["source_end_seconds"] >= 3.0 - 1e-6
+    assert not validate_plan(f, inp)
+
+
+def test_plan_near_target_and_short_plans_are_untouched():
+    ms, plan = _pm(13, out=2.7)                                                # 35.1 s
+    _, rep = DF.fit_plan_duration(plan, _fin(ms, ma=TEMPO_ONLY), grid_aware_anchors=True)
+    assert rep["applied"] is False and rep["reason"] == "within_band"
+    ms, plan = _pm(6, out=2.7)                                                 # 16.2 s: never extended
+    _, rep = DF.fit_plan_duration(plan, _fin(ms, ma=TEMPO_ONLY), grid_aware_anchors=True)
+    assert rep["applied"] is False and rep["after_s"] == rep["before_s"]
+
+
+def test_unavoidable_overshoot_ships_with_a_neutral_measured_disclosure(v56):
+    """Every shot holds a payoff and kept audio, so nothing can be shortened or dropped: the playable plan ships."""
+    ms, plan = _pm(20, out=2.0, native="keep")
+    for s in plan["segments"]:
+        s["source_start_seconds"], s["source_end_seconds"] = 2.0, 4.0      # window == payoff core (3.0 +- 1.25 clipped)
+    inp = _fin(ms, target=20.0, ma=TEMPO_ONLY)
+    eng = RealEditPlannerEngine(FakeModelGateway(response=plan))
+    out = eng.generate(inp)
+    d = eng.last_diagnostics
+    assert out.segments and d["final"] == "executable" and d["model_calls"] == 1
+    assert d["completion"] == "partial" and any(m["code"] == "approx_duration" for m in d["material_unmet"])
+    assert "instead of the requested 20s" in d["partial_disclosure"]
+    for claim in ("music", "anchor", "protected", "ran out"):                   # no cause is asserted without a diagnostic
+        assert claim not in d["partial_disclosure"].lower()
+
+
+def test_engine_uses_the_grid_aware_fit_only_for_56(monkeypatch):
+    ms, plan = _pm(20, anchor={i: "beat" for i in range(20)})
+    for ver, shrinks in (("5.5", False), ("5.6", True)):
+        monkeypatch.setattr(ep, "_EDIT_PLAN_VERSION", ver)
+        eng = RealEditPlannerEngine(FakeModelGateway(response=plan))
+        eng.generate(_fin(ms, ma=TEMPO_ONLY))
+        fit = eng.last_diagnostics["duration_fit"]
+        assert bool(fit["applied"]) is shrinks, ver
+
+
+def test_revise_is_not_fitted(v56):
+    ms, plan = _pm(20)
+    inp = _fin(ms, ma=TEMPO_ONLY, revision_context={"mode": "revise", "soft_direction": "keep it",
+                                                    "base_plan": {"segments": plan["segments"][:3]}})
+    eng = RealEditPlannerEngine(FakeModelGateway(response=plan))
+    eng.generate(inp)
+    assert "duration_fit" not in eng.last_diagnostics

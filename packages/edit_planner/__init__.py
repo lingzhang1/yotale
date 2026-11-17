@@ -1638,7 +1638,9 @@ def compute_budget_hint(inputs: "EditPlanInputs", etype: str | None = None) -> d
     a, b = _typical_shot_s(t)
     n_m = len(inputs.moments or [])
     lo = max(1, int(round(target / b)))
-    hi = max(lo, int(round(target / a)))
+    # v5.6: the count range ends at the MID-range shot length, not the shortest. 35 s / 1 s = 35 shots is not a plan a
+    # model can reach with 1-2.5 s shots that average ~2.7 s; target / mid keeps the range consistent with the budget.
+    hi = max(lo, int(round(target / ((a + b) / 2.0 if _v56_active() else a))))
     if n_m:   # never suggest more than two shots per Moment (a small Story cannot support a long shot list)
         cap = 2 * n_m
         lo, hi = min(lo, cap), min(hi, cap)
@@ -1942,11 +1944,22 @@ def _v56_payload(inputs: "EditPlanInputs", etype: str) -> dict:
     return payload
 
 
-def _v56_strategy(etype: str, has_music_analysis: bool) -> str:
+def _v56_music_kind(ma) -> str | None:
+    """None (no MusicAnalysis) | "grid" (it carries beat/downbeat times or a highlight window) | "tempo_only" (a track
+    analysed for tempo only: nothing exists to anchor a cut to)."""
+    if not isinstance(ma, dict):
+        return None
+    return "grid" if (ma.get("beats") or ma.get("downbeats") or ma.get("highlight_window")) else "tempo_only"
+
+
+def _v56_strategy(etype: str, has_music_analysis: str | None) -> str:
     tail = ("\nThese strategies guide NEW edits. When a VERSION CONTEXT above says REVISE, preserve the base edit and "
             "change only what the user asked. Explicit user directives always win.\n")
     if etype == "highlights":
-        pace = ("Pace the cuts to the real beats of the supplied music analysis." if has_music_analysis else
+        pace = ("Pace the cuts to the supplied beat/downbeat times; anchor only a few key cuts (the opening, the "
+                "payoff, the ending), not every shot." if has_music_analysis == "grid" else
+                "Pace the cuts to the music plan's energy arc and tempo. The track analysis has no beat times, so "
+                "set no music anchors." if has_music_analysis == "tempo_only" else
                 "Pace the cuts to the music plan's energy arc.")
         return (
             "\nSTRATEGY — HIGHLIGHTS (image-led). MAKE THE MOST VISUALLY EXCITING SHORT VIDEO POSSIBLE.\n"
@@ -1983,7 +1996,9 @@ def _budget_block_v56(h: dict | None) -> str:
     a, b = h["typical_shot_s"]
     lo, hi = h["suggested_shots"]
     return (f"\nBUDGET (advisory): target {h['target_s']:g}s; typical shots {a:g}–{b:g}s suggest roughly {lo}–{hi} "
-            f"shots from {h['n_moments']} Moments ({h['useful_s']:.0f}s of useful footage). This is a pace guide, "
+            f"shots from {h['n_moments']} Moments ({h['useful_s']:.0f}s of useful footage). The shots' output durations "
+            f"must add up to about {h['target_s']:g}s: total them as you choose, and when the total passes "
+            f"{h['target_s'] * 1.1:g}s remove the weakest whole shots instead of keeping them all. This is a pace guide, "
             "not a quota or a limit on shot length. If the footage you consider strong enough runs out, ending somewhat short is "
             "acceptable; do not add weak or repeated footage just to reach the length.\n")
 
@@ -2040,7 +2055,7 @@ def _build_user_v56(inputs: "EditPlanInputs", etype: str, revision_block: str = 
             + revision_block
             + image_block
             + (("\n" + sound + "\n") if sound else "")
-            + _v56_strategy(etype, inputs.music_analysis is not None)
+            + _v56_strategy(etype, _v56_music_kind(inputs.music_analysis))
             + _budget_block_v56(compute_budget_hint(inputs, etype))
             + "\nINPUT:\n"
             + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n\nReturn ONLY the EditPlan via the tool.")
@@ -2700,7 +2715,8 @@ class RealEditPlannerEngine:
         if not _is_revise:
             from .duration_fit import fit_plan_duration, FIT_BAND
             _protected = _directive_authorized_ids((rc or {}).get("directives"))
-            fitted, frep = fit_plan_duration(plan, inputs, protected_ids=_protected)
+            _fit_kw = {"grid_aware_anchors": True} if _v56_active() else {}   # 5.3/5.5 call is byte-for-byte the historical one
+            fitted, frep = fit_plan_duration(plan, inputs, protected_ids=_protected, **_fit_kw)
             if frep.get("applied"):
                 f_errs = validate_plan(fitted, inputs)
                 sat_before = assess_creative_intent(plan, inputs)["satisfaction"]

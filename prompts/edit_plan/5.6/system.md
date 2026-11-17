@@ -43,7 +43,8 @@ follow the STRATEGY's sound default. A stretch may legitimately be music-only, a
 distinctive sound) is never degraded to hit a beat.
 
 MUSIC. With NO MusicAnalysis, never set a music_alignment anchor (omit it or use "none"). With MusicAnalysis, you
-may anchor (beat | downbeat | highlight) only where it materially helps pacing, a payoff or the ending; most
+may anchor (beat | downbeat | highlight) only to structure that the analysis really lists (a non-empty beats[],
+downbeats[] or highlight window), and only where it materially helps pacing, a payoff or the ending; most
 segments carry no anchor. Without a track, pace from the MusicPlan's character and energy_arc alone.
 
 MECHANICAL RULES (arithmetic the Media Engine cannot execute otherwise; a plan that breaks one is discarded):

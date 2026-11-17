@@ -65,6 +65,22 @@ def _anchored(s: dict) -> bool:
     return isinstance(ma, dict) and (ma.get("anchor") or "none") not in ("none", "")
 
 
+def _anchor_has_grid(s: dict, music_analysis: dict | None) -> bool:
+    """True when the segment's anchor refers to musical structure that actually EXISTS in the supplied MusicAnalysis:
+    beat -> beats[], downbeat -> downbeats[], highlight -> a highlight window. A track analysed for tempo only
+    (empty beat list, no highlight window) gives an anchor nothing to be aligned to, so there is no beat grid for a
+    trim to disturb."""
+    kind = ((s.get("music_alignment") or {}).get("anchor") or "none")
+    ma = music_analysis if isinstance(music_analysis, dict) else {}
+    if kind == "beat":
+        return bool(ma.get("beats"))
+    if kind == "downbeat":
+        return bool(ma.get("downbeats"))
+    if kind == "highlight":
+        return bool(ma.get("highlight_window"))
+    return False
+
+
 def _range(s: dict) -> tuple[float, float]:
     return float(s["source_start_seconds"]), float(s["source_end_seconds"])
 
@@ -152,9 +168,14 @@ def _set_range(seg: dict, a: float, b: float) -> None:
         tr["duration_seconds"] = min(float(tr["duration_seconds"]), seg["output_duration_seconds"])
 
 
-def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = None) -> tuple[dict, dict]:
+def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = None,
+                      grid_aware_anchors: bool = False) -> tuple[dict, dict]:
     """Return (fitted_plan_copy, report). The input plan is never mutated. report['applied'] says whether
-    anything changed; the caller decides adoption after re-validation."""
+    anything changed; the caller decides adoption after re-validation.
+
+    grid_aware_anchors (default False = historical behavior, used by 5.3/5.5): when True, a music anchor only locks
+    its shot (and every shot before it) when the MusicAnalysis really contains the structure it names; an anchor with
+    no beat/downbeat/highlight data behind it is not treated as a beat-grid constraint. The report lists them."""
     target = float((inputs.creative_intent or {}).get("target_duration_seconds") or 0.0)
     segs_in = sorted(plan.get("segments") or [], key=lambda s: s.get("order", 0))
     before = delivered_total_seconds(segs_in)
@@ -174,7 +195,15 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
     segs = [copy.deepcopy(s) for s in segs_in]
     for k, s in enumerate(segs):
         s["_orig"] = (k, *_range(s))
-    last_anchor = max((k for k, s in enumerate(segs) if _anchored(s)), default=-1)
+    ma_in = getattr(inputs, "music_analysis", None)
+
+    def anchored(s) -> bool:
+        return _anchored(s) and (not grid_aware_anchors or _anchor_has_grid(s, ma_in))
+
+    if grid_aware_anchors:
+        report["anchors_without_grid"] = sum(1 for s in segs if _anchored(s) and not _anchor_has_grid(s, ma_in))
+    report["anchors_binding"] = sum(1 for s in segs if anchored(s))
+    last_anchor = max((k for k, s in enumerate(segs) if anchored(s)), default=-1)
     aim, band = target, target * (1 + FIT_BAND)
     floor_total = target * (1 - FIT_BAND)   # a DROP never takes the video below this (trims stop at `aim`)
 
@@ -183,7 +212,7 @@ def fit_plan_duration(plan: dict, inputs: Any, protected_ids: set[str] | None = 
 
     def editable(s) -> bool:
         # nothing at/before the last music anchor moves (that would shift the anchored cut off the beat grid)
-        return s["_orig"][0] > last_anchor and not _anchored(s)
+        return s["_orig"][0] > last_anchor and not anchored(s)
 
     def droppable(i: int, s: dict) -> bool:
         return (0 < i < len(segs) - 1 and len(segs) > 2 and editable(s)
