@@ -1,6 +1,8 @@
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import { StoryApiStack } from "../lib/story-api-stack";
+import * as fs from "fs";
+import * as path from "path";
 
 function synth(): Template {
   const app = new cdk.App();
@@ -298,18 +300,26 @@ describe("StoryApiStack (Milestone A)", () => {
       "STORY_EDITPLAN_OBJECTIVE_DIRECTIVES", "STORY_EDITPLAN_BEST_VALID_RETENTION",
       "STORY_EDITPLAN_APPROX_DURATION_SOFT", "STORY_EDITPLAN_EXCLUDE_DEFAULT_CREATIVE",
       "STORY_GUIDE_V2", "STORY_SCENE_IMAGES", "STORY_JOBS_API_ENABLED", "STORY_LLM_FALLBACK_MODEL",
-      "STORY_MODEL_PROVIDER", "STORY_REUSABLE_EVIDENCE", "STORY_EDIT_PLAN_VERSION",
+      "STORY_MODEL_PROVIDER", "STORY_REUSABLE_EVIDENCE",
     ];
+    // STORY_EDIT_PLAN_VERSION is NOT a removed switch: it is the ONE manifest-driven pin (see (c) below).
+    const committed = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "..", "release", "release.json"), "utf8"));
+    const committedPin = (env: string): string | undefined =>
+      Object.prototype.hasOwnProperty.call(committed.planner.environment_overrides ?? {}, env)
+        ? committed.planner.environment_overrides[env] : (committed.planner.emergency_override ?? undefined);
     const synth = (environment: string, ctx: Record<string, unknown>) => Template.fromStack(
       new StoryApiStack(new cdk.App({ context: ctx }), `story-${environment}-api`, {
         environment, env: { account: "123456789012", region: "us-east-1" } }));
 
-    // (a) default test stack AND development: none of the removed switches, on API or worker.
-    for (const t of [template, synth("development", {})]) {
+    // (a) default test stack AND development: none of the removed switches, on API or worker. The planner pin is
+    //     whatever the COMMITTED manifest declares for that environment (a time-boxed dev evaluation, else nothing).
+    for (const [t, env] of [[template, "test"], [synth("development", {}), "development"]] as const) {
       for (const k of REMOVED) {
         expect(workerVars(t)[k]).toBeUndefined();
         expect(serviceVars(t)[k]).toBeUndefined();
       }
+      expect(workerVars(t)["STORY_EDIT_PLAN_VERSION"]).toBe(committedPin(env));
+      expect(serviceVars(t)["STORY_EDIT_PLAN_VERSION"]).toBe(committedPin(env));
     }
     // (b) obsolete context keys are inert: passing them must NOT reintroduce a variable.
     const legacy = synth("development", { editplanV2: "true", editplanV2Flags: "1", guideV2: "1",
@@ -318,15 +328,47 @@ describe("StoryApiStack (Milestone A)", () => {
       expect(workerVars(legacy)[k]).toBeUndefined();
       expect(serviceVars(legacy)[k]).toBeUndefined();
     }
-    // (c) the ONE rollback control (release/release.json planner.emergency_override; test seam: prop) reaches API
-    //     and worker identically, and the committed manifest ships with NO override.
-    const rb = Template.fromStack(new StoryApiStack(new cdk.App(), "story-development-api", {
-      environment: "development", plannerEmergencyOverride: "5.2",
-      env: { account: "123456789012", region: "us-east-1" } }));
-    expect(workerVars(rb)["STORY_EDIT_PLAN_VERSION"]).toBe("5.2");
-    expect(serviceVars(rb)["STORY_EDIT_PLAN_VERSION"]).toBe("5.2");
+    // (c) the ONE planner control is release/release.json: planner.environment_overrides.<env> pins ONE environment,
+    //     planner.emergency_override pins all. Test seam: `releaseManifestForTest` replaces the parsed file; `null`
+    //     for plannerEmergencyOverride forces "no override". API and worker always agree.
+    // Non-dev environments REQUIRE explicit release inputs (context), or synthesis fails by design.
+    const releaseCtx = (environment: string): Record<string, unknown> => environment === "beta" ? {
+      imageDigest: "sha256:" + "0".repeat(64), cognitoUserPoolId: "us-east-1_TESTPOOL0",
+      cognitoAppClientId: "testclient0000000000000000",
+    } : {};
+    const stack = (environment: string, extra: Record<string, unknown>) => Template.fromStack(new StoryApiStack(
+      new cdk.App({ context: releaseCtx(environment) }), `story-${environment}-api`, {
+        environment, env: { account: "123456789012", region: "us-east-1" },
+        ...(environment === "beta" ? { enableObservability: true, alarmDestination: "alerts@example.com" } : {}),
+        ...extra } as any));
+    const manifest = (planner: Record<string, unknown>) => ({ planner: { version: "5.3", emergency_override: null, ...planner } });
+    const both = (t: Template) => [workerVars(t)["STORY_EDIT_PLAN_VERSION"], serviceVars(t)["STORY_EDIT_PLAN_VERSION"]];
+
+    // the prop seam (old behavior) still reaches API and worker identically
+    expect(both(stack("development", { plannerEmergencyOverride: "5.2" }))).toEqual(["5.2", "5.2"]);
+    // a per-environment entry pins ONLY that environment
+    const devOnly = manifest({ environment_overrides: { development: "5.5" } });
+    expect(both(stack("development", { releaseManifestForTest: devOnly }))).toEqual(["5.5", "5.5"]);
+    expect(both(stack("beta", { releaseManifestForTest: devOnly }))).toEqual([undefined, undefined]);
+    expect(both(stack("test", { releaseManifestForTest: devOnly }))).toEqual([undefined, undefined]);
+    // the global emergency_override still reaches every environment
+    const global = manifest({ emergency_override: "5.2" });
+    expect(both(stack("development", { releaseManifestForTest: global }))).toEqual(["5.2", "5.2"]);
+    expect(both(stack("beta", { releaseManifestForTest: global }))).toEqual(["5.2", "5.2"]);
+    // a per-environment entry wins over the global one for its environment only
+    const mixed = manifest({ emergency_override: "5.2", environment_overrides: { development: "5.5" } });
+    expect(both(stack("development", { releaseManifestForTest: mixed }))).toEqual(["5.5", "5.5"]);
+    expect(both(stack("beta", { releaseManifestForTest: mixed }))).toEqual(["5.2", "5.2"]);
+    // a null per-environment entry explicitly clears the global pin for that environment
+    const cleared = manifest({ emergency_override: "5.2", environment_overrides: { development: null } });
+    expect(both(stack("development", { releaseManifestForTest: cleared }))).toEqual([undefined, undefined]);
+    // the committed manifest never pins beta, gamma or production
+    expect(committedPin("beta")).toBeUndefined();
+    expect(committedPin("gamma")).toBeUndefined();
+    expect(committedPin("production")).toBeUndefined();
+    expect(both(stack("beta", {}))).toEqual([undefined, undefined]);
     // the old command-line context is no longer an input: it must NOT pin a version
-    const ctxOnly = synth("development", { editPlanVersion: "5.2" });
+    const ctxOnly = synth("test", { editPlanVersion: "5.2" });
     expect(workerVars(ctxOnly)["STORY_EDIT_PLAN_VERSION"]).toBeUndefined();
     expect(serviceVars(ctxOnly)["STORY_EDIT_PLAN_VERSION"]).toBeUndefined();
   });

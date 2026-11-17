@@ -168,6 +168,22 @@ def snapshot_from_template(template: dict, environment: str) -> Snapshot:
 # --------------------------------------------------------------------------------------------------------
 # the rule engine (pure: used by pre, post, and the negative tests)
 # --------------------------------------------------------------------------------------------------------
+def manifest_planner_override(manifest: dict, env: str) -> str | None:
+    """The EditPlan version the manifest pins for `env`, or None. A per-environment entry
+    (planner.environment_overrides[env]) wins; otherwise the global planner.emergency_override applies to every
+    environment. A per-environment entry therefore pins ONE environment without touching the others."""
+    pl = manifest.get("planner", {}) or {}
+    per = pl.get("environment_overrides") or {}
+    val = per[env] if env in per else pl.get("emergency_override")
+    return str(val) if val else None
+
+
+def _today():
+    """Calendar date used for override expiry (a seam: tests pin it)."""
+    import datetime
+    return datetime.date.today()
+
+
 def check_snapshot(snap: Snapshot, manifest: dict, repo: Path = REPO) -> tuple[list[Violation], list[str]]:
     v: list[Violation] = []
     warn: list[str] = []
@@ -234,8 +250,13 @@ def check_snapshot(snap: Snapshot, manifest: dict, repo: Path = REPO) -> tuple[l
         v.append(Violation("planner_default_mismatch",
                            f"code default planner is {code_ver!r} but release/release.json requires {want_ver!r}"))
     s_ov, w_ov = svc.get("STORY_EDIT_PLAN_VERSION"), wrk.get("STORY_EDIT_PLAN_VERSION")
-    man_ov = manifest.get("planner", {}).get("emergency_override")
-    man_ov = str(man_ov) if man_ov else None
+    man_ov = manifest_planner_override(manifest, env)
+    # A per-environment pin may only name an environment the manifest defines (no typo that silently pins nothing).
+    for pinned_env in sorted((manifest.get("planner", {}).get("environment_overrides") or {})):
+        if pinned_env not in manifest.get("environments", {}):
+            v.append(Violation("unknown_environment",
+                               f"planner.environment_overrides names '{pinned_env}', which is not an environment in "
+                               f"release/release.json"))
     if ("STORY_EDIT_PLAN_VERSION" in svc) != ("STORY_EDIT_PLAN_VERSION" in wrk) or (s_ov != w_ov):
         v.append(Violation("planner_mismatch",
                            f"EditPlan version differs between API ({s_ov or 'code default'}) and "
@@ -254,6 +275,27 @@ def check_snapshot(snap: Snapshot, manifest: dict, repo: Path = REPO) -> tuple[l
     if man_ov and ("STORY_EDIT_PLAN_VERSION", env, man_ov) not in approved:
         v.append(Violation("unapproved_override",
                            f"emergency EditPlan rollback {man_ov} has no approved_overrides entry for {env}"))
+    # An approved override may carry an `expires` date (ISO yyyy-mm-dd): once it has passed, the override is no longer
+    # approved, so a time-boxed evaluation cannot silently outlive its window.
+    for pinned in sorted({x for x in (s_ov, w_ov, man_ov) if x}):
+        for o in manifest.get("approved_overrides", []):
+            if (o.get("setting"), o.get("env"), str(o.get("value"))) != ("STORY_EDIT_PLAN_VERSION", env, str(pinned)):
+                continue
+            exp = o.get("expires")
+            if not exp:
+                continue
+            try:
+                import datetime
+                expired = datetime.date.fromisoformat(str(exp)) < _today()
+            except ValueError:
+                v.append(Violation("override_expiry_invalid",
+                                   f"approved override STORY_EDIT_PLAN_VERSION={pinned} for {env} has an invalid "
+                                   f"expires date {exp!r} (use yyyy-mm-dd)"))
+                continue
+            if expired:
+                v.append(Violation("override_expired",
+                                   f"approved override STORY_EDIT_PLAN_VERSION={pinned} for {env} expired on {exp}; "
+                                   f"remove it from release/release.json (back to the default planner) or renew the approval"))
     effective = s_ov or w_ov or man_ov or code_ver
     for scope, val in (("service", s_ov), ("worker", w_ov)):
         if val is not None and ("STORY_EDIT_PLAN_VERSION", env, str(val)) not in approved:
