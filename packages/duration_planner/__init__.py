@@ -107,11 +107,9 @@ def compute_duration_evidence(moments: list[dict]) -> dict:
         })
     n = len(moments)
     total_useful = round(total_useful, 1)
-    # Feasible band: ceiling = all distinct useful material (no padding, no repetition). The floor is only the
-    # smallest playable video (4 s, capped by material). It deliberately does NOT scale with the Moment count:
-    # the former `n_moments * 2 s` floor assumed every Moment appears for >= 2 s, which is false for a selective
-    # Highlights edit and inflated the recommended Highlights range (38 Moments => a 76 s floor).
-    floor = round(min(total_useful, 4.0), 1) if total_useful > 0 else 0.0
+    # Conservative feasible band: floor = a minimal highlights pass (brief appearances, capped by material);
+    # ceiling = all distinct useful material (no padding, no repetition).
+    floor = round(min(total_useful, max(4.0, n * 2.0)), 1) if total_useful > 0 else 0.0
     ceil = total_useful
     return {
         "n_moments": n,
