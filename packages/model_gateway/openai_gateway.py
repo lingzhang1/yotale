@@ -34,6 +34,7 @@ from . import (
     StructuredResult,
     Usage,
     classify_provider_error,
+    log_model_call,
     make_attempt,
 )
 from ._secret import load_provider_key
@@ -118,10 +119,12 @@ class OpenAIModelGateway:
 
         def _log(n: int, t0: float, outcome: str, finish: str | None = None, usage: Usage | None = None,
                  error: BaseException | None = None) -> None:
-            self.last_attempts.append(make_attempt(
+            rec = make_attempt(
                 provider="openai", model=self.model_id, n=n, max_tokens=req.max_tokens,
                 latency_ms=int((time.monotonic() - t0) * 1000), outcome=outcome, finish_reason=finish,
-                usage=usage, error=error))
+                usage=usage, error=error)
+            self.last_attempts.append(rec)
+            log_model_call(req.task, rec)
 
         for attempt in range(1 + max(0, req.max_repair_attempts)):
             t0 = time.monotonic()

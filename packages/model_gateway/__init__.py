@@ -15,10 +15,12 @@ Creative Intent).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -161,6 +163,106 @@ def make_attempt(*, provider: str, model: str | None, n: int, max_tokens: int, l
     if error is not None:
         rec["error"] = sanitize_error(error)
     return rec
+
+
+# ---------------------------------------------------------------------------
+# Call context: who/what a model call is for (cost attribution)
+#
+# A ContextVar (not a parameter) so attribution reaches every adapter attempt without changing any engine
+# signature. Set once per request by the API middleware (story_user_id, correlation_id, operation) and per
+# job by the worker (story_user_id, job_id, operation, story_id); handlers may add story_id. Values are opaque
+# backend ids and closed-vocabulary operation names: never prompts, media or secrets. ContextVars propagate
+# into Starlette's threadpool (context is copied) and into asyncio child tasks created after they are set.
+# ---------------------------------------------------------------------------
+_CTX_FIELDS = ("story_user_id", "story_id", "operation", "job_id", "correlation_id", "retry_of")
+_CALL_CTX: "contextvars.ContextVar[dict]" = contextvars.ContextVar("model_call_ctx", default={})
+
+
+def set_call_context(*, fresh: bool = False, **fields: Any) -> "contextvars.Token":
+    """Merge attribution fields into the current call context; returns a token for reset_call_context().
+    Unknown keys and None values are ignored. The billed-attempt counter is created on first use and is kept when
+    merging, so a handler adding `story_id` does not restart the request's count; `fresh=True` starts a new count."""
+    cur = {} if fresh else dict(_CALL_CTX.get())      # a new unit of work inherits nothing from an outer one
+    for k, v in fields.items():
+        # Allow-listed keys only: an email, token, prompt or any other field passed by mistake is DROPPED, and values
+        # are bounded, so the attribution context cannot become a channel for personal data into the logs.
+        if k in _CTX_FIELDS and v is not None:
+            cur[k] = str(v)[:80]
+    if fresh or "_seq" not in cur:
+        cur["_seq"] = [0]
+    return _CALL_CTX.set(cur)
+
+
+def reset_call_context(token: "contextvars.Token") -> None:
+    try:
+        _CALL_CTX.reset(token)
+    except (ValueError, LookupError):
+        pass
+
+
+@contextmanager
+def call_context(**fields: Any):
+    """A new logical unit of work (one request, one job): attribution fields AND a fresh call counter."""
+    tok = set_call_context(fresh=True, **fields)
+    try:
+        yield
+    finally:
+        reset_call_context(tok)
+
+
+def current_call_context() -> dict:
+    return {k: v for k, v in _CALL_CTX.get().items() if k in _CTX_FIELDS}
+
+
+def _next_call_index() -> "int | None":
+    seq = _CALL_CTX.get().get("_seq")
+    if not isinstance(seq, list):
+        return None
+    seq[0] += 1
+    return seq[0]
+
+
+def log_model_call(task: str, rec: dict) -> None:
+    """Emit ONE privacy-safe `model_call_usage` log line per BILLED provider attempt, for every capability
+    (the single place all engines funnel through). Cost = tokens x the live observability price table.
+
+    Why here: guide / coverage / creative-intent / interpret-revision / music-plan / duration / scene
+    understanding previously logged no tokens at all, so their spend was invisible. Every adapter attempt
+    already builds `rec` via make_attempt, so logging at that seam covers all of them, including repair,
+    truncation and no-tool-call attempts that still bill.
+
+    Billing note: OpenAI `completion_tokens` already INCLUDES reasoning tokens. Gemini `candidatesTokenCount`
+    EXCLUDES `thoughtsTokenCount`, but thinking tokens are billed at the output rate, so for Gemini the billed
+    output is output + reasoning (otherwise cost is a lower bound).
+
+    Only token COUNTS, model/provider ids and the task name are logged: never prompts, media or user ids.
+    Best-effort: observability must never break a model call."""
+    try:
+        in_tok = rec.get("input_tokens")
+        out_tok = rec.get("output_tokens")
+        if in_tok is None and out_tok is None:
+            return  # no usage reported (transport error etc.): nothing was billed that we can see
+        from observability import PRICING_VERSION, get_logger, price_lookup
+        reasoning = int(rec.get("reasoning_tokens") or 0)
+        billed_out = int(out_tok or 0) + (reasoning if rec.get("provider") == "gemini" else 0)
+        cost, priced = price_lookup(int(in_tok or 0), billed_out, str(rec.get("model") or ""))
+        get_logger("story.model_call").info("model_call_usage", extra={
+            "task": task, "provider": rec.get("provider"), "model_id": rec.get("model"),
+            "attempt": rec.get("n"), "outcome": rec.get("outcome"), "latency_ms": rec.get("latency_ms"),
+            "input_tokens": int(in_tok or 0), "output_tokens": int(out_tok or 0),
+            "reasoning_output_tokens": reasoning, "billed_output_tokens": billed_out,
+            "estimated_cost_usd": round(cost, 6), "pricing_known": priced,
+            "pricing_version": PRICING_VERSION,
+            # ESTIMATE = provider-reported token counts x the list-price table. It is never an invoice figure:
+            # reconcile against OpenAI/Google billing exports before relying on it for pricing.
+            "cost_basis": "estimated_list_price",
+            "telemetry_version": 1,
+            "call_index": _next_call_index(),          # nth billed attempt within this request/job
+            "finish_reason": rec.get("finish_reason"),
+            **current_call_context(),                  # story_user_id / story_id / operation / job_id / ...
+        })
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def classify_provider_error(exc: BaseException) -> str:
@@ -424,6 +526,11 @@ __all__ = [
     "OutputTruncatedError",
     "ProviderTimeoutError",
     "ProviderDeadlineError",
+    "log_model_call",
+    "set_call_context",
+    "reset_call_context",
+    "call_context",
+    "current_call_context",
     "make_attempt",
     "sanitize_error",
     "classify_provider_error",

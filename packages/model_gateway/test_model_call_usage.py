@@ -1,0 +1,274 @@
+"""Per-call token + cost logging (`model_call_usage`) at the provider-adapter seam.
+
+Every capability (guide, coverage, creative intent, interpret-revision, music plan, duration, scene
+understanding, AU, edit plan, ...) funnels through the OpenAI/Gemini adapters, so one log line per billed
+attempt gives complete cost visibility. Offline: fake transports, fake logger, no network.
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+import observability
+from model_gateway import StructuredRequest, log_model_call
+from model_gateway.gemini_gateway import GeminiModelGateway
+from model_gateway.openai_gateway import OpenAIModelGateway
+
+SCHEMA = {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
+
+
+def _req(task="story_guide.v2"):
+    return StructuredRequest(task=task, schema=SCHEMA, prompt_version="v1", system="s", user_content="u",
+                             max_tokens=64, max_repair_attempts=1)
+
+
+class _Capture:
+    def __init__(self):
+        self.lines: list[tuple[str, dict]] = []
+
+    def info(self, msg, extra=None):
+        self.lines.append((msg, extra or {}))
+
+
+@pytest.fixture(autouse=True)
+def _clean_call_context():
+    """Other tests (API handlers merge story_id without a reset) must not leak attribution into these."""
+    import model_gateway
+    tok = model_gateway._CALL_CTX.set({})
+    yield
+    model_gateway._CALL_CTX.reset(tok)
+
+
+@pytest.fixture()
+def cap(monkeypatch):
+    c = _Capture()
+    monkeypatch.setattr(observability, "get_logger", lambda name="story", level=20: c)
+    return c
+
+
+def _openai(usage, tool=True):
+    msg = {"tool_calls": [{"function": {"name": "emit_structured", "arguments": json.dumps({"summary": "x"})}}]} \
+        if tool else {}
+    payload = {"choices": [{"finish_reason": "tool_calls" if tool else "stop", "message": msg}], "usage": usage}
+    return lambda url, h, b, t: (200, json.dumps(payload).encode(), {})
+
+
+def _gemini(um):
+    payload = {"candidates": [{"finishReason": "STOP", "content": {"parts": [
+        {"functionCall": {"name": "emit_structured", "args": {"summary": "x"}}}]}}], "usageMetadata": um}
+    return lambda url, h, b, t: (200, json.dumps(payload).encode(), {})
+
+
+def test_openai_attempt_logged_with_cost_and_task(cap):
+    gw = OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 10_000, "completion_tokens": 2_000, "total_tokens": 12_000,
+         "completion_tokens_details": {"reasoning_tokens": 1_500}}))
+    gw.generate_structured(_req("story_guide.v2"))
+    (msg, f), = cap.lines
+    assert msg == "model_call_usage"
+    assert f["task"] == "story_guide.v2" and f["provider"] == "openai" and f["model_id"] == "gpt-5.1"
+    assert f["input_tokens"] == 10_000 and f["output_tokens"] == 2_000
+    # OpenAI completion_tokens already includes reasoning: NOT added again.
+    assert f["billed_output_tokens"] == 2_000
+    assert f["estimated_cost_usd"] == pytest.approx(10_000 / 1e6 * 1.25 + 2_000 / 1e6 * 10.0)
+    assert f["pricing_known"] is True
+
+
+def test_gemini_thinking_tokens_are_billed_as_output(cap):
+    gw = GeminiModelGateway("gemini-3.8-flash", api_key="k", http_post=_gemini(
+        {"promptTokenCount": 30_000, "candidatesTokenCount": 650, "totalTokenCount": 33_000,
+         "thoughtsTokenCount": 2_350}))
+    gw.generate_structured(_req("asset_understanding.analyze"))
+    (_, f), = cap.lines
+    assert f["output_tokens"] == 650 and f["reasoning_output_tokens"] == 2_350
+    assert f["billed_output_tokens"] == 3_000  # candidates + thoughts
+    assert f["estimated_cost_usd"] == pytest.approx(30_000 / 1e6 * 0.30 + 3_000 / 1e6 * 2.50)
+
+
+def test_every_billed_attempt_is_logged_including_a_failed_one(cap):
+    # First attempt: model answered without a tool call (still billed). Second: ok.
+    calls = {"n": 0}
+    ok = _openai({"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110})(None, None, None, None)
+    bad = _openai({"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}, tool=False)(None, None, None, None)
+
+    def t(url, h, b, to):
+        calls["n"] += 1
+        return bad if calls["n"] == 1 else ok
+
+    OpenAIModelGateway("gpt-5.1", api_key="k", http_post=t).generate_structured(_req())
+    assert [f["outcome"] for _, f in cap.lines] == ["no_tool_call", "ok"]
+    assert [f["attempt"] for _, f in cap.lines] == [1, 2]
+
+
+def test_no_usage_means_no_line(cap):
+    log_model_call("t", {"provider": "openai", "model": "gpt-5.1", "n": 1, "outcome": "transport"})
+    assert cap.lines == []
+
+
+def test_unpriced_model_is_flagged_not_free(cap):
+    log_model_call("t", {"provider": "openai", "model": "mystery-model", "n": 1, "outcome": "ok",
+                         "input_tokens": 10, "output_tokens": 5})
+    (_, f), = cap.lines
+    assert f["pricing_known"] is False and f["estimated_cost_usd"] == 0.0
+
+
+def test_logging_failure_never_breaks_the_call(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("logger down")
+    monkeypatch.setattr(observability, "get_logger", boom)
+    gw = OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}))
+    assert gw.generate_structured(_req()).data == {"summary": "x"}
+
+
+def test_no_prompt_media_or_user_fields_are_logged(cap):
+    OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})).generate_structured(_req())
+    (_, f), = cap.lines
+    assert not ({"prompt", "user_content", "system", "story_user_id", "images"} & set(f))
+    assert observability.scrub_log_fields(f) == f  # nothing would be redacted
+
+
+# ---- attribution context (B0) ------------------------------------------------------------------------------
+
+def test_call_context_attributes_every_line_and_counts_calls(cap):
+    from model_gateway import call_context
+    gw = OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}))
+    with call_context(story_user_id="u-1", story_id="s-1", operation="worker:edit_plan:explore", job_id="j-1"):
+        gw.generate_structured(_req())
+        gw.generate_structured(_req())
+    assert [f["call_index"] for _, f in cap.lines] == [1, 2]
+    for _, f in cap.lines:
+        assert f["story_user_id"] == "u-1" and f["story_id"] == "s-1" and f["job_id"] == "j-1"
+        assert f["operation"] == "worker:edit_plan:explore"
+    # scrubbing must not redact the attribution ids
+    assert observability.scrub_log_fields(cap.lines[0][1]) == cap.lines[0][1]
+
+
+def test_no_context_means_no_attribution_fields(cap):
+    OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})).generate_structured(_req())
+    (_, f), = cap.lines
+    assert "story_user_id" not in f and "job_id" not in f
+
+
+def test_context_resets_after_block(cap):
+    from model_gateway import call_context, current_call_context
+    with call_context(story_user_id="u-1"):
+        assert current_call_context()["story_user_id"] == "u-1"
+    assert "story_user_id" not in current_call_context()
+
+
+def test_request_middleware_sets_context_for_sync_handlers():
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    from model_gateway import current_call_context
+    from app.cost_context import cost_context_middleware
+
+    app = FastAPI()
+
+    @app.get("/probe")
+    def probe():  # sync handler -> runs in the threadpool, which must see the context
+        return current_call_context()
+
+    @app.get("/probe-async")
+    async def probe_async():
+        return current_call_context()
+
+    class P:  # minimal principal
+        story_user_id = "u-9"
+        is_legacy = False
+
+    app.middleware("http")(cost_context_middleware)
+
+    @app.middleware("http")
+    async def auth(request: Request, call_next):  # outermost: resolves the principal first
+        request.state.principal = P()
+        return await call_next(request)
+
+    c = TestClient(app)
+    for path in ("/probe", "/probe-async"):
+        got = c.get(path).json()
+        assert got["story_user_id"] == "u-9" and got["operation"] == f"GET {path}" and got["correlation_id"]
+
+
+def test_nested_call_context_starts_a_fresh_count_but_merge_keeps_it(cap):
+    from model_gateway import call_context, set_call_context
+    gw = OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}))
+    with call_context(story_user_id="u-1"):
+        gw.generate_structured(_req())
+        set_call_context(story_id="s-1")                 # a handler adding the story id must not restart the count
+        gw.generate_structured(_req())
+        with call_context(story_user_id="u-2"):          # a new job/request: new count
+            gw.generate_structured(_req())
+    assert [f["call_index"] for _, f in cap.lines] == [1, 2, 1]
+    assert cap.lines[1][1]["story_id"] == "s-1" and "story_id" not in cap.lines[2][1]
+
+
+# ---- B0 verification: reset on every exit path, no leakage, cost basis ------------------------------------------
+
+def test_context_resets_when_the_block_raises():
+    from model_gateway import call_context, current_call_context
+    with pytest.raises(RuntimeError):
+        with call_context(story_user_id="u-1", job_id="j-1"):
+            raise RuntimeError("handler failed")
+    assert current_call_context() == {}
+
+
+def test_context_resets_when_the_task_is_cancelled():
+    import asyncio
+    from model_gateway import call_context, current_call_context
+
+    async def scenario():
+        started = asyncio.Event()
+
+        async def work():
+            with call_context(story_user_id="u-1"):
+                started.set()
+                await asyncio.sleep(30)
+
+        t = asyncio.create_task(work())
+        await started.wait()
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        return current_call_context()
+
+    assert asyncio.run(scenario()) == {}
+
+
+def test_concurrent_requests_do_not_see_each_others_attribution():
+    import asyncio
+    from model_gateway import call_context, current_call_context
+
+    async def req(uid, n):
+        with call_context(story_user_id=uid):
+            await asyncio.sleep(0.01 * n)
+            return current_call_context()["story_user_id"]
+
+    async def main():
+        return await asyncio.gather(*(req(f"u{i}", i % 3) for i in range(12)))
+
+    assert asyncio.run(main()) == [f"u{i}" for i in range(12)]
+
+
+def test_attribution_context_drops_unknown_fields_and_bounds_values():
+    from model_gateway import call_context, current_call_context
+    with call_context(story_user_id="u" * 500, email="a@b.com", prompt="secret", authorization="Bearer x",
+                      apple_transaction="signed.jws.value"):
+        got = current_call_context()
+    assert set(got) == {"story_user_id"} and len(got["story_user_id"]) == 80
+
+
+def test_log_line_has_estimated_cost_basis_and_no_free_text_fields(cap):
+    from model_gateway import call_context
+    gw = OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}))
+    with call_context(story_user_id="u-1", email="a@b.com"):
+        gw.generate_structured(_req())
+    (_, f), = cap.lines
+    assert f["cost_basis"] == "estimated_list_price" and f["telemetry_version"] == 1
+    assert "email" not in f and not any("@" in str(v) for v in f.values())
