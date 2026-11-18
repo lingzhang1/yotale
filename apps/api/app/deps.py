@@ -264,9 +264,9 @@ def get_edit_planner_engine() -> EditPlannerEngine:
     repairs = 2
     # Output cap for the plan JSON. The old 2600 truncated a 24-Moment plan (proven: stop_reason=max_tokens,
     # output_tokens=2600 -> empty segments[] -> 503). 8192 fits a full ~17-segment plan; on a still-truncated
-    # plan the engine escalates ONCE to the ceiling (16384). Both are fixed code constants (never configured in any environment).
+    # plan the engine escalates ONCE (doubling, bounded by the ceiling). Both are fixed code constants (never configured in any environment).
     max_tokens = 8192
-    ceiling = 16384
+    ceiling = 32768   # documented output maxima: gpt-5.1 128,000; gemini-3.8-flash 65,536
     return RealEditPlannerEngine(routed_gateway("edit_plan", model), executability_repair_attempts=repairs,
                                  max_tokens=max_tokens, max_tokens_ceiling=ceiling)
 

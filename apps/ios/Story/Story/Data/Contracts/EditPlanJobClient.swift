@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // EditPlanJobClient — Phase 2 ASYNC Edit Planning client. Replaces the synchronous /v1/edit-plan[-mm] calls
 // in Story creation with submit -> poll -> fetch against the durable job API (backend Phase 1). This removes
@@ -127,9 +128,21 @@ extension EditPlanJobClienting {
 final class EditPlanJobClient: EditPlanJobClienting {
     private let baseURL: URL
     private let session: URLSession
-    init(baseURL: URL = StoryBackend.baseURL, session: URLSession = StoryBackend.jobSession) {
+    /// Whether the user is looking at the app (foreground + active). Polls faster only then. Injectable for tests.
+    private let isForeground: @MainActor () -> Bool
+    init(baseURL: URL = StoryBackend.baseURL, session: URLSession = StoryBackend.jobSession,
+         isForeground: @escaping @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }) {
         self.baseURL = baseURL
         self.session = session
+        self.isForeground = isForeground
+    }
+
+    /// Poll delay schedule (perf milestone 2026-11-18). While the user waits in the foreground the delay grows
+    /// 2 -> 3 -> 4 -> 5 s and stays at 5 s, so a finished plan is noticed within ~5 s. Otherwise (inactive or
+    /// background) it keeps the previous exponential 2 -> 4 -> 8 -> 15 s schedule. A status read is one cheap
+    /// authenticated DynamoDB GET; the job itself is unaffected by polling.
+    static func nextPollDelay(after current: Double, foreground: Bool) -> Double {
+        foreground ? min(current + 1, 5) : min(current * 2, 15)
     }
 
     /// Submit (idempotent on operation_id). Returns the job_id. A 409 means the same operation_id was used
@@ -266,7 +279,7 @@ final class EditPlanJobClient: EditPlanJobClienting {
                            shouldCancel: @MainActor () -> Bool = { false },
                            onState: @MainActor (EditPlanJobState) -> Void = { _ in }) async throws -> EditPlanJobState {
         let start = Date()
-        var delay: UInt64 = 2
+        var delay: Double = 2
         while Date().timeIntervalSince(start) < Double(maxSeconds) {
             if await shouldCancel() { throw CancellationError() }
             do {
@@ -274,8 +287,11 @@ final class EditPlanJobClient: EditPlanJobClienting {
                 await onState(st)
                 if st.status.isTerminal { return st }
             } catch EditPlanJobError.transport { /* keep polling — the job is unaffected */ }
-            try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
-            delay = min(delay * 2, 15)   // bounded exponential backoff, cap 15s
+            // A background->foreground switch takes effect at the next wait; the current one is never extended.
+            let fg = await isForeground()
+            delay = fg ? min(delay, 5) : delay
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            delay = Self.nextPollDelay(after: delay, foreground: await isForeground())
         }
         throw EditPlanJobError.pollTimeout
     }

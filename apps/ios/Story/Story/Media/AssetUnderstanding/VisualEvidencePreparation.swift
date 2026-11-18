@@ -49,6 +49,11 @@ struct EvidencePreparationResult {
 
 enum VisualEvidencePreparation {
 
+    /// How many Moments' cached evidence lookups may be in flight at once (perf milestone 2026-11-18). Each
+    /// lookup is one small manifest GET plus one ~100 KB package download; 4 overlaps the round trips without
+    /// a burst of dozens of requests or many packages held in memory at the same time.
+    static let evidenceFetchConcurrency = 4
+
     @MainActor
     static func prepare(
         moments: [EvidenceMomentRef],
@@ -58,15 +63,48 @@ enum VisualEvidencePreparation {
         limits: VisualBudgetLimits = VisualBudgetLimits()
     ) async -> EvidencePreparationResult {
 
-        // A. cache lookup for EVERY eligible Moment, local or not.
-        // A hit is ranked immediately, so only the frames a sheet can use stay in memory (not all 24).
+        // A. cache lookup for EVERY eligible Moment, local or not — BOUNDED CONCURRENT across Moments.
+        // Per Moment the dependency order is unchanged (the injected fetch does manifest -> download -> verify
+        // -> unpack). Across Moments up to `evidenceFetchConcurrency` lookups overlap, so 60+ network round
+        // trips no longer run back to back. Child tasks run on the MAIN ACTOR (this function's isolation) so
+        // the injected closure keeps its existing isolation; the network/SHA/unpack work inside
+        // `AUEvidenceCacheHit.fetchFrames` is nonisolated async and runs off the main thread. Results are keyed
+        // by Moment id and every later step iterates `moments` in the caller's order, so sheet order, the
+        // miss list order and the budget pass are identical to the sequential version.
+        // A hit is ranked as it arrives, so only the frames a sheet can use stay in memory (not all 24).
+        let tFetch = RenderTiming.begin("evidence_fetch_all")
         var cached: [UUID: RankedFrames] = [:]
-        var misses: [EvidenceMomentRef] = []
-        for m in moments {
-            if let frames = await fetchCachedFrames(m), !frames.isEmpty {
-                cached[m.momentId] = EvidenceFrameMapper.rank(frames, guidance: m.guidance)
-            } else { misses.append(m) }
+        var missIds = Set<UUID>()
+        var maxActive = 0
+        let limit = max(1, min(evidenceFetchConcurrency, moments.count))
+        await withoutActuallyEscaping(fetchCachedFrames) { fetch in
+            await withTaskGroup(of: (Int, [AUExtractedFrame]?).self) { group in
+                var next = 0, active = 0
+                while next < moments.count && active < limit {
+                    let i = next, m = moments[i]
+                    group.addTask { @MainActor in (i, await fetch(m)) }
+                    next += 1; active += 1
+                }
+                maxActive = active
+                while let (i, frames) = await group.next() {
+                    active -= 1
+                    let m = moments[i]
+                    if let frames, !frames.isEmpty {
+                        cached[m.momentId] = EvidenceFrameMapper.rank(frames, guidance: m.guidance)
+                    } else {
+                        missIds.insert(m.momentId)
+                    }
+                    if next < moments.count {
+                        let j = next, mj = moments[j]
+                        group.addTask { @MainActor in (j, await fetch(mj)) }
+                        next += 1; active += 1
+                        maxActive = max(maxActive, active)
+                    }
+                }
+            }
         }
+        let misses = moments.filter { missIds.contains($0.momentId) }   // caller order preserved
+        tFetch.end("moments=\(moments.count) hits=\(cached.count) misses=\(misses.count) max_concurrency=\(maxActive)")
 
         // B. misses: local source if present, otherwise restore (misses only).
         var sourceURL: [UUID: URL] = [:]
@@ -76,9 +114,11 @@ enum VisualEvidencePreparation {
         }
         var unavailable: [UUID] = []
         if !needRestore.isEmpty {
+            let tRestore = RenderTiming.begin("evidence_restore_misses")
             let r = await restoreSources(needRestore)
             for (id, url) in r.restored { sourceURL[id] = url }
             unavailable = r.unavailable
+            tRestore.end("requested=\(needRestore.count) unavailable=\(unavailable.count)")
         }
 
         // One input per Moment that has frames or a source, in the caller's (stable) order.
@@ -98,7 +138,9 @@ enum VisualEvidencePreparation {
         }
 
         // Shared budget: cache hits and extracted sheets compete under the same ceilings.
+        let tBudget = RenderTiming.begin("evidence_extract_and_tile")
         let budget = await MultimodalVisualBudget.build(inputs, limits: limits)
+        tBudget.end("inputs=\(inputs.count) extracted=\(inputs.filter { $0.url != nil }.count) sheets=\(budget.sheets.count) tier=\(budget.selectedTier) bytes=\(budget.totalImageBytes)")
 
         let guided = moments.filter { $0.guidance.hasCandidates }.count
         // Diagnostic coverage of what was actually submitted: AU events / visual candidates with a frame in their

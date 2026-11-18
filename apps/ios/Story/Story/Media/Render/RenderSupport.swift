@@ -39,16 +39,23 @@ enum MomentResolver {
                                      token: @escaping () async -> String?)
         async -> (media: [MomentMedia], unavailable: [(momentId: UUID, error: Error)]) {
         var unavailable: [(UUID, Error)] = []
+        let tEnsure = RenderTiming.begin("ensure_local_all")
+        var downloaded = 0
         for m in moments {
             guard let rel = m.asset?.relativePath else { continue }
             if MediaStore.shared.fileExists(relativePath: rel) { continue }   // already local
+            let tOne = RenderTiming.begin("ensure_local_one")
             do {
                 _ = try await MediaResolver.shared.ensureLocal(
                     moment: m, context: context, activeOwner: activeOwner, token: token)
+                downloaded += 1
+                tOne.end("ok=true")
             } catch {
                 unavailable.append((m.id, error))
+                tOne.end("ok=false")
             }
         }
+        tEnsure.end("moments=\(moments.count) downloaded=\(downloaded) failed=\(unavailable.count)")
         return (resolve(moments: moments), unavailable.map { ($0.0, $0.1) })
     }
 

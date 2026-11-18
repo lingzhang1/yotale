@@ -733,6 +733,7 @@ struct RenderResult {
     let renderSize: CGSize
 }
 
+
 extension MediaEngineV1 {
     /// Full render: build composition -> export H.264 MP4 -> verify duration -> persist. Cancellable.
     /// Cleans up any partial output on failure/cancel. NEVER modifies source Moments.
@@ -744,6 +745,8 @@ extension MediaEngineV1 {
         // that risked the AVFoundation 'Result accumulator timeout' stall). After this await, the synchronous
         // tracks() read in buildComposition returns the real audio track for a freshly-downloaded temp MP3.
         var inputs = inputs
+        let tTotal = RenderTiming.begin("render_total")
+        let tPreload = RenderTiming.begin("soundtrack_preload")
         if let sURL = inputs.soundtrackURL, FileManager.default.fileExists(atPath: sURL.path) {
             let sAsset = AVURLAsset(url: sURL)
             _ = try? await sAsset.loadTracks(withMediaType: .audio)
@@ -757,13 +760,16 @@ extension MediaEngineV1 {
             StoryCreativeRefinement.lastMusicNote = "NO soundtrack URL at render (pendingMusic path produced none)"
             MediaEngineV1.beacon("no-soundtrack-url")
         }
+        tPreload.end("has_music=\(inputs.soundtrackURL != nil)")
         let built: BuiltComposition
+        let tBuild = RenderTiming.begin("build_composition")
         do {
             built = try buildComposition(inputs)
         } catch {
             MediaEngineV1.beacon("buildComposition THREW: \(String(describing: error).prefix(120))")
             throw error
         }
+        tBuild.end("segments=\(built.segmentRanges.count) out_s=\(Int(built.totalDuration.seconds)) size=\(Int(built.videoComposition.renderSize.width))x\(Int(built.videoComposition.renderSize.height))")
         MediaEngineV1.beacon("built soundtrackTrack=\(built.soundtrackTrack != nil ? "YES" : "NO") loops=\(built.loopCount) seams=\(built.loopSeams.count) total=\(String(format: "%.1f", built.totalDuration.seconds))s note=\(StoryCreativeRefinement.lastMusicNote.suffix(80))")
         // Append the per-segment native_audio histogram + role/priority: these three numbers decide whether
         // native audio is AUDIBLE in the final mix (keep=1.0, duck=0.25, mute=0.0; soundtrack full under
@@ -774,10 +780,12 @@ extension MediaEngineV1 {
         StoryCreativeRefinement.lastMusicNote +=
             " | native_audio[\(naHist)] role=\(inputs.soundtrackRole) priority=\(inputs.nativeAudioPriority)"
         MediaEngineV1.beacon("audio-mix native_audio[\(naHist)] role=\(inputs.soundtrackRole) priority=\(inputs.nativeAudioPriority)")
+        let tMix = RenderTiming.begin("audio_mix")
         let mix = buildAudioMix(inputs, composition: built.composition,
                                 segmentRanges: built.segmentRanges, soundtrackTrack: built.soundtrackTrack,
                                 soundtrackTrackB: built.soundtrackTrackB, loopSeams: built.loopSeams,
                                 totalDuration: built.totalDuration)
+        tMix.end()
 
         guard let export = AVAssetExportSession(asset: built.composition,
                                                 presetName: AVAssetExportPresetHighestQuality) else {
@@ -799,8 +807,12 @@ extension MediaEngineV1 {
                 try? await Task.sleep(nanoseconds: 150_000_000)
             }
         }
+        let tExport = RenderTiming.begin("export")
         await export.export()
         poller.cancel()
+        let outS = built.totalDuration.seconds
+        tExport.end("status=\(export.status.rawValue) out_s=\(Int(outS)) preset=\(export.presetName)")
+        tTotal.end("segments=\(built.segmentRanges.count)")
 
         func cleanupPartial() { try? FileManager.default.removeItem(at: out.url) }
 

@@ -50,6 +50,7 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         var behavior: Behavior
         private(set) var submitCount = 0
         private(set) var pollCount = 0
+        private(set) var polledJobIds: [String] = []
         private(set) var lastRequest: EditPlanRequestDTO?
         private(set) var lastSheets: [MomentContactSheet] = []
         private(set) var lastEvidenceAccounting: [String: Any]?
@@ -78,6 +79,7 @@ final class StoryCreationCoordinatorTests: XCTestCase {
                                onState: @MainActor (EditPlanJobState) -> Void) async throws -> EditPlanJobState {
             if await shouldCancel() { throw CancellationError() }
             pollCount += 1
+            polledJobIds.append(jobId)
             switch behavior {
             case .ok(let p):
                 return EditPlanJobState(jobId: jobId, status: .completed, plan: p,
@@ -116,6 +118,7 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         private(set) var called = false
         private(set) var seenSoundtrackURL: URL?
         private(set) var seenMusicAnalysis: MusicAnalysisV1?
+        private(set) var seenPlan: EditPlanV2?
         init(_ b: Behavior) { behavior = b }
         func render(_ inputs: MediaEngineInputs,
                     progress: ((Float) -> Void)?,
@@ -123,6 +126,7 @@ final class StoryCreationCoordinatorTests: XCTestCase {
             called = true
             seenSoundtrackURL = inputs.soundtrackURL
             seenMusicAnalysis = inputs.musicAnalysis
+            seenPlan = inputs.plan
             switch behavior {
             case .ok(let r): progress?(1.0); return r
             case .fail(let e): throw e
@@ -233,6 +237,39 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         XCTAssertEqual(s.status, .active)
     }
 
+    // Perf milestone (2026-11-18): the standard path renders the VALIDATED PLANNER PLAN as-is. No post-plan
+    // cut-boundary refinement may move source in/out (it cost minutes on device and retimed shots, because a
+    // changed source span at a fixed output duration is stretched by the renderer).
+    func test_standardPath_rendersPlannerCutPointsUnchanged() async throws {
+        let s = newStory()
+        let m1 = momentWithFile(s, rel: "media/rc-norefine-1.mov", dur: 8); completeAU(m1, useful: [(0, 8)])
+        let m2 = momentWithFile(s, rel: "media/rc-norefine-2.mov", dur: 8); completeAU(m2, useful: [(0, 8)])
+        let segs = [
+            EditSegmentV2(order: 0, assetId: m1.id.uuidString, sourceStartSeconds: 1.25, sourceEndSeconds: 3.5,
+                          outputDurationSeconds: 2.25, speed: 1.0, nativeAudio: "keep", musicAlignment: nil),
+            EditSegmentV2(order: 1, assetId: m2.id.uuidString, sourceStartSeconds: 2.4, sourceEndSeconds: 4.0,
+                          outputDurationSeconds: 1.6, speed: 1.0, nativeAudio: "duck", musicAlignment: nil),
+        ]
+        let plan = EditPlanV2(schemaVersion: "edit_plan/2", targetDurationSeconds: 3.85, outputFormat: "vertical",
+                              musicAssetId: nil, feasible: true, segments: segs)
+        let renderer = FakeRenderer(.ok(okResult()))
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(plan)),
+                                             renderer: renderer, context: ctx, jobClient: FakeJobClient(.ok(plan)))
+        coord.create(for: s)
+        await awaitSettled(coord)
+        guard case .completed = coord.state else { return XCTFail("expected .completed, got \(coord.state)") }
+        let seen = try XCTUnwrap(renderer.seenPlan)
+        XCTAssertEqual(seen.segments.count, 2)
+        for (a, b) in zip(seen.segments, segs) {
+            XCTAssertEqual(a.assetId, b.assetId)
+            XCTAssertEqual(a.sourceStartSeconds, b.sourceStartSeconds)
+            XCTAssertEqual(a.sourceEndSeconds, b.sourceEndSeconds)
+            XCTAssertEqual(a.outputDurationSeconds, b.outputDurationSeconds)
+            XCTAssertEqual(a.speed, b.speed)
+            XCTAssertEqual(a.nativeAudio, b.nativeAudio)
+        }
+    }
+
     // A STALE persisted planJobId (server-side job gone -> poll 404) must NOT dead-end: the coordinator clears
     // the stale handle, resubmits ONE fresh job for the same operation_id, and reaches .completed. Regression
     // for "Couldn't reach the Edit Planner: unexpected status 404".
@@ -273,6 +310,53 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         guard case .failed = coord.state else { return XCTFail("expected .failed, got \(coord.state)") }
         XCTAssertFalse(renderer.called)                 // no render on a 503
         XCTAssertTrue(s.generatedOutputs.isEmpty)       // nothing persisted — no fabricated montage
+    }
+
+    // Regression (dev 2026-11-18, job ad458f5b): after a SERVER-SIDE planning failure, Try again / a new
+    // Original Create must submit a NEW job under a NEW operation id, never re-poll the failed job and replay
+    // its failure without any new planning.
+    func test_retryAfterServerFailure_submitsNewJob_notTheFailedOne() async throws {
+        let s = newStory()
+        let m = momentWithFile(s, rel: "media/rc-retry-1.mov", dur: 6); completeAU(m, useful: [(0, 5)])
+        let jobs = FakeJobClient(.failUnavailable)
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .fail(.unavailable)),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx, jobClient: jobs)
+        coord.create(for: s)
+        await awaitSettled(coord)
+        guard case .failed = coord.state else { return XCTFail("expected .failed, got \(coord.state)") }
+        let failedOp = try XCTUnwrap(jobs.lastOperationId)
+        let failedJob = try XCTUnwrap(jobs.polledJobIds.last)
+        XCTAssertNil(s.planJobId, "a terminal job's handle must not survive the failure")
+        XCTAssertNil(s.planOperationId)
+
+        jobs.behavior = .ok(validPlan([m]))
+        coord.retry()
+        await awaitSettled(coord)
+        guard case .completed = coord.state else { return XCTFail("expected .completed, got \(coord.state)") }
+        XCTAssertEqual(jobs.submitCount, 2, "the retry must submit a new job")
+        XCTAssertNotEqual(jobs.lastOperationId, failedOp, "with a new operation id")
+        XCTAssertNotEqual(jobs.polledJobIds.last, failedJob, "and must not re-poll the failed job")
+    }
+
+    // Safety net for Stories that already carry a failed job handle (persisted before the fix above): an
+    // Original Create drops it and submits fresh. A job that may still be live is still reused (recovery).
+    func test_create_dropsAPersistedFailedJobHandle_butReusesALiveOne() async throws {
+        let s = newStory()
+        let m = momentWithFile(s, rel: "media/rc-retry-2.mov", dur: 6); completeAU(m, useful: [(0, 5)])
+        s.planOperationId = "old-op"; s.planJobId = "old-failed-job"; s.planJobStatus = "failed"
+        let jobs = FakeJobClient(.ok(validPlan([m])))
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(validPlan([m]))),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx, jobClient: jobs)
+        coord.create(for: s)
+        await awaitSettled(coord)
+        guard case .completed = coord.state else { return XCTFail("expected .completed, got \(coord.state)") }
+        XCTAssertEqual(jobs.submitCount, 1)
+        XCTAssertFalse(jobs.polledJobIds.contains("old-failed-job"))
+        XCTAssertNotEqual(jobs.lastOperationId, "old-op")
+
+        XCTAssertFalse(StoryCreationCoordinator.hasStaleTerminalJob(
+            { let t = newStory(); t.planOperationId = "op"; t.planJobId = "j"; t.planJobStatus = "running"; return t }(),
+            pending: nil), "a running job is live and must be kept for recovery")
     }
 
     func test_planner422_failsWithReason() async throws {

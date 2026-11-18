@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -45,6 +47,13 @@ class StructuredRequest:
     max_repair_attempts: int = 1
     max_tokens: int = 1024
     temperature: float = 0.0
+    # Absolute wall-clock deadline (time.time() epoch seconds) for the WHOLE operation, set by the caller (the
+    # worker). Adapters never start an HTTP attempt that cannot finish before it, and clamp each socket timeout
+    # to the time left. None = no caller deadline (adapter defaults only).
+    deadline_ts: float | None = None
+    # Per-request HTTP timeout in seconds. None = the adapter's default (60 s). Long, image-heavy generations
+    # (the EditPlan planner) set a larger value; the adapters still clamp it to the time left before deadline_ts.
+    timeout_seconds: float | None = None
 
 
 @dataclass
@@ -52,6 +61,7 @@ class Usage:
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
+    reasoning_tokens: int | None = None   # provider-reported hidden reasoning/thinking tokens, when reported
 
 
 @dataclass
@@ -73,9 +83,35 @@ class StructuredOutputError(RuntimeError):
     they must NEVER fabricate a contract instead."""
 
 
+class OutputTruncatedError(StructuredOutputError):
+    """The provider stopped because it hit the output-token limit (OpenAI finish_reason=length, Gemini
+    finishReason=MAX_TOKENS, Bedrock stopReason=max_tokens), so no complete structured output exists. A
+    SUBCLASS of StructuredOutputError so existing handlers and the error text are unchanged; callers that can
+    retry with a larger output budget catch this type specifically. It is raised IMMEDIATELY: re-sending the
+    same request at the same cap would just repeat the same long generation."""
+
+    def __init__(self, message: str, *, provider: str | None = None, finish_reason: str | None = None,
+                 max_tokens: int | None = None, usage: "Usage | None" = None):
+        super().__init__(message)
+        self.provider = provider
+        self.finish_reason = finish_reason
+        self.max_tokens = max_tokens
+        self.usage = usage
+
+
 class ProviderError(RuntimeError):
     """Provider/transport failure (network, throttling, timeout, 5xx). RECOVERABLE — eligible for a
     bounded retry and for provider FALLBACK."""
+
+
+class ProviderTimeoutError(ProviderError):
+    """A request timed out waiting for the provider. Recoverable by FALLBACK, but not retried against the same
+    provider: repeating an identical long request that just timed out mostly repeats the wait."""
+
+
+class ProviderDeadlineError(ProviderError):
+    """The caller's overall deadline leaves no time for another provider attempt. Never fails over (the other
+    provider would have no time either); surfaced so the job fails with an honest, bounded error."""
 
 
 class ProviderPolicyError(ProviderError):
@@ -84,6 +120,66 @@ class ProviderPolicyError(ProviderError):
     existing ``except ProviderError`` sites still surface it — but FallbackModelGateway refuses to fail
     over on it (a denial must stop the operation and be surfaced/recorded, never silently retried on the
     other provider). Also used for malformed-request 4xx that another provider would reject identically."""
+
+
+
+# ---------------------------------------------------------------------------
+# Per-attempt telemetry (safe metadata only: no prompts, images, raw responses or credentials)
+# ---------------------------------------------------------------------------
+
+_MAX_ATTEMPT_LOG = 12
+
+
+def sanitize_error(exc: BaseException | str | None, limit: int = 160) -> str | None:
+    """Bounded, single-line error description. Takes the type name and the message, and drops anything that
+    looks like a URL query string (an API key travels there for Gemini)."""
+    if exc is None:
+        return None
+    text = exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}"
+    text = text.replace("\n", " ").replace("\r", " ")
+    text = re.sub(r"https?://\S+", "<url>", text)
+    text = re.sub(r"(key|token|secret|authorization)=\S+", r"\1=<redacted>", text, flags=re.I)
+    return text[:limit]
+
+
+def make_attempt(*, provider: str, model: str | None, n: int, max_tokens: int, latency_ms: int,
+                 outcome: str, finish_reason: str | None = None, usage: "Usage | None" = None,
+                 error: BaseException | str | None = None) -> dict:
+    """One provider attempt record. `outcome` is a low-cardinality category: ok | truncated | no_tool_call |
+    timeout | transport | rate_limited | server_error | policy | bad_body | deadline."""
+    rec: dict = {"provider": provider, "model": model, "n": n, "max_tokens": max_tokens,
+                 "latency_ms": latency_ms, "outcome": outcome}
+    if finish_reason is not None:       # omit absent values rather than store an explicit null
+        rec["finish_reason"] = finish_reason
+    if usage is not None:
+        if usage.input_tokens is not None:
+            rec["input_tokens"] = usage.input_tokens
+        if usage.output_tokens is not None:
+            rec["output_tokens"] = usage.output_tokens
+        if usage.reasoning_tokens is not None:
+            rec["reasoning_tokens"] = usage.reasoning_tokens
+    if error is not None:
+        rec["error"] = sanitize_error(error)
+    return rec
+
+
+def classify_provider_error(exc: BaseException) -> str:
+    if isinstance(exc, ProviderDeadlineError):
+        return "deadline"
+    if isinstance(exc, ProviderTimeoutError):
+        return "timeout"
+    if isinstance(exc, ProviderPolicyError):
+        return "policy"
+    msg = str(exc)
+    if "429" in msg:
+        return "rate_limited"
+    if re.search(r"\b5\d\d\b", msg):
+        return "server_error"
+    if isinstance(exc, ProviderError):
+        return "transport"
+    if isinstance(exc, OutputTruncatedError):
+        return "truncated"
+    return "no_tool_call" if isinstance(exc, StructuredOutputError) else "transport"
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +286,11 @@ class BedrockModelGateway:
             # No tool_use block. If Bedrock stopped at max_tokens the OUTPUT WAS TRUNCATED — surface that as
             # the error so the caller can log 'stop_reason=max_tokens' instead of a generic 'no output'.
             if stop_reason == "max_tokens":
-                last_err = StructuredOutputError("output truncated at max_tokens (increase max_tokens)")
+                # Re-sending the same request at the same cap only repeats the long generation: raise now so the
+                # caller can retry with a larger budget.
+                raise OutputTruncatedError("output truncated at max_tokens (increase max_tokens)",
+                                           provider="bedrock", finish_reason=stop_reason,
+                                           max_tokens=req.max_tokens)
             else:
                 last_err = StructuredOutputError(f"model did not return a tool_use block (stop_reason={stop_reason})")
             # On repair attempt, nudge the model to call the tool.
@@ -232,6 +332,9 @@ class FallbackModelGateway:
         self._fallback = fallback
         self.last_fallback: bool = False
         self.last_error: str | None = None
+        # Provider attempts of the most recent generate_structured call, primary first, each tagged with its
+        # role. Filled even when the call raised, so a failed job still has its attempt history.
+        self.last_attempts: list[dict] = []
 
     # Model ids for diagnostics (which model actually produced a given call). Best-effort: a gateway without a
     # model_id (e.g. a test fake) yields None.
@@ -243,20 +346,41 @@ class FallbackModelGateway:
     def fallback_model_id(self) -> str | None:
         return getattr(self._fallback, "model_id", None)
 
+    def _collect(self, gw: "ModelGateway", role: str) -> None:
+        for a in (getattr(gw, "last_attempts", None) or []):
+            if len(self.last_attempts) < _MAX_ATTEMPT_LOG:
+                self.last_attempts.append({**a, "role": role})
+
     def generate_structured(self, req: StructuredRequest) -> StructuredResult:
         self.last_fallback = False
         self.last_error = None
+        self.last_attempts = []
         try:
-            return self._primary.generate_structured(req)
-        except ProviderPolicyError:
+            try:
+                return self._primary.generate_structured(req)
+            finally:
+                self._collect(self._primary, "primary")
+        except (ProviderPolicyError, ProviderDeadlineError):
             # Content-policy / account-access / auth denial, or a 4xx another provider would reject the
-            # same way. NEVER fail over — stop and surface so the caller records the incident. (Subclass of
-            # ProviderError, so this except must come FIRST.)
+            # same way, or no time left for another attempt. NEVER fail over: stop and surface so the caller
+            # records the incident. (Subclasses of ProviderError, so this except must come FIRST.)
             raise
         except ProviderError as e:
             self.last_fallback = True
             self.last_error = str(e)[:300]
-            return self._fallback.generate_structured(req)
+            primary_cause = {"category": classify_provider_error(e), "error": sanitize_error(e)}
+            try:
+                try:
+                    return self._fallback.generate_structured(req)
+                finally:
+                    self._collect(self._fallback, "fallback")
+            except Exception as fe:
+                # Keep WHY the primary failed even though the fallback failed too.
+                try:
+                    fe.primary_failure = primary_cause  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
 
 
 class FakeModelGateway:
@@ -297,6 +421,12 @@ __all__ = [
     "StructuredOutputError",
     "ProviderError",
     "ProviderPolicyError",
+    "OutputTruncatedError",
+    "ProviderTimeoutError",
+    "ProviderDeadlineError",
+    "make_attempt",
+    "sanitize_error",
+    "classify_provider_error",
     "ModelGateway",
     "BedrockModelGateway",
     "FallbackModelGateway",
