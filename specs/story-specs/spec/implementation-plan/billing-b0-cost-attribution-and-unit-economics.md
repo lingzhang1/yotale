@@ -72,10 +72,21 @@ AU retry cost is small: 5 retryable failures in 633 AU attempts on beta (0.8%).
 
 ## 4. Provisional unit economics
 
-Assumptions (all flagged, none measured): unmeasured components add **$0.10 per video**, retry factor **1.25x**, storage **$0.15** per user-month.
-Revenue is the provisional $9.99. "Margin" is gross margin on AI plus storage only (no App Runner, Lambda, Cognito, music fees).
+Provenance of every input (re-run `scripts/billing_unit_economics.py` after `model_call_usage` has a week of data and replace the assumptions):
 
-### Free starter (30 Moments + 2 videos, no revenue)
+| Input | Value | Provenance |
+|---|---|---|
+| AU per call | $0.0107 (30.2k in / 640 out tokens) | **measured** (Nov 17-18, n=439 beta); Gemini thinking tokens were not logged, so a lower bound |
+| EditPlan 5.6, one model call | input tokens = 5,454 + 827 per sheeted moment; $0.048 (21 sheets) to $0.168 (89 sheets) | **measured** fit on 10 retained jobs, both accounts |
+| Iceland, 90 moments, import + 3 outputs | $1.406 | **measured**, lower bound |
+| Retry factor | 1.0x / 1.25x / 1.9x | 1.0x = 5.6 jobs since Nov 17; 1.9x = pre-5.6 observed calls per job; **1.25x is an assumption** |
+| Unmeasured AI per video (coverage, guide, creative intent, duration, music plan, interpret) | $0.00 / $0.10 / $0.30 | **assumption**: no token data exists yet |
+| Storage + egress per user-month | $0.30 default (5.4 GB x $0.023 measured storage + 2 GB x $0.09 **assumed** egress) | storage measured for the heaviest beta user; egress and evidence-package storage **unmeasured** |
+| Music provider fees, App Runner, Lambda, Cognito (about $0.015 per MAU) | excluded | no contract / not per-user |
+
+Revenue is the provisional $9.99. "Margin" is gross margin on AI plus storage/egress only. **No 70% margin has been achieved or claimed.**
+
+### Free starter (30 analyses + 2 videos, no revenue)
 
 | Videos made from | Measured-model cost | With retry 1.25x and $0.10/video buffer |
 |---|---|---|
@@ -83,36 +94,40 @@ Revenue is the provisional $9.99. "Margin" is gross margin on AI plus storage on
 | 30-sheet stories | $0.49 | $0.81 |
 | 90-sheet stories | $0.62 | $0.97 |
 
-A fully used starter allowance costs **about $0.45 to $1.00** per user in AI spend.
+A fully used starter allowance costs **about $0.45 to $1.00** per user in AI spend (the 14-day clock now starts at the first video; the cost is the same).
 
 ### Plus $9.99/month at full allotment (100 Moments + 12 videos)
 
 | Case | AI cost | Total cost | Net after 15% | Margin | Net after 30% | Margin |
 |---|---|---|---|---|---|---|
-| 12 videos on 30-sheet stories | $3.73 | $3.88 | $8.49 | **54%** | $6.99 | **45%** |
-| 12 videos on 90-sheet stories | $4.66 | $4.81 | $8.49 | **43%** | $6.99 | **31%** |
+| 12 videos on 30-sheet stories | $3.73 | $4.03 | $8.49 | **53%** | $6.99 | **42%** |
+| 12 videos on 90-sheet stories | $4.66 | $4.96 | $8.49 | **42%** | $6.99 | **29%** |
 
 Sensitivity (large stories, full allotment), margin at 15% / 30% commission:
 
 | Retry factor | Unmeasured $/video | Total cost | Margin 15% | Margin 30% |
 |---|---|---|---|---|
-| 1.00x | $0.00 | $2.92 | 66% | 58% |
-| 1.00x | $0.10 | $4.12 | 52% | 41% |
-| 1.25x | $0.10 | $4.81 | 43% | 31% |
-| 1.25x | $0.30 | $7.21 | 15% | -3% |
-| 1.90x | $0.10 | $6.61 | 22% | 6% |
-| 1.90x | $0.30 | $9.01 | -6% | -29% |
+| 1.00x | $0.00 | $3.07 | 64% | 56% |
+| 1.00x | $0.10 | $4.27 | 50% | 39% |
+| 1.25x | $0.10 | $4.96 | 42% | 29% |
+| 1.25x | $0.30 | $7.36 | 13% | -5% |
+| 1.90x | $0.10 | $6.76 | 20% | 3% |
+| 1.90x | $0.30 | $9.16 | -8% | -31% |
 
-### Assessment of the provisional allowances
+| Storage + egress per user-month (retry 1.25x, unmeasured $0.10) | Total cost | Margin 15% | Margin 30% |
+|---|---|---|---|
+| $0.15 | $4.81 | 43% | 31% |
+| $0.30 (default) | $4.96 | 42% | 29% |
+| $1.00 | $5.66 | 33% | 19% |
+| $3.00 | $7.66 | 10% | -10% |
 
-- **100 Moments + 12 videos at $9.99 is viable but thin in the pessimistic corners.** Expected margin is 43% to 54% at the 15% Apple rate and
-  31% to 45% at 30%. It turns negative only if unmeasured components cost $0.30 or more per video together with heavy retries.
+### Assessment of the provisional allowances (allowances unchanged: $9.99, 100 Moments, 12 videos)
+
+- **Viable but thin in the pessimistic corners.** Expected margin is 42% to 53% at the 15% Apple rate and 29% to 42% at 30%. It goes negative only when unmeasured components reach about $0.30 per video together with heavy retries, or with multi-dollar storage/egress.
 - **Asset analysis is the largest single cost.** 100 Moments is $1.13 of AU alone. A 90-Moment story uses 90% of a month's analysis allowance.
-- **The unmeasured $0.10 per video is the biggest unknown.** Coverage jobs run about 2.6 times per video on beta. The real figure is only known
-  after `model_call_usage` ships. Do not fix the allowances before that data exists.
-- **A 70% margin needs about 6 large-story videos per month** at this cost, not 12 (see script output). Reaching 12 requires a lower per-video cost
-  (cheaper unmeasured components, fewer retries) or a higher price. This is a decision for you, not a change made here.
-- Prices and allowances stay configuration-driven (`packages/billing` config) and provisional.
+- **The unmeasured $0.10 per video is the biggest unknown.** Coverage jobs run about 2.6 times per video on beta. The real figure is only known after `model_call_usage` ships. Do not fix the allowances before that data exists.
+- **A 70% margin needs about 6 large-story videos per month** at this cost, not 12 (see script output). Reaching 12 requires a lower per-video cost or a higher price: a decision for the owner, not a change made here.
+- Allowances are reviewed code (`packages/billing/config.py`) and provisional.
 
 ## 5. Owner actions to complete B0
 

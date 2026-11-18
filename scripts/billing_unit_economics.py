@@ -24,7 +24,9 @@ REVISE_COST = 0.071                          # one text-only revise (Iceland, 23
 # --- ASSUMPTIONS (not measured; replace after model_call_usage data) -------------------------------------------
 UNMEASURED_PER_VIDEO = 0.10    # coverage/guide/creative-intent/music-plan/duration per video (no token logs yet)
 AU_THINKING_FACTOR = 1.0       # Gemini thinking tokens are not in the AU log; 1.0 = measured lower bound
-STORAGE_PER_USER_MONTH = 0.15  # S3 media: beta owner holds 5.4 GB = $0.12/month at $0.023/GB-month
+STORAGE_GB_PER_USER = 5.4      # MEASURED: the heaviest beta user holds 5.4 GB of originals = $0.124/month at $0.023/GB-month
+EGRESS_GB_PER_USER_MONTH = 2.0 # ASSUMPTION (no measurement): restores/downloads to other devices, at $0.09/GB
+STORAGE_PER_USER_MONTH = STORAGE_GB_PER_USER * 0.023 + EGRESS_GB_PER_USER_MONTH * 0.09   # storage + egress, non-AI infra per user
 RETRY_FACTOR = 1.25            # incurred-cost multiplier for retries/failed attempts (pre-5.6 jobs averaged 1.5-1.9x)
 PRICE = 9.99
 
@@ -94,6 +96,14 @@ def main() -> None:
             r15 = plan_row("", 100, 12, 90, commission=0.15, retry=retry, unmeasured=unm)
             r30 = plan_row("", 100, 12, 90, commission=0.30, retry=retry, unmeasured=unm)
             print(f"  retry {retry:>4.2f}x, unmeasured ${unm:.2f}/video: cost ${r15[2]:5.2f}  margin {r15[4]*100:4.0f}% / {r30[4]*100:4.0f}%")
+
+    print("\n== Sensitivity: storage + egress per user-month (large stories, retry 1.25x, unmeasured $0.10/video)")
+    for infra in (0.15, 0.30, 1.00, 3.00):
+        globals()["STORAGE_PER_USER_MONTH"] = infra
+        r15 = plan_row("", 100, 12, 90, commission=0.15)
+        r30 = plan_row("", 100, 12, 90, commission=0.30)
+        print(f"  storage+egress ${infra:4.2f}/user-month: cost ${r15[2]:5.2f}  margin {r15[4]*100:4.0f}% / {r30[4]*100:4.0f}%")
+    globals()["STORAGE_PER_USER_MONTH"] = STORAGE_GB_PER_USER * 0.023 + EGRESS_GB_PER_USER_MONTH * 0.09
 
     print("\n== Break-even videos (large stories) for Plus at 12-video price, margin 70% target @15% commission")
     net = PRICE * 0.85
