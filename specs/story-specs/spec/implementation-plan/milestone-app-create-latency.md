@@ -154,3 +154,38 @@ The dev worker was redeployed at 05:14 UTC with `4e6ae15` (`fix/planner-timeout`
 - Across the four multimodal jobs, model time rises roughly 10 ms per output token (1.9k -> 30–35 s, 4.6k -> 51 s, 6.1k -> 72 s). Four points, so this is a trend, not a fitted model.
 - Run-to-run noise: two near-identical jobs (same Story, same token counts) took 30.0 s and 34.9 s.
 - The Revise took the deterministic path and made no model call, so its latency is phone-side render only.
+
+## 10. All runs in one table (baseline through 2026-11-18 05:32 UTC)
+
+Times in seconds. **Phone** columns come from the `render-timing` console lines and exist only where Ling pasted them. **Server** is job creation -> `worker_outcome`; **Model** is the single call's `provider_attempts[].latency_ms`, recorded only from `590a404` (#132) onwards. **Length** is the rendered output where the phone log exists, otherwise the plan's target (marked `t`). Jobs are in the dev `story-development-edit-plan-jobs` table; times are UTC on 2026-11-18 unless marked.
+
+| # | When | Job | Action, type | Story | Moments / sheets | Length | Phone total | Evidence | Submit | Plan (phone) | Server | Model | Tokens in / out | Render | Max stall | Result |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | before 11-17 23:24 | — | **Baseline** Create (before this milestone) | — | 66 / 66 | 138 | **537.3** | 44.3 | 3.8 | 171.0 | — | — | 137k / 10.5k (2 calls, 1 repair) | 34.3 + 282.8 refine | not measured | ok |
+| 1 | 11-17 23:24 | `f5350ca4` | Create | `51f3ff3c` | 68 / 68 | — | — | — | — | — | ~419 | — | not recorded | — | — | failed (before #132) |
+| 2 | 02:09 | `ad458f5b` | Create | `51f3ff3c` | 68 / 68 | — | — | — | — | — | ~403 | — | not recorded | — | — | failed (before #132) |
+| 3 | 02:20 | `99f1320e` | Create, Highlights | `bc5194c1` | 37 / 37 | 99.6 | **82.6** | 12.4 | 2.6 | 47.5 | 43.7 | — | 32.7k / 3.1k | 19.9 | 364 ms | ok |
+| 4 | 02:23 | `1e10afe1` | Create, Highlights | `beebc11b` | 21 / 21 | 40.0 | **46.0** | 6.4 | 2.1 | 31.6 | 30.0 | — | 19.4k / 1.9k | 5.5 | 219 ms | ok |
+| 5 | 02:39 | `a0efddbd` | Another version, Full Story | `beebc11b` | 21 / 21 | 65.1 | **35.0** | 6.5 | 2.1 | 15.7 | 16.6 | — | 24.9k / 1.3k | 10.3 | 214 ms | ok |
+| 6 | 02:48 | `2d78aecc` | Revise, Highlights | `beebc11b` | 21 / 0 | 44.7 | — | — | — | — | 17.5 | — | 7.8k / 2.0k | — | — | ok |
+| 7 | 02:49 | `0d95c543` | Another version, Full Story | `bc5194c1` | 37 / 37 | 195.3 | — | — | — | — | 34.5 | — | 41.2k / 3.1k | — | — | ok |
+| 8 | 04:36 | `fc92ea54` | Create (retry) | `51f3ff3c` | 68 / 68 | — | — | — | — | — | 123 | 2 × 60.3 timeout | 0 / 0 | — | — | failed: OpenAI and Gemini both hit the 60 s timeout |
+| | 05:14 | | *Worker redeployed with `4e6ae15` (planner timeout fix)* | | | | | | | | | | | | | |
+| 9 | 05:19 | `ad1099ad` | Create, Highlights | `51f3ff3c` | 68 / 68 | 135 t | — | — | — | — | 76 | 72.3 | 54.3k / 6.1k | — | — | ok |
+| 10 | 05:24 | `f85bdeff` | Another version, Full Story | `51f3ff3c` | 68 / 68 | 235 t | — | — | — | — | 55 | 51.3 | 69.9k / 4.6k | — | — | ok |
+| 11 | 05:27 | `84b88508` | Revise (deterministic, no model call) | `beebc11b` | 21 / 0 | 40 t | — | — | — | — | <1 | — | — | — | — | ok |
+| 12 | 05:29 | `728058bb` | Another version, Highlights | `beebc11b` | 21 / 21 | 40 t | — | — | — | — | 32 | 30.0 | 23.5k / 1.9k | — | — | ok |
+| 13 | 05:31 | `7b49b7b9` | Another version, Highlights | `beebc11b` | 21 / 21 | 40 t | — | — | — | — | 36 | 34.9 | 23.5k / 1.9k | — | — | ok |
+
+Notes:
+- Phone-log op ids: row 3 = `D58E1CC1`, row 4 = `386899D0`, row 5 = `3BC30063`.
+- Rows 1 and 2 have no diagnostics (jobs predate #132); their server time comes from `updated_at`, which is coarse, hence `~`. Row 1 is probably the failed 68-Moment Create mentioned in section 1.
+- Rows 1, 2, 8 and 9 are the same Story (identical sheet order). Row 9's single call took 72.3 s, which the 60 s timeout of row 8 could not allow.
+
+**Comparison with the baseline**
+- **End to end on the phone:** 537.3 s before, 35.0–82.6 s after (rows 3–5). The largest single saving is the 282.8 s creative refinement, which no longer runs.
+- **Contact sheets:** 44.3 s for 66 Moments before (0.67 s per Moment), 0.30–0.33 s per Moment after.
+- **Planning, similar Story size:** the baseline's 66-Moment plan took 171.0 s on the phone (2 model calls, 1 repair, 10.5k output tokens). Row 9 (68 Moments) took 76 s on the server with one call and 6.1k output tokens. Row 9 has no phone log, so phone-side plan time for it is not measured.
+- **Render:** export only, 24.6 s for 138 s of output before; 5.3–19.6 s for 40–100 s after (5–7.5× real time). Rendering itself was not changed.
+- **Planning is now the largest stage:** model time rises about 10 ms per output token across rows 9, 10, 12 and 13 (four points, a trend rather than a fitted rate), and identical requests vary by about 15% (rows 12 and 13).
+- **Not measured yet:** phone totals for rows 6–13, including the 68-Moment Story and the 195 s Full Story.
