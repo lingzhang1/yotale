@@ -118,3 +118,21 @@ Findings:
 - Another 290 s-target job (`ad458f5b`) failed with the same truncation error earlier the same day, so 60–70-Moment Stories still fail in planning (section 7).
 
 Still open: a 60–70-Moment acceptance run (blocked by the backend truncation failure), Revise, Explore, cache-miss-heavy and cloud-only sources, background/relaunch, cancellation, the XCTest run, and review of the rendered videos for cut quality now that refinement is off.
+
+### 9.1 All runs after the change, including Explore and Revise (2026-11-18)
+
+Phone timeline (seconds) where the console lines exist; server worker time is job creation -> `worker_outcome` in the worker log.
+
+| Run | Moments / sheets | Out | Total | Evidence | Submit | Plan (phone) | Worker | Render (export) | Max stall |
+|---|---|---|---|---|---|---|---|---|---|
+| Original, Full Story (`99f1320e`) | 37 / 37 | 99.6 s | 82.6 | 12.4 | 2.6 | 47.5 | 43.7 | 19.9 (19.6) | 364 ms |
+| Original (`1e10afe1`) | 21 / 21 | 40.0 s | 46.0 | 6.4 | 2.1 | 31.6 | 30.0 | 5.5 (5.3) | 219 ms |
+| Explore (`a0efddbd`) | 21 / 21 | 65.1 s | 35.0 | 6.5 | 2.1 | 15.7 | 16.6 | 10.3 (10.2) | 214 ms |
+| Revise, Highlights, text-light (`2d78aecc`) | ? / 0 | 44.7 s | no phone log | — | — | — | 17.5 | — | — |
+| Full Story (`0d95c543`) | 37 / 37 | 195.3 s | no phone log | — | — | — | 34.5 | — | — |
+
+Server planning per job (one model call each, no repair): input/output tokens 32.7k/3.1k, 19.4k/1.9k, 24.9k/1.3k, 7.8k/2.0k, 41.2k/3.1k. One sample per configuration, so no latency model is fitted; the fastest jobs had the fewest output tokens.
+
+Share of phone wall time: planning 57%, 69%, 45%; render 24%, 12%, 29%; evidence 15%, 14%, 19%; submit 3–6%. Evidence is 0.30–0.33 s per Moment in every run and repeatable (the same 21-Moment Story twice: fetch 5.3 s and 5.4 s). Export runs at 5.1–7.5× real time. Cloud backup verified 6–15 s after the output, off the critical path. Completion detection lag is about 1–4 s.
+
+The failed-then-retried attempt is one of the last two rows; its phone lines were not captured, so its failure stage is still unknown.
