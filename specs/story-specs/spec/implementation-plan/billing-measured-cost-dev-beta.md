@@ -42,6 +42,29 @@ Opus/Sonnet and is shown separately.
 A "video" here is one edit-plan job (original, explore or revise). Asset understanding is charged once per imported
 moment, not per video.
 
+### Correction: dev vs beta is not like-for-like until synthetic traffic is removed
+
+The dev column above includes **58 edit-plan "original" jobs from the legacy `dev` principal on 2026-11-10/11**
+(about 10k input tokens, 3 model calls each, about $0.01 per job). That is automated test or load traffic, not
+real clips. It pulled the dev average down. Restricting both environments to the owner's real user
+(dev `854abd33`, beta `61310227`) gives:
+
+| Real user only (Nov 1+) | Beta | Dev |
+|---|---|---|
+| Original | $0.130 avg (n=12, median input 51.8k tok, 1.9 calls) | $0.123 avg (n=19, median input 80.7k tok, 1.5 calls) |
+| Explore | $0.088 (n=12) | $0.073 (n=27) |
+| Revise | $0.086 (n=6, 1.7 calls) | $0.046 (n=9, 1.4 calls) |
+| All | **$0.104** avg, $3.13 total | **$0.086** avg, $4.72 total |
+
+Remaining variance is mostly planner input size (moment count per story, 19k to 200k tokens) and the number of
+model calls per job (1 versus 3 when a repair or critique pass runs); both vary job to job even on the same
+footage. Revise has the smallest samples, so treat its gap as noise until more data exists.
+
+Asset-understanding call counts also differ (beta 439, dev 196) for a reason that is not the same-clips effect:
+the AU log has no user id, but the beta ledger shows a second user active on 2026-11-08 (85 generations, owner had
+none that day) while beta AU logged 61 calls that day. At least part of beta's AU volume is another user's imports.
+Per-call AU cost is identical ($0.0107). The `model_call_usage` logging should carry a user id to settle this.
+
 ### Per video
 
 | | Beta | Dev |
