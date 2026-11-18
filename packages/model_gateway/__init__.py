@@ -51,6 +51,9 @@ class StructuredRequest:
     # worker). Adapters never start an HTTP attempt that cannot finish before it, and clamp each socket timeout
     # to the time left. None = no caller deadline (adapter defaults only).
     deadline_ts: float | None = None
+    # Per-request HTTP timeout in seconds. None = the adapter's default (60 s). Long, image-heavy generations
+    # (the EditPlan planner) set a larger value; the adapters still clamp it to the time left before deadline_ts.
+    timeout_seconds: float | None = None
 
 
 @dataclass
@@ -145,10 +148,14 @@ def make_attempt(*, provider: str, model: str | None, n: int, max_tokens: int, l
     """One provider attempt record. `outcome` is a low-cardinality category: ok | truncated | no_tool_call |
     timeout | transport | rate_limited | server_error | policy | bad_body | deadline."""
     rec: dict = {"provider": provider, "model": model, "n": n, "max_tokens": max_tokens,
-                 "latency_ms": latency_ms, "outcome": outcome, "finish_reason": finish_reason}
+                 "latency_ms": latency_ms, "outcome": outcome}
+    if finish_reason is not None:       # omit absent values rather than store an explicit null
+        rec["finish_reason"] = finish_reason
     if usage is not None:
-        rec["input_tokens"] = usage.input_tokens
-        rec["output_tokens"] = usage.output_tokens
+        if usage.input_tokens is not None:
+            rec["input_tokens"] = usage.input_tokens
+        if usage.output_tokens is not None:
+            rec["output_tokens"] = usage.output_tokens
         if usage.reasoning_tokens is not None:
             rec["reasoning_tokens"] = usage.reasoning_tokens
     if error is not None:

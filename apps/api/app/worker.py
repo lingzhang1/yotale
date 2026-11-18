@@ -574,7 +574,7 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                                              # provider reliability (safe metadata only)
                                              "provider_attempts", "initial_max_tokens",
                                              "truncation_escalations", "truncation_recovery",
-                                             "reasoning_tokens", "primary_failure",
+                                             "reasoning_tokens", "primary_failure", "planner_timeout_s",
                                              "selection")}
         diag_out["planning_mode"] = "multimodal" if images else "text_only"
         diag_out["sheet_count"] = len(images)
@@ -730,7 +730,7 @@ def _with_primary_failure(detail: str, exc: BaseException) -> str:
     return detail
 
 
-_FAILURE_DIAG_KEYS = ("provider_attempts", "initial_max_tokens", "truncation_escalations", "truncation_recovery",
+_FAILURE_DIAG_KEYS = ("provider_attempts", "initial_max_tokens", "planner_timeout_s", "truncation_escalations", "truncation_recovery",
                       "last_error_category", "last_error", "primary_failure", "model_calls", "input_tokens",
                       "output_tokens", "reasoning_tokens", "executability_repairs_used")
 

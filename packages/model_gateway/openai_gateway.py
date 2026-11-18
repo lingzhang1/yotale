@@ -126,7 +126,7 @@ class OpenAIModelGateway:
         for attempt in range(1 + max(0, req.max_repair_attempts)):
             t0 = time.monotonic()
             try:
-                status, payload, headers = self._post("/chat/completions", body, req.deadline_ts)
+                status, payload, headers = self._post("/chat/completions", body, req.deadline_ts, req.timeout_seconds)
             except ProviderError as e:
                 _log(attempt + 1, t0, classify_provider_error(e), error=e)
                 raise  # transport/classified errors already typed by _post
@@ -169,14 +169,14 @@ class OpenAIModelGateway:
         raise last_err or StructuredOutputError("no structured output")
 
     # -- HTTP with bounded retry + classification --
-    def _post(self, path: str, body: dict[str, Any], deadline_ts: float | None = None
-              ) -> tuple[int, dict[str, Any], dict[str, str]]:
+    def _post(self, path: str, body: dict[str, Any], deadline_ts: float | None = None,
+              timeout_seconds: float | None = None) -> tuple[int, dict[str, Any], dict[str, str]]:
         url = self._base + path
         data = json.dumps(body).encode("utf-8")
         headers = {"Authorization": f"Bearer {self._key()}", "Content-Type": "application/json"}
         attempt = 0
         while True:
-            timeout = self._timeout
+            timeout = float(timeout_seconds) if timeout_seconds else self._timeout
             if deadline_ts is not None:
                 remaining = deadline_ts - time.time()
                 if remaining < _MIN_ATTEMPT_SECONDS:
