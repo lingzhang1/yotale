@@ -3,8 +3,10 @@ import AVFoundation
 
 // MARK: - Diagnostics breadcrumbs (the former STORY_CREATIVE_REFINEMENT switch was removed in P1-G0)
 
-/// The V2-b deterministic creative-refinement pre-pass ALWAYS runs (it is deterministic, makes no model call and
-/// degrades to a no-op when it has nothing to improve). Only diagnostic breadcrumbs live here now.
+/// The V2-b deterministic creative-refinement engine below is NOT called from the standard Create path (removed
+/// 2026-11-18: 283 s for 56 shots on device, and it retimed shots by changing source span at fixed output
+/// duration). It is kept, with its unit tests, as an optional quality experiment. Only diagnostic breadcrumbs
+/// live in this enum.
 enum StoryCreativeRefinement {
     /// Diagnostic breadcrumb from the last refine() call (validation notes / no-op reasons) — for the device
     /// report, never a user-facing surface.

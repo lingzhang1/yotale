@@ -1018,27 +1018,13 @@ final class StoryCreationCoordinator {
         tValidate.end("ok=true segments=\(plan.segments.count)")
         if cancelRequested { return finishCancelled() }
 
-        // ---- creative refinement (V2-b, architecture B): DETERMINISTIC, opt-in, OFF by default ----
-        // Runs AFTER the frozen Edit Planner v4 + validation, BEFORE rendering. Proposes conservative
-        // source in/out nudges toward motion-settle / audio-onset points, then re-validates; on ANY failure
-        // (or when disabled) the ORIGINAL executable plan is used unchanged. Narrative selection, order,
-        // output durations, speed, transitions and music alignment are all preserved. A straight cut remains
-        // a valid result. Always runs (deterministic, no model call; a no-op when it has nothing to improve).
-        let tRefine = RenderTiming.begin("creative_refine")
-        do {
-            let sourceDur: (String) -> Double? = { aid in
-                renderMedia.first { $0.momentId.uuidString.lowercased() == aid.lowercased() }?.durationSeconds
-            }
-            let outcome = CreativeRefinementV2b.refine(
-                plan: plan, enabled: true, resolveURL: resolver,
-                actionTimestamps: build.auActionTimestamps,     // AU event starts/ends per asset ([] when absent)
-                sourceDuration: sourceDur,
-                usefulRanges: build.auUsefulRanges,             // AU useful_segments per asset ([] when absent)
-                evidenceProvider: AVFoundationEvidence.sample)
-            StoryCreativeRefinement.lastOutcomeNotes = outcome.validationNotes
-            plan = outcome.plan                                 // refined OR original (safe either way)
-        }
-        tRefine.end("segments=\(plan.segments.count)")
+        // ---- creative refinement (V2-b) is NOT part of the standard path (perf milestone, 2026-11-18) ----
+        // The validated planner plan renders as-is. The V2-b pass (CreativeRefinementV2b) cost 283 s for 56
+        // shots on device (~2,400 synchronous AVFoundation probes on the main actor), it is not needed for
+        // correctness (validate() above already proved the plan executable), and because it moved source
+        // in/out while keeping output_duration it silently retimed shots (span != output -> scaleTimeRange).
+        // The engine and its unit tests are kept as an optional quality experiment; re-adding it requires a
+        // bounded, off-main-actor implementation and an owner decision.
 
         // ---- rendering: real renderer with progress + cancel flag (music seam threaded) ----
         state = .rendering(progress: 0)

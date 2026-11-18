@@ -116,6 +116,7 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         private(set) var called = false
         private(set) var seenSoundtrackURL: URL?
         private(set) var seenMusicAnalysis: MusicAnalysisV1?
+        private(set) var seenPlan: EditPlanV2?
         init(_ b: Behavior) { behavior = b }
         func render(_ inputs: MediaEngineInputs,
                     progress: ((Float) -> Void)?,
@@ -123,6 +124,7 @@ final class StoryCreationCoordinatorTests: XCTestCase {
             called = true
             seenSoundtrackURL = inputs.soundtrackURL
             seenMusicAnalysis = inputs.musicAnalysis
+            seenPlan = inputs.plan
             switch behavior {
             case .ok(let r): progress?(1.0); return r
             case .fail(let e): throw e
@@ -231,6 +233,39 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         // Persisted onto the Story and status unchanged (Create != Complete).
         XCTAssertTrue(s.generatedOutputs.contains { $0.id == output.id })
         XCTAssertEqual(s.status, .active)
+    }
+
+    // Perf milestone (2026-11-18): the standard path renders the VALIDATED PLANNER PLAN as-is. No post-plan
+    // cut-boundary refinement may move source in/out (it cost minutes on device and retimed shots, because a
+    // changed source span at a fixed output duration is stretched by the renderer).
+    func test_standardPath_rendersPlannerCutPointsUnchanged() async throws {
+        let s = newStory()
+        let m1 = momentWithFile(s, rel: "media/rc-norefine-1.mov", dur: 8); completeAU(m1, useful: [(0, 8)])
+        let m2 = momentWithFile(s, rel: "media/rc-norefine-2.mov", dur: 8); completeAU(m2, useful: [(0, 8)])
+        let segs = [
+            EditSegmentV2(order: 0, assetId: m1.id.uuidString, sourceStartSeconds: 1.25, sourceEndSeconds: 3.5,
+                          outputDurationSeconds: 2.25, speed: 1.0, nativeAudio: "keep", musicAlignment: nil),
+            EditSegmentV2(order: 1, assetId: m2.id.uuidString, sourceStartSeconds: 2.4, sourceEndSeconds: 4.0,
+                          outputDurationSeconds: 1.6, speed: 1.0, nativeAudio: "duck", musicAlignment: nil),
+        ]
+        let plan = EditPlanV2(schemaVersion: "edit_plan/2", targetDurationSeconds: 3.85, outputFormat: "vertical",
+                              musicAssetId: nil, feasible: true, segments: segs)
+        let renderer = FakeRenderer(.ok(okResult()))
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(plan)),
+                                             renderer: renderer, context: ctx, jobClient: FakeJobClient(.ok(plan)))
+        coord.create(for: s)
+        await awaitSettled(coord)
+        guard case .completed = coord.state else { return XCTFail("expected .completed, got \(coord.state)") }
+        let seen = try XCTUnwrap(renderer.seenPlan)
+        XCTAssertEqual(seen.segments.count, 2)
+        for (a, b) in zip(seen.segments, segs) {
+            XCTAssertEqual(a.assetId, b.assetId)
+            XCTAssertEqual(a.sourceStartSeconds, b.sourceStartSeconds)
+            XCTAssertEqual(a.sourceEndSeconds, b.sourceEndSeconds)
+            XCTAssertEqual(a.outputDurationSeconds, b.outputDurationSeconds)
+            XCTAssertEqual(a.speed, b.speed)
+            XCTAssertEqual(a.nativeAudio, b.nativeAudio)
+        }
     }
 
     // A STALE persisted planJobId (server-side job gone -> poll 404) must NOT dead-end: the coordinator clears
