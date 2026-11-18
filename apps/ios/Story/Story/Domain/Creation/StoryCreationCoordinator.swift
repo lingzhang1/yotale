@@ -399,6 +399,14 @@ final class StoryCreationCoordinator {
     func createWithMusic(for story: StoryModel, outputFormat: String = "vertical",
                          targetSeconds: Double? = nil, music: MusicSelection?) {
         guard !isCreating else { return }
+        // Never re-poll a job that already ended. A Story can still carry the handle of a failed / cancelled /
+        // expired job (failed before this fix, or cancelled server-side); reusing it would replay that terminal
+        // state without any new planning. A job that may still be live (queued/running, or a recoverable
+        // pending row) is kept so the idempotent submit + poll still recovers it.
+        if Self.hasStaleTerminalJob(story, pending: fetchPending(storyId: story.id)) {
+            Self.clearTerminalJobHandles(story)
+            try? context.save()
+        }
         // Original create (or a retry of one): clear any Explore version-context so stale context never leaks.
         pendingRevisionContext = nil
         pendingParentVersionId = nil
@@ -933,6 +941,12 @@ final class StoryCreationCoordinator {
                 // (opening/ending/include/exclude/order). Without them it is an honest PLANNER/technical failure
                 // (bounded retry), never labeled as "your instruction excluded too much".
                 markPendingFailed(story: story, category: final.failure?.rawValue)
+                // The job is terminal server-side. Drop its handles so the next Create / Try again mints a NEW
+                // operation and submits a NEW job, instead of re-polling this failed one and replaying its
+                // failure with no new planning (dev 2026-11-18, job ad458f5b). The abandoned pending row already
+                // keeps app-level recovery from resuming it, so this cannot reopen the resume loop.
+                Self.clearTerminalJobHandles(story)
+                try? context.save()
                 switch final.failure {
                 case .materialInfeasible: return finishFailed(.planInfeasible(final.failureDetail ?? "material"))
                 case .preservationViolation:
@@ -1496,6 +1510,23 @@ extension StoryCreationCoordinator {
         guard row.isRecoverable else { return false }
         if row.jobId != nil || PendingJobSubmitStore.exists(operationId: row.operationId) { return true }
         return isPreparing(row) && now.timeIntervalSince(row.updatedAt) < preparingResumeWindow
+    }
+
+    /// True when the Story still points at a planning job that has ENDED (failed / cancelled / expired, or its
+    /// pending row was abandoned), so reusing it could only replay that terminal state. A handle whose job may
+    /// still be live is NOT stale: no observed terminal status and no abandoned row.
+    static func hasStaleTerminalJob(_ story: StoryModel, pending: PendingOperationModel?) -> Bool {
+        guard story.planJobId != nil || story.planOperationId != nil else { return false }
+        if let s = story.planJobStatus, ["failed", "cancelled", "expired"].contains(s) { return true }
+        if let row = pending, row.operationId == story.planOperationId, !row.isRecoverable { return true }
+        return false
+    }
+
+    /// Drop a terminal job's handles so the next attempt mints a fresh operation id and submits a new job.
+    /// Keeps planJobStatus as the advisory "last outcome". The caller saves the context.
+    static func clearTerminalJobHandles(_ story: StoryModel) {
+        story.planJobId = nil
+        story.planOperationId = nil
     }
 
     /// Pre-submit attempt: recorded at create start, nothing sent yet.
