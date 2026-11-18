@@ -63,3 +63,13 @@ The 100 tokens/segment figure comes from one stored job (about 94). Treat it as 
 
 ## 5. Rollout (needs separate approval)
 1. Merge via PR after CI. 2. Dev only: `deploy-dev` (API and worker use the same package). Check no job is in flight. 3. One controlled 68-Moment validation with existing media, recording latency, `provider_attempts` and output tokens. 4. No beta or production until that run succeeds. **Rollback:** revert the merge commit and redeploy dev; no data migration, and the new `diagnostics` on failed items is additive.
+
+## 6. Follow-up: planner timeout (branch `fix/planner-timeout`)
+
+**Finding (dev job `fc92ea54`, 68 sheets, 7.9 MB, `edit_plan/5.6`, after PR #132 was deployed):** both providers timed out at exactly 60 s (`gpt-5.1` 60.26 s, then `gemini-3.8-flash` 60.28 s). No call completed and no truncation occurred. The job failed in 123 s instead of the earlier 354 to 419 s. The 60 s is our own adapter default (`timeout_seconds=60.0`, added in `eac8f6bf`, 2026-10-23) and the router never overrode it for any capability.
+
+**Change.** `StructuredRequest.timeout_seconds` (per request; adapters still clamp it to the caller deadline). On the async worker path only (when a deadline is set), each planner generation gets `min(240, 90 + max_tokens / 75)` seconds: 8,192 tokens about 199 s, 8,960 about 209 s, 16,384 or more 240 s. The synchronous API path and every other capability keep 60 s. The value is recorded as `planner_timeout_s`. Worst case, primary plus fallback at 8,960 tokens is about 420 s, inside the 795 s provider deadline; the deadline guard stops an escalation that cannot fit.
+
+**Diagnostics.** The `finish_reason: true` seen while reading job items was a reading error in my inspection script: the job store writes a Python `None` as DynamoDB `NULL: true`, and the API reads it back as `null`. The stored data was correct. Attempt records now omit absent values instead of storing nulls.
+
+**Still unknown:** how long a 68-sheet generation actually takes. The next run's `latency_ms` gives it, and the constants should be re-fit from that.

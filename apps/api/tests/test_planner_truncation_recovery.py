@@ -277,3 +277,38 @@ def test_worker_failure_path_persists_diagnostics_and_sets_the_deadline(monkeypa
     assert s.failed[0] == "invalid_after_repair" and "truncated" in s.failed[1]
     assert s.diag["truncation_recovery"] == "failed" and len(s.diag["provider_attempts"]) == 2
     assert holder["eng"].deadline_ts and holder["eng"].deadline_ts > time.time() + 300
+
+
+# planner timeout ---------------------------------------------------------------------------------------------------
+def test_planner_timeout_scales_with_budget_and_is_capped():
+    assert ep.planner_timeout_seconds(8192) == pytest.approx(90 + 8192 / 75)
+    assert 200 < ep.planner_timeout_seconds(8960) < 215                 # the fc92ea54 budget: about 209 s, not 60
+    assert ep.planner_timeout_seconds(16384) == ep.PLANNER_TIMEOUT_MAX_S == 240.0
+    assert ep.planner_timeout_seconds(32768) == 240.0
+
+
+class _TimeoutSpy(Scripted):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.timeouts = []
+
+    def generate_structured(self, req):
+        self.timeouts.append(req.timeout_seconds)
+        return super().generate_structured(req)
+
+
+def test_worker_path_sends_scaled_timeout_per_generation_and_records_it():
+    inp = _inputs(68, 135)
+    gw = _TimeoutSpy(_plan_for(inp, 45, 135), need=12000)
+    eng = RealEditPlannerEngine(gw)
+    eng.deadline_ts = time.time() + 795
+    eng.generate(inp)
+    assert gw.timeouts == [ep.planner_timeout_seconds(c) for c in gw.caps]   # escalated call gets more time
+    assert gw.timeouts[0] > 60 and eng.last_diagnostics["planner_timeout_s"] == gw.timeouts[-1]
+
+
+def test_sync_path_without_deadline_keeps_adapter_default_timeout():
+    inp = _inputs(10, 60)
+    gw = _TimeoutSpy(_plan_for(inp, 6, 60))
+    RealEditPlannerEngine(gw).generate(inp)
+    assert gw.timeouts == [None]

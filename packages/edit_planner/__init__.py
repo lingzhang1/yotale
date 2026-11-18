@@ -2299,6 +2299,20 @@ DEFAULT_OUTPUT_FLOOR = 8192
 DEFAULT_OUTPUT_CEILING = 32768    # provider limits: gpt-5.1 128,000; gemini-3.8-flash 65,536 (documented maxima)
 
 
+# HTTP timeout for a planner generation on the async worker path. Measured: a 68-sheet (7.9 MB) request did not
+# answer within the adapters' generic 60 s on either provider (dev job fc92ea54, 2026-11-18). The allowance grows
+# with the output budget (a fixed setup cost for the image-heavy input, plus generation at a conservative rate) and
+# is capped; the adapters still clamp it to the worker deadline. Re-fit from provider_attempts latency_ms.
+PLANNER_TIMEOUT_BASE_S = 90.0
+PLANNER_TIMEOUT_TOKENS_PER_S = 75.0
+PLANNER_TIMEOUT_MAX_S = 240.0
+
+
+def planner_timeout_seconds(max_tokens: int) -> float:
+    """HTTP timeout for one planner generation with this output budget, in seconds (bounded)."""
+    return min(PLANNER_TIMEOUT_MAX_S, PLANNER_TIMEOUT_BASE_S + max(0, int(max_tokens)) / PLANNER_TIMEOUT_TOKENS_PER_S)
+
+
 def estimate_output_budget(target_seconds: float | None, editorial_type: str | None, *,
                            floor: int = DEFAULT_OUTPUT_FLOOR, cap: int = 16384) -> int:
     """Initial max output tokens for the planner call. Grows with the requested duration (expected shots =
@@ -2396,7 +2410,11 @@ class RealEditPlannerEngine:
                     task=TASK, schema=SCHEMA, prompt_version=PROMPT_VERSION, system=self._system,
                     user_content=user_content, max_repair_attempts=2,
                     max_tokens=cap, temperature=0.0,
-                    images=call_images, deadline_ts=self.deadline_ts)
+                    images=call_images, deadline_ts=self.deadline_ts,
+                    # Only the async worker sets a deadline; there the long, budget-scaled timeout applies. The
+                    # synchronous API path keeps the adapter default (its own request timeout is far shorter).
+                    timeout_seconds=(planner_timeout_seconds(cap) if self.deadline_ts is not None else None))
+                diag["planner_timeout_s"] = req.timeout_seconds
                 try:
                     result = self._gw.generate_structured(req)  # raises StructuredOutputError/ProviderError
                 except Exception as exc:  # noqa: BLE001 - record, then re-raise or escalate
