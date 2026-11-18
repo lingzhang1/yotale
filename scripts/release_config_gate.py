@@ -56,6 +56,7 @@ SERVICE_REQUIRED: dict[str, str] = {
     "STORY_REQUIRE_AUTH": "C", "STORY_QUOTA_MODE": "C", "STORY_THROTTLE_MODE": "C",
     "STORY_QUOTA_USER_MONTHLY_USD": "C", "STORY_QUOTA_USER_DAILY_GENS": "C",
     "STORY_QUOTA_MAX_ACTIVE_JOBS": "C", "STORY_QUOTA_GLOBAL_MONTHLY_USD": "C",
+    "STORY_BILLING_MODE": "C",
     "STORY_OPENAI_MODEL": "D", "STORY_GEMINI_MODEL": "D",
     "STORY_MUSIC_PROVIDER": "I", "STORY_EPIDEMIC_MODE": "I", "STORY_REFERENCE_MEDIA_MODE": "I",
     "STORY_EVIDENCE_PERSIST_ENABLED": "K",
@@ -63,16 +64,20 @@ SERVICE_REQUIRED: dict[str, str] = {
 WORKER_REQUIRED: dict[str, str] = {
     "STORY_ENVIRONMENT": "B", "STORY_JOBS_TABLE": "B", "STORY_JOBS_QUEUE_URL": "B",
     "STORY_STAGING_BUCKET": "B", "STORY_USER_USAGE_TABLE": "B",
-    "STORY_WORKER_DEADLINE_S": "C", "STORY_QUOTA_MODE": "C",
+    "STORY_WORKER_DEADLINE_S": "C", "STORY_QUOTA_MODE": "C", "STORY_BILLING_MODE": "C",
     "STORY_OPENAI_MODEL": "D", "STORY_GEMINI_MODEL": "D",
 }
 WORKER_NON_STORY_ALLOWED = {"PYTHONPATH"}
+BILLING_MODES = {"off", "observe", "enforce"}
 # Present ONLY as an approved emergency rollback (release.json approved_overrides); never in normal deploys.
 OVERRIDE_ONLY = {"STORY_EDIT_PLAN_VERSION"}
 
 # Settings that used to exist and were deliberately removed in P1-G0 (accepted features are code now, or the
 # setting was dead/unsafe). Re-introducing any of them is a hard rejection with a specific message.
 REMOVED_SETTINGS = {
+    # Billing V1: allowances are reviewed code (packages/billing/config.py), not an env override. A second,
+    # unaudited configuration source for money-relevant limits is rejected.
+    "STORY_BILLING_PLANS_JSON",
     "STORY_GUIDE_V2", "STORY_SCENE_IMAGES", "STORY_JOBS_API_ENABLED", "STORY_LLM_FALLBACK_MODEL",
     "STORY_MODEL_PROVIDER", "STORY_REUSABLE_EVIDENCE", "STORY_EDITORIAL_TYPE_V2",
     "STORY_MULTIMODAL_PLANNING", "STORY_EDITPLAN_OBJECTIVE_DIRECTIVES", "STORY_EDITPLAN_BEST_VALID_RETENTION",
@@ -239,7 +244,7 @@ def check_snapshot(snap: Snapshot, manifest: dict, repo: Path = REPO) -> tuple[l
             v.append(Violation("capability_missing", f"{n}={have} but the release requires {want}"))
 
     # --- API / worker agreement --------------------------------------------------------------------------
-    for n in ("STORY_ENVIRONMENT", "STORY_OPENAI_MODEL", "STORY_GEMINI_MODEL", "STORY_QUOTA_MODE"):
+    for n in ("STORY_ENVIRONMENT", "STORY_OPENAI_MODEL", "STORY_GEMINI_MODEL", "STORY_QUOTA_MODE", "STORY_BILLING_MODE"):
         if n in svc and n in wrk and svc[n] is not None and wrk[n] is not None and svc[n] != wrk[n]:
             v.append(Violation("api_worker_mismatch", f"{n}: service={svc[n]} worker={wrk[n]}"))
 
@@ -314,6 +319,23 @@ def check_snapshot(snap: Snapshot, manifest: dict, repo: Path = REPO) -> tuple[l
             code = {"require_auth": "auth_policy", "quota_mode": "quota_policy",
                     "throttle_mode": "throttle_policy", "user_monthly_usd": "quota_policy"}[key]
             v.append(Violation(code, f"{env}: {setting}={have} but release requires {want}"))
+    # --- billing posture (Billing V1) --------------------------------------------------------------------
+    # off | observe | enforce. The manifest is the single source of truth; the running service and worker must carry
+    # exactly it. An unknown value is a violation (never silently treated as off), and `enforce` is rejected unless
+    # the owner approved it for THIS environment in approved_overrides.
+    bm_want = pol.get("billing_mode")
+    if bm_want is not None and bm_want not in BILLING_MODES:
+        v.append(Violation("billing_policy", f"{env}: release billing_mode={bm_want!r} is not one of {sorted(BILLING_MODES)}"))
+    for scope, mapping in (("service", svc), ("worker", wrk)):
+        have = mapping.get("STORY_BILLING_MODE")
+        if have is not None and have not in BILLING_MODES:
+            v.append(Violation("billing_policy", f"{env}: {scope} STORY_BILLING_MODE={have!r} is not one of {sorted(BILLING_MODES)}"))
+        elif have is not None and bm_want is not None and have != bm_want:
+            v.append(Violation("billing_policy", f"{env}: {scope} STORY_BILLING_MODE={have} but release requires {bm_want}"))
+    if bm_want == "enforce" and ("STORY_BILLING_MODE", env, "enforce") not in approved:
+        v.append(Violation("billing_enforce_unapproved",
+                           f"{env}: billing_mode=enforce needs an approved_overrides entry (setting STORY_BILLING_MODE, "
+                           f"env {env}, value enforce) approved by the owner"))
     wq = wrk.get("STORY_QUOTA_MODE")
     if wq is not None and pol.get("quota_mode") and wq != pol["quota_mode"]:
         v.append(Violation("quota_policy", f"{env}: worker STORY_QUOTA_MODE={wq} but release requires {pol['quota_mode']}"))

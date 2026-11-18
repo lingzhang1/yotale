@@ -112,6 +112,13 @@ class FakeStore:
     def enqueue(self, job_id):
         self.enqueued.append(job_id)
 
+    def deny(self, job_id, category, detail=""):
+        self.jobs[job_id].update(status="failed", failure_category=category)
+        return True
+
+    def delete_staging(self, prefix):
+        pass
+
 
 def _app(*, quota=None, qmode="enforce"):
     os.environ.update({"STORY_ENVIRONMENT": "beta", "STORY_COGNITO_USER_POOL_ID": POOL,

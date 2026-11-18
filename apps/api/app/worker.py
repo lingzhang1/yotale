@@ -206,8 +206,70 @@ def _quota_release_job(job: dict, *, incurred_usd: float = 0.0) -> None:
             q.release_allowance(uid, scoped_op, gens=1, incurred_usd=incurred_usd)
         finally:
             q.release_slot(uid, job_id)
+        # Drop the now-terminal markers (user + global). A job the store later RE-OPENS for the same operation id (bounded
+        # recovery of a transient coverage failure, or a retry after a denied submit) must reserve its allowance and slot
+        # afresh; a lingering `released` marker would make it look already reserved. Spend totals are never modified.
+        try:
+            q.prune_terminal_markers(uid)
+            from user_quota import GLOBAL_PK as _GPK
+            q.prune_terminal_markers(_GPK)
+        except Exception:  # noqa: BLE001 — pruning is housekeeping; the release above is what matters
+            pass
     except Exception:  # noqa: BLE001
         pass
+
+
+# Billing V1 — worker-side video-credit settlement. Independent of the operational quota above: it only acts when
+# STORY_BILLING_MODE is observe|enforce, only for jobs that hold a billing reservation (coverage jobs never do, so
+# the calls are harmless no-ops for them), and never raises into the worker.
+from billing import (BillingLedger as _BillingLedger, billing_mode as _billing_mode,
+                     validate_billing_config as _validate_billing_config)
+
+
+def _billing_ledger():
+    mode = _billing_mode()
+    if mode == "off" or not _quota_usage_table():
+        return None
+    return _BillingLedger(table=_quota_usage_table(), shadow=(mode == "observe"))
+
+
+def _billing_finish_job(job: dict, *, completed: bool) -> None:
+    """A job reached a terminal state. COMPLETED -> settle the video credit (the result is durably recorded, so the
+    credit is owed even on an SQS redelivery); anything else -> release it. Idempotent (state-guarded)."""
+    uid, scoped_op = job.get("owner"), job.get("operation_id")
+    if not uid or not scoped_op or uid == "dev":
+        return
+    try:
+        led = _billing_ledger()
+        if led is not None:
+            led.reconcile_video_job(uid, scoped_op, "completed" if completed else "failed")
+    except Exception as e:  # noqa: BLE001 — billing drift is reconcilable by the sweep; never break the worker
+        print(json.dumps({"msg": "worker_billing_error", "error": f"{type(e).__name__}: {e}"[:200]}))
+
+
+def _billing_authorize_job(job: dict) -> tuple[bool, str]:
+    """Pre-run authorization (enforce only). The API reserves the video credit when it creates the job, but a crash between the job
+    row and the reservation (or a job queued before enforcement was switched on) can leave a job with NO reservation. Before any model
+    work, make sure one exists: `reserve_video` is idempotent (an existing reservation is a no-op), reserves now when none exists, and
+    raises BillingDenied when the entitlement no longer permits the video. Returns (ok, category).
+    A billing-STORE error fails OPEN here (the job proceeds): the API already failed closed at submit, so only a double fault (the crash
+    window AND a store outage) can reach an unreserved run, and failing a paying customer's job on a transient outage is worse."""
+    if _billing_mode() != "enforce":
+        return True, ""
+    uid, scoped_op = job.get("owner"), job.get("operation_id")
+    if not uid or not scoped_op or uid == "dev":
+        return True, ""
+    try:
+        led = _billing_ledger()
+        if led is None:
+            return True, ""
+        led.reserve_video(uid, scoped_op)
+        return True, ""
+    except Exception as e:  # noqa: BLE001
+        if type(e).__name__ == "BillingDenied":
+            return False, getattr(e, "code", "billing_denied")
+        print(json.dumps({"msg": "worker_billing_authorize_error", "error": f"{type(e).__name__}: {e}"[:200]}))
+        return True, ""
 
 
 def _planner_models() -> tuple[str, str]:
@@ -404,6 +466,7 @@ def _run_one(store: _jobs.JobStore, job_id: str) -> str:
         store.fail(job_id, "unknown_operation",
                    f"operation_type={op!r} not in {sorted(_jobs.KNOWN_OPERATIONS)}")
         _quota_release_job(job, incurred_usd=0.0)
+        _billing_finish_job(job, completed=False)
         return "failed:unknown_operation"
     # Phase 4: a CANCELLED terminal (any of the several cancel return points in the run paths) refunds the
     # user allowance + releases the active-job slot, each EXACTLY ONCE. Idempotent, so this is safe even if a
@@ -412,6 +475,7 @@ def _run_one(store: _jobs.JobStore, job_id: str) -> str:
     # engine did not publish a billed result; any mid-run spend is a reconcilable under-count, not a charge).
     if isinstance(result, str) and result.startswith("cancelled"):
         _quota_release_job(job, incurred_usd=0.0)
+        _billing_finish_job(job, completed=False)
     return result
 
 
@@ -521,6 +585,13 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
 
     prefix = job["request_ref"]["staging_prefix"]
     order = json.loads(job["request_ref"]["sheet_order"])
+    _authorized, _why = _billing_authorize_job(job)
+    if not _authorized:
+        # No model work has started: terminalise, free any operational-quota hold, and drop the staged inputs.
+        store.fail(job_id, "billing_denied", f"entitlement does not permit this video ({_why})", token)
+        store.delete_staging(prefix)
+        _quota_release_job(job, incurred_usd=0.0)
+        return "failed:billing_denied"
     try:
         envelope_raw, sheets = store.load_request(prefix, order)
         env = json.loads(envelope_raw)
@@ -675,6 +746,7 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
         if ok:
             # Phase 4: settle the ACTUAL incurred Bedrock spend + release the active-job slot (exactly once).
             _quota_settle_job(job, actual_usd=_job_cost_usd(diag_out))
+            _billing_finish_job(job, completed=True)     # Billing V1: the video credit is earned only now
         return "completed" if ok else "publish_lost_lease"
     except Exception as exc:  # noqa: BLE001 — classify everything into a terminal failure
         cat, detail = _classify(exc, locals().get("inputs"))
@@ -737,6 +809,7 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
         except Exception:  # noqa: BLE001
             _incurred = 0.0
         _quota_release_job(job, incurred_usd=_incurred)
+        _billing_finish_job(job, completed=False)        # Billing V1: a failed generation returns the credit
         return f"failed:{cat}"
 
 
@@ -777,6 +850,9 @@ def _plan_to_dict(plan) -> dict:
 def handler(event, context):
     """SQS batch handler. Returns partial-batch failures so a single bad message doesn't re-drive the batch.
     Also handles the EventBridge reconcile sentinel {reconcile:true} (concern 6: lost-enqueue recovery)."""
+    # Billing V1: an invalid STORY_BILLING_MODE must fail LOUDLY (the SQS record retries / dead-letters) rather than let
+    # jobs run with the billing posture silently ignored. Unset means off.
+    _validate_billing_config()
     store = _jobs.JobStore()
     if isinstance(event, dict) and event.get("reconcile") is True:
         reenq = store.reconcile_lost_enqueue()
@@ -791,6 +867,10 @@ def handler(event, context):
             for o in orphans:
                 _quota_release_job({"owner": o["owner"], "operation_id": o["operation_id"],
                                     "job_id": o["job_id"]}, incurred_usd=0.0)
+                # Billing V1: drive the credit to what the job's DURABLE terminal status demands. A job that
+                # completed but whose worker died before settling is SETTLED here, never refunded.
+                _billing_finish_job({"owner": o["owner"], "operation_id": o["operation_id"]},
+                                    completed=(o.get("terminal_status") == "completed"))
         except Exception as e:  # noqa: BLE001 — sweep is best-effort; never break the reconcile tick
             print(json.dumps({"msg": "worker_quota_sweep_error", "error": f"{type(e).__name__}: {e}"[:300]}))
         print(json.dumps({"msg": "worker_reconcile", "reenqueued": reenq,
