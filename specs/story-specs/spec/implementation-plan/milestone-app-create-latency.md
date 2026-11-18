@@ -85,3 +85,36 @@ Timeline: every line carries `op=<8>` (attempt operation id prefix), `t=<ms sinc
 | Xcode device build, XCTest | owner |
 | Device acceptance (section 10 of the brief) | owner |
 | Quality acceptance | not started |
+
+## 9. First device measurements after the change (2026-11-18)
+
+Owner's device build of `perf/render-timing-logs` at `18581ba`, dev backend (`edit_plan/5.6`), two Original Creates with music. **These are different Stories from the 66-Moment baseline, so whole-run totals are not comparable; per-Moment and per-stage figures are.**
+
+| | Baseline (66 Moments, 138 s out) | Run 1 (37 Moments, 99 s out) | Run 2 (21 Moments, 39 s out) |
+|---|---|---|---|
+| create_total | 537.3 s | 82.6 s | 46.0 s |
+| evidence_prepare | 44.3 s (0.67 s/Moment) | 12.1 s (0.33 s/Moment) | 6.4 s (0.30 s/Moment) |
+| of which fetch (wall) | not measured | 8.1 s, 33 hits / 4 misses | 5.3 s, 20 hits / 1 miss |
+| of which extract + tile | not measured | 4.0 s (4 extracted) | 1.1 s (1 extracted) |
+| submit_job | 3.8 s | 2.6 s | 2.1 s |
+| plan_poll (client) | 171.0 s | 47.5 s, 11 status reads | 31.6 s, 8 status reads |
+| worker completion (server log, from job creation) | — | 43.7 s | 30.0 s |
+| completion detection lag (approx., 1 s resolution) | — | ~4 s | ~2 s |
+| creative_refine | 282.8 s | not run | not run |
+| soundtrack_preload | 9.1 s | 0.002 s | 0.002 s |
+| export | 24.6 s | 19.6 s | 5.3 s |
+| main thread longest stall | not measured (refine ran synchronously for 283 s) | 364 ms (1 stall > 250 ms) | 219 ms (0) |
+| peak memory | not measured | 260 MB | 253 MB |
+| output backup verified after output | not measured | 14.5 s | 6.1 s |
+| thermal | 0 → 2 | 0 | 0 |
+
+Findings:
+- Evidence fetch: run 2's 21 per-Moment fetches add up to 20.1 s of work in 5.3 s wall time (3.8× overlap, bound 4 respected). The first wave is slower (1.6–1.9 s, cold connections), later fetches 0.6–0.9 s. The manifest GET is the larger part of each fetch (~0.4–0.7 s) versus the package download (~0.2–0.3 s for ~2 MB).
+- Network: each cache hit downloads the full 24-frame package (~1.5–2.8 MB). Run 1 downloaded roughly 65 MB to send 4.4 MB of sheets (estimate from the per-fetch byte counts).
+- Soundtrack: the 9 s outlier did not recur once refine stopped blocking the main actor; the audio pipeline stays unchanged.
+- Polling: completion noticed within the 5 s cap on both runs.
+- After the change, server planning is the largest stage (58% and 69% of the run), then export (24% and 12%).
+- Server job diagnostics for both runs report `critique_attempted=True` and `primary_error=True` with `model_calls=1`, no fallback and `critique_requested=False`. That combination is inconsistent; probably a diagnostics persistence issue, not a critique call. Unverified; recorded for the backend milestone.
+- Another 290 s-target job (`ad458f5b`) failed with the same truncation error earlier the same day, so 60–70-Moment Stories still fail in planning (section 7).
+
+Still open: a 60–70-Moment acceptance run (blocked by the backend truncation failure), Revise, Explore, cache-miss-heavy and cloud-only sources, background/relaunch, cancellation, the XCTest run, and review of the rendered videos for cut quality now that refinement is off.
