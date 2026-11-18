@@ -31,6 +31,15 @@ class _Capture:
         self.lines.append((msg, extra or {}))
 
 
+@pytest.fixture(autouse=True)
+def _clean_call_context():
+    """Other tests (API handlers merge story_id without a reset) must not leak attribution into these."""
+    import model_gateway
+    tok = model_gateway._CALL_CTX.set({})
+    yield
+    model_gateway._CALL_CTX.reset(tok)
+
+
 @pytest.fixture()
 def cap(monkeypatch):
     c = _Capture()
@@ -183,3 +192,17 @@ def test_request_middleware_sets_context_for_sync_handlers():
     for path in ("/probe", "/probe-async"):
         got = c.get(path).json()
         assert got["story_user_id"] == "u-9" and got["operation"] == f"GET {path}" and got["correlation_id"]
+
+
+def test_nested_call_context_starts_a_fresh_count_but_merge_keeps_it(cap):
+    from model_gateway import call_context, set_call_context
+    gw = OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}))
+    with call_context(story_user_id="u-1"):
+        gw.generate_structured(_req())
+        set_call_context(story_id="s-1")                 # a handler adding the story id must not restart the count
+        gw.generate_structured(_req())
+        with call_context(story_user_id="u-2"):          # a new job/request: new count
+            gw.generate_structured(_req())
+    assert [f["call_index"] for _, f in cap.lines] == [1, 2, 1]
+    assert cap.lines[1][1]["story_id"] == "s-1" and "story_id" not in cap.lines[2][1]

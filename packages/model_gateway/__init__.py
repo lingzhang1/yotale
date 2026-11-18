@@ -178,14 +178,16 @@ _CTX_FIELDS = ("story_user_id", "story_id", "operation", "job_id", "correlation_
 _CALL_CTX: "contextvars.ContextVar[dict]" = contextvars.ContextVar("model_call_ctx", default={})
 
 
-def set_call_context(**fields: Any) -> "contextvars.Token":
+def set_call_context(*, fresh: bool = False, **fields: Any) -> "contextvars.Token":
     """Merge attribution fields into the current call context; returns a token for reset_call_context().
-    Unknown keys and None values are ignored. A fresh per-context call counter starts on first use."""
-    cur = dict(_CALL_CTX.get())
+    Unknown keys and None values are ignored. The billed-attempt counter is created on first use and is kept when
+    merging, so a handler adding `story_id` does not restart the request's count; `fresh=True` starts a new count."""
+    cur = {} if fresh else dict(_CALL_CTX.get())      # a new unit of work inherits nothing from an outer one
     for k, v in fields.items():
         if k in _CTX_FIELDS and v is not None:
             cur[k] = str(v)[:80]
-    cur.setdefault("_seq", [0])
+    if fresh or "_seq" not in cur:
+        cur["_seq"] = [0]
     return _CALL_CTX.set(cur)
 
 
@@ -198,7 +200,8 @@ def reset_call_context(token: "contextvars.Token") -> None:
 
 @contextmanager
 def call_context(**fields: Any):
-    tok = set_call_context(**fields)
+    """A new logical unit of work (one request, one job): attribution fields AND a fresh call counter."""
+    tok = set_call_context(fresh=True, **fields)
     try:
         yield
     finally:
