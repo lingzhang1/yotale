@@ -139,7 +139,7 @@ The failed-then-retried attempt is one of the last two rows; its phone lines wer
 
 ### 9.2 Server planning after the planner-timeout fix (2026-11-18, 05:19–05:32 UTC)
 
-The dev worker was redeployed at 05:14 UTC with `4e6ae15` (`fix/planner-timeout`, budget-scaled planner HTTP timeout, not yet on master). Server time is job creation -> `worker_outcome`; model time is the `provider_attempts[].latency_ms` of the single call. No phone console lines were captured for these runs.
+The dev worker was redeployed at 05:14 UTC with `4e6ae15` (`fix/planner-timeout`, budget-scaled planner HTTP timeout, merged to master in PR #133 as `1b51518`). Server time is job creation -> `worker_outcome`; model time is the `provider_attempts[].latency_ms` of the single call. No phone console lines were captured for these runs.
 
 | Run (job) | Story | Moments / sheets | Target | Segments | Tokens in / out | Model | Server |
 |---|---|---|---|---|---|---|---|
