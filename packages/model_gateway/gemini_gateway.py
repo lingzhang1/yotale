@@ -196,7 +196,7 @@ class GeminiModelGateway:
             t0 = time.monotonic()
             try:
                 status, payload, headers = self._post(
-                    f"/models/{self.model_id}:generateContent", body, req.deadline_ts)
+                    f"/models/{self.model_id}:generateContent", body, req.deadline_ts, req.timeout_seconds)
             except ProviderError as e:
                 _log(attempt + 1, t0, classify_provider_error(e), error=e)
                 raise
@@ -240,15 +240,15 @@ class GeminiModelGateway:
             body["contents"].append({"role": "user", "parts": [{"text": f"You must call {_TOOL_NAME} with valid JSON."}]})
         raise last_err or StructuredOutputError("no structured output")
 
-    def _post(self, path: str, body: dict[str, Any], deadline_ts: float | None = None
-              ) -> tuple[int, dict[str, Any], dict[str, str]]:
+    def _post(self, path: str, body: dict[str, Any], deadline_ts: float | None = None,
+              timeout_seconds: float | None = None) -> tuple[int, dict[str, Any], dict[str, str]]:
         # API key as a query param (x-goog-api-key header also works; query avoids a custom header in urllib)
         url = f"{self._base}{path}?key={self._key()}"
         data = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         attempt = 0
         while True:
-            timeout = self._timeout
+            timeout = float(timeout_seconds) if timeout_seconds else self._timeout
             if deadline_ts is not None:
                 remaining = deadline_ts - time.time()
                 if remaining < _MIN_ATTEMPT_SECONDS:

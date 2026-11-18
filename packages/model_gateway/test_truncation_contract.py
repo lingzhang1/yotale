@@ -200,3 +200,27 @@ def test_sanitize_error_drops_urls_keys_and_long_text():
     s = sanitize_error("boom https://x.test/v1/m:gen?key=AIzaSECRET&a=1 token=abc123 " + "z" * 500)
     assert "AIzaSECRET" not in s and "abc123" not in s and "https://" not in s and len(s) <= 160
     assert "\n" not in sanitize_error("a\nb")
+
+
+# per-request timeout -------------------------------------------------------------------------------------------
+def test_request_timeout_overrides_the_adapter_default_and_is_still_clamped():
+    t = Transport(OA_OK, OA_OK)
+    gw = _oa(t)
+    gw.generate_structured(_req(timeout_seconds=210))
+    assert t.timeouts[-1] == 210.0                        # not the 60 s default
+    gw.generate_structured(_req(timeout_seconds=210, deadline_ts=time.time() + 100))
+    assert t.timeouts[-1] <= 100.5                        # never past the caller deadline
+
+
+def test_gemini_honours_request_timeout():
+    t = Transport(GM_OK)
+    _gm(t).generate_structured(_req(timeout_seconds=150))
+    assert t.timeouts == [150.0]
+
+
+def test_attempt_records_omit_absent_values():
+    gw = _oa(Transport(TimeoutError("slow")))
+    with pytest.raises(ProviderTimeoutError):
+        gw.generate_structured(_req())
+    (a,) = gw.last_attempts
+    assert "finish_reason" not in a and "input_tokens" not in a and None not in a.values()
