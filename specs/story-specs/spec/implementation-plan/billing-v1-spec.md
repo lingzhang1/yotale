@@ -136,7 +136,7 @@ A submit creates the job row before taking the quota hold. A denial returned 429
 * The reconciler selects only `queued` rows and `claim_lease` only claims `queued` or expired-`running`, so a denied row can never run (tested on DynamoDB Local, including a stray SQS message).
 * **Retry behaviour preserved:** the same client operation id after capacity frees is re-opened (reset to `queued`, `recovery_count` bumped, capped at 50) and reserves afresh; a denied submit returns its allowance immediately and drops the terminal marker so exactly one reservation results (tested). A different account with the same operation id is a different job.
 * The allowed-duplicate path is untouched (still one enqueue). Quota enforcement itself is unchanged.
-Residual: a process crash between `create_or_get` and the reservation still leaves a queued job with no hold; with billing enforced the worker would still settle a credit that was never reserved (a no-op), so the exposure is one unreserved job per crash. A pre-run authorization check in the worker is recommended for B5.
+**Pre-run authorization (added after owner review):** before any model work the worker (enforce only) calls the idempotent `reserve_video` for the job's operation. An existing reservation is a no-op; a job with none (crash between the job row and the reservation, or queued before enforcement was switched on) is reserved now; if the entitlement no longer permits it the job is failed `billing_denied` with no model work, its quota hold released and its staging deleted. A billing-STORE error at the worker fails open (the API already failed closed at submit; failing a paying customer's job on a transient outage is worse), so only a double fault can reach an unreserved run. The same crash window for the operational QUOTA hold is unchanged (a quota hold is not re-taken at the worker).
 
 ## 9. Refund safety review
 
@@ -199,7 +199,7 @@ Billing data is account data and must follow the account lifecycle; nothing is "
 
 | Suite | Result |
 |---|---|
-| Backend (`apps/api/tests`, `packages`, `contracts/tests`, `evals/harness`) with DynamoDB Local (`REQUIRE_DDB_LOCAL=1`) | **1569 passed** |
+| Backend (`apps/api/tests`, `packages`, `contracts/tests`, `evals/harness`) with DynamoDB Local (`REQUIRE_DDB_LOCAL=1`) | **1573 passed** |
 | Same, DynamoDB Local unavailable | **1471 passed, 98 skipped** (every `local` variant skipped with the reason printed) |
 | CDK jest (`infrastructure/cdk`, all suites) | 77 passed, including 5 new `STORY_BILLING_MODE` posture tests |
 | Release gate `pre`, development and beta (synthesized templates, offline) | ACCEPTED |
@@ -216,8 +216,8 @@ Billing data is account data and must follow the account lifecycle; nothing is "
 | Merge PR 1 then PR 2 (protected workflow); re-base PR 2 onto `master` after PR 1 so CI runs | owner |
 | Dev deploy of B0, then of B1 in `off`/`observe` (separate approvals; checklist in the B0 verification doc) | owner |
 | Choose the grandfathering cutoff; run `aws sso login --profile yotale-beta`; run the beta dry run and review counts | owner |
-| Decide the pre-run authorization check for the post-`create_or_get` crash window (section 8) | owner |
-| Confirm `dynamodb:Query` stays ungranted (section 11) | owner |
+| ~~Decide the pre-run authorization check~~ decided and implemented (section 8) | done |
+| ~~`dynamodb:Query`~~ decided: stays ungranted (section 11) | done |
 | Apple Developer configuration (products, API key, notification URLs, agreements) and secrets in Secrets Manager from your terminal, never in chat | owner |
 | Epidemic Sound commercial terms; legal retention period for payment records | owner / counsel |
 | Real-device Xcode verification of the 402/503 behaviour and B3 | owner |

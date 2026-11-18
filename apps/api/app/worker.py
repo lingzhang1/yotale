@@ -247,6 +247,31 @@ def _billing_finish_job(job: dict, *, completed: bool) -> None:
         print(json.dumps({"msg": "worker_billing_error", "error": f"{type(e).__name__}: {e}"[:200]}))
 
 
+def _billing_authorize_job(job: dict) -> tuple[bool, str]:
+    """Pre-run authorization (enforce only). The API reserves the video credit when it creates the job, but a crash between the job
+    row and the reservation (or a job queued before enforcement was switched on) can leave a job with NO reservation. Before any model
+    work, make sure one exists: `reserve_video` is idempotent (an existing reservation is a no-op), reserves now when none exists, and
+    raises BillingDenied when the entitlement no longer permits the video. Returns (ok, category).
+    A billing-STORE error fails OPEN here (the job proceeds): the API already failed closed at submit, so only a double fault (the crash
+    window AND a store outage) can reach an unreserved run, and failing a paying customer's job on a transient outage is worse."""
+    if _billing_mode() != "enforce":
+        return True, ""
+    uid, scoped_op = job.get("owner"), job.get("operation_id")
+    if not uid or not scoped_op or uid == "dev":
+        return True, ""
+    try:
+        led = _billing_ledger()
+        if led is None:
+            return True, ""
+        led.reserve_video(uid, scoped_op)
+        return True, ""
+    except Exception as e:  # noqa: BLE001
+        if type(e).__name__ == "BillingDenied":
+            return False, getattr(e, "code", "billing_denied")
+        print(json.dumps({"msg": "worker_billing_authorize_error", "error": f"{type(e).__name__}: {e}"[:200]}))
+        return True, ""
+
+
 def _planner_models() -> tuple[str, str]:
     """(primary, fallback) edit-plan model ids from the ACTIVE provider route (e.g. gpt-5.1 / gemini-*), used
     only when the gateway did not report a served model. Never an obsolete Anthropic identifier."""
@@ -560,6 +585,13 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
 
     prefix = job["request_ref"]["staging_prefix"]
     order = json.loads(job["request_ref"]["sheet_order"])
+    _authorized, _why = _billing_authorize_job(job)
+    if not _authorized:
+        # No model work has started: terminalise, free any operational-quota hold, and drop the staged inputs.
+        store.fail(job_id, "billing_denied", f"entitlement does not permit this video ({_why})", token)
+        store.delete_staging(prefix)
+        _quota_release_job(job, incurred_usd=0.0)
+        return "failed:billing_denied"
     try:
         envelope_raw, sheets = store.load_request(prefix, order)
         env = json.loads(envelope_raw)

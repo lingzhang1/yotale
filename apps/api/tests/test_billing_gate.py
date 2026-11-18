@@ -523,3 +523,77 @@ def test_off_mode_performs_no_billing_reads_or_writes_at_all():
     body = r.c.get("/v1/billing/entitlement", headers=_auth()).json()
     assert body == {"contract_version": 1, "billing_mode": "off", "enforced": False}     # not even the token record is created
     assert r.ddb.writes == 0 and not [k for k in r.ddb.items if k[0] == uid]
+
+
+# ---- worker pre-run authorization (closes the crash window between the job row and the reservation) -------------------
+
+class _StubStore:
+    def __init__(self, job):
+        self.job, self.failed, self.deleted, self.work_started = job, [], [], False
+
+    def claim_lease(self, job_id):
+        return "tok"
+
+    def load_request(self, prefix, order):
+        self.work_started = True
+        raise AssertionError("model work must not start without authorization")
+
+    def fail(self, job_id, category, detail, token=None, diagnostics=None):
+        self.failed.append(category)
+        return True
+
+    def delete_staging(self, prefix):
+        self.deleted.append(prefix)
+
+
+def _job(op="op-w"):
+    return {"job_id": "j", "owner": uid, "operation_id": f"{uid}\x1f{op}", "status": "queued", "operation_type": "edit_plan",
+            "request_ref": {"staging_prefix": "p/", "sheet_order": "[]"}}
+
+
+def test_a_job_with_no_reservation_is_authorised_by_reserving_now_when_the_entitlement_allows(monkeypatch):
+    from app import worker
+    L = BillingLedger(ddb=FakeDDB(), table="t", clock=lambda: T0)
+    monkeypatch.setattr(worker, "_billing_ledger", lambda: L)
+    monkeypatch.setenv("STORY_BILLING_MODE", "enforce")
+    job = _job()
+    assert worker._billing_authorize_job(job) == (True, "")                     # the crash-window job gets a reservation now
+    assert L.get_entitlement(uid).v_resv == 1
+    assert worker._billing_authorize_job(job) == (True, "")                     # SQS redelivery: idempotent, no second hold
+    assert L.get_entitlement(uid).v_resv == 1
+
+
+def test_an_unauthorised_job_never_starts_model_work_and_is_terminalised(monkeypatch):
+    from app import worker
+    L = BillingLedger(ddb=FakeDDB(), table="t", clock=lambda: T0, cfg=BillingConfig(free_starter=PlanLimits(videos=1, moments=1)))
+    L.reserve_video(uid, "someone-else"); L.settle_video(uid, "someone-else")        # the only credit is gone
+    monkeypatch.setattr(worker, "_billing_ledger", lambda: L)
+    monkeypatch.setenv("STORY_BILLING_MODE", "enforce")
+    store = _StubStore(_job())
+    assert worker._run_edit_plan(store, "j", store.job) == "failed:billing_denied"
+    assert store.failed == ["billing_denied"] and store.deleted == ["p/"] and store.work_started is False
+
+
+def test_pre_run_authorization_is_inert_outside_enforce_and_for_legacy_jobs(monkeypatch):
+    from app import worker
+    L = BillingLedger(ddb=FakeDDB(), table="t", clock=lambda: T0)
+    monkeypatch.setattr(worker, "_billing_ledger", lambda: L)
+    for mode in ("off", "observe"):
+        monkeypatch.setenv("STORY_BILLING_MODE", mode)
+        assert worker._billing_authorize_job(_job()) == (True, "")
+    monkeypatch.setenv("STORY_BILLING_MODE", "enforce")
+    assert worker._billing_authorize_job({**_job(), "owner": "dev"}) == (True, "")
+    assert L.get_entitlement(uid) is None                                       # nothing was written in any of those cases
+
+
+def test_a_billing_store_outage_at_the_worker_fails_open_not_a_paying_customers_job(monkeypatch):
+    from app import worker
+
+    class Boom:
+        def reserve_video(self, *a, **k):
+            from billing import BillingStoreError
+            raise BillingStoreError("down")
+
+    monkeypatch.setattr(worker, "_billing_ledger", lambda: Boom())
+    monkeypatch.setenv("STORY_BILLING_MODE", "enforce")
+    assert worker._billing_authorize_job(_job()) == (True, "")
