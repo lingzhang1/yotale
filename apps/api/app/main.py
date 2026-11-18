@@ -137,6 +137,7 @@ from app.auth import (  # P0 Beta Auth: trusted-identity dependencies + central 
     optional_user, require_user, Principal, auth_boundary, _docs_public,
 )
 from model_gateway import set_call_context as _set_cost_ctx  # B0: attribute model calls to a story
+from app import billing_gate  # Billing V1: entitlement meters (off|observe|enforce)
 from app.cost_context import cost_context_middleware  # B0: per-call cost attribution context
 from app.throttle import throttle_middleware  # P0 Beta Security Phase 3: per-user rate limiting
 from app import quota_gate  # P0 Beta Security Phase 4: per-user AI quota + spend protection
@@ -664,6 +665,7 @@ def create_app() -> FastAPI:
     # throttle (rate per minute); then quota (cumulative AI spend/allowance + active-job slots). P0 Beta
     # Security Phases 3 (throttle) + 4 (quota).
     app.middleware("http")(cost_context_middleware)   # innermost: attribution for model_call_usage
+    app.middleware("http")(billing_gate.billing_middleware)   # Billing V1: sync video routes (inside quota)
     app.middleware("http")(quota_gate.quota_middleware)
     app.middleware("http")(throttle_middleware)
     app.middleware("http")(auth_boundary)
@@ -705,6 +707,39 @@ def create_app() -> FastAPI:
         back to `sub`/`dev`. The resolution is the same atomic `cognito_sub -> story_user_id` claim used on
         every protected request, so `/v1/me` and a later protected call always agree."""
         return {"story_user_id": principal.story_user_id}
+
+    # ========================================================================================================
+    # BILLING V1 — server-authoritative entitlement read model + controlled video-credit refund. The client never
+    # supplies plan, price, allowance or expiry; it only displays what the server says. See billing_gate.py.
+    # ========================================================================================================
+    @app.get("/v1/billing/entitlement", status_code=200)
+    def billing_entitlement(request: Request, principal: Principal = Depends(require_user)) -> dict:
+        """Authoritative plan, trial, period, allowances, remaining quantities and upgrade eligibility (contract v1).
+        `billing_mode` tells the app whether limits are actually enforced yet."""
+        return billing_gate.entitlement_payload(request, principal.story_user_id)
+
+    @app.post("/v1/billing/video-refund", status_code=200)
+    def billing_video_refund(request: Request, body: dict, principal: Principal = Depends(require_user)) -> dict:
+        """Ask for ONE settled video credit back after a device render failure. The server cannot observe on-device
+        rendering, so the claim is accepted once per operation, only for a COMPLETED job the caller owns, within the
+        refund window, in the same period, and up to a small per-period cap. Never a blanket refund."""
+        op = str(body.get("operation_id", "")).strip()
+        reason = str(body.get("reason", "")).strip()
+        if not op or reason not in billing_gate.REFUND_REASONS:
+            raise HTTPException(status_code=422, detail=f"operation_id and reason in {sorted(billing_gate.REFUND_REASONS)} required")
+        led = billing_gate._ledger(request)
+        if led is None:
+            return {"result": "billing_off", "billing_mode": billing_gate.billing_mode()}
+        scoped = _scoped_op_id(principal, op)
+        job = _job_store().get(_jobs.job_id_for(scoped))
+        if not job or job.get("owner") != principal.story_user_id or job.get("status") != "completed":
+            raise HTTPException(status_code=404, detail="no completed generation for that operation")
+        try:
+            result = led.refund_video(principal.story_user_id, scoped, reason)
+        except billing_gate.BillingStoreError:
+            return billing_gate.store_unavailable_response()
+        log.info("billing_video_refund", extra={"result": result, "reason": reason, "story_user_id": principal.story_user_id})
+        return {"result": result, "entitlement": led.entitlement_view(principal.story_user_id)}
 
     # ========================================================================================================
     # CLOUD MEDIA (R2/R3) — account-owned original-media storage. ALL endpoints use require_user (auth required
@@ -1249,6 +1284,7 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/asset-understanding", response_model=MomentUnderstandingContract, status_code=200)
     async def asset_understanding(
+        request: Request,  # injected; excluded from the OpenAPI schema (needed for the billing gate)
         meta: str = Form(..., description="JSON: {moment_id, source_capture_id?, capture_context?}"),
         frames_meta: str = Form(..., description="JSON: [{t_ms}, ...] ordered, one per frame"),
         frames: list[UploadFile] = File(..., description="exactly 24 ordered JPEG timeline frames"),
@@ -1345,6 +1381,15 @@ def create_app() -> FastAPI:
         req_meta = AURequestMeta(
             moment_id=moment_id, source_capture_id=source_capture_id, capture_context=capture_context
         )
+        # Billing V1: charge ONE analysis unit per UNIQUE new Moment (idempotent on moment_id: a cache hit, retry,
+        # duplicate upload or re-analysis of an already-analysed Moment spends nothing). Reserved before inference,
+        # settled on success, released on any failure so a failed analysis never costs the customer an allowance.
+        _bill_uid = billing_gate.principal_uid(request)
+        _bgate = None
+        if _bill_uid is not None:
+            _bgate, _bresp = billing_gate.reserve_moment(request, _bill_uid, str(moment_id))
+            if _bresp is not None:
+                return _bresp
         try:
             # OFFLOAD the blocking Bedrock call off the event loop. This handler is `async def`, so calling the
             # synchronous engine.analyze() directly froze the single-worker event loop for the full ~10-14s model
@@ -1355,6 +1400,7 @@ def create_app() -> FastAPI:
             async with _AU_ADMISSION:
                 au = await run_in_threadpool(engine.analyze, au_frames, req_meta)
         except AURetryableError as e:
+            billing_gate.release(_bgate)
             log.warning(
                 "asset_understanding_retryable_failure",
                 extra={**base_fields, "latency_ms": round((time.monotonic() - started) * 1000),
@@ -1364,6 +1410,10 @@ def create_app() -> FastAPI:
                 status_code=503,
                 detail="asset_understanding_unavailable: analysis failed after retry; job stays pending",
             )
+        except BaseException:
+            billing_gate.release(_bgate)
+            raise
+        billing_gate.settle(_bgate)
         # Frames discarded here (not persisted) — ephemeral inference input.
         log.info(
             "asset_understanding_resolved",
@@ -2055,8 +2105,23 @@ def create_app() -> FastAPI:
         # P0 Beta Security Phase 4: reserve the AI allowance + an active-job slot EXACTLY ONCE for a newly
         # created job (a recovered duplicate reserves nothing new — idempotent on scoped_op/job slot). In
         # enforce mode an over-quota submit is short-circuited 429 BEFORE enqueue; observe never denies.
+        # Billing V1: one video credit per NEWLY CREATED job (a recovered duplicate reserves nothing). Reserved BEFORE
+        # the operational quota so a 402 never leaves a quota hold behind. A denied job is terminalised (never left
+        # queued) so the lost-enqueue reconciler cannot later run it without a credit.
+        _bill_uid = billing_gate.principal_uid(request)
+        _bgate = None
+        if _bill_uid is not None:
+            _bgate, _bresp = billing_gate.submit_reserve_video(request, _bill_uid, scoped_op, created=created)
+            if _bresp is not None:
+                store.fail(job_id, "billing_denied", "entitlement does not permit this video")
+                store.delete_staging(prefix)
+                return _bresp
         denied = quota_gate.submit_reserve(request, principal.story_user_id, scoped_op, job_id, created=created)
         if denied is not None:
+            if _bgate is not None:
+                billing_gate.release(_bgate)
+                store.fail(job_id, "quota_denied", "operational quota denied after billing hold")
+                store.delete_staging(prefix)
             return denied
         if created:
             store.enqueue(job_id)

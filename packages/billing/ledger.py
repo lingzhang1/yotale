@@ -1,0 +1,531 @@
+"""Billing V1 ledger: server-authoritative entitlements and allowance accounting on the shared UserUsage table.
+
+Design (see specs/.../billing-v1-spec.md):
+
+* Same table as user_quota (`story-<env>-user-usage`, PK story_user_id, SK quota_period), new SK namespaces, so no new
+  infrastructure and no new IAM beyond what the quota module already has (GetItem + UpdateItem + TransactWriteItems).
+  Items are created with UpdateItem (upsert + condition), never PutItem.
+* ONE entitlement item per user holds counters; ONE item per operation (video) or per Moment is the durable ledger
+  record with its own state. Every state change is a single TransactWriteItems over {operation item, entitlement item},
+  so a counter and its record can never disagree and a retry can never double count.
+* Atomic caps WITHOUT arithmetic in conditions (DynamoDB forbids it): the entitlement stores `avail` directly, reserve
+  does `ADD avail -1` guarded by `avail >= 1`. No read-modify-write is relied on for consumption. Reads are only used to
+  choose the right typed denial and to pick the transition; the write re-asserts everything it depends on
+  (`b_ver`, state, period id, avail) and a cancelled transaction re-reads and re-decides (bounded loop).
+* Reservation state machine, all transitions idempotent:
+      none -> reserved -> settled | released        released -> reserved (same operation retried)
+      settled -> refunded (controlled, capped)      released -> settled (late: work was delivered after a release)
+* A reservation remembers the period it was charged against (`b_period`). After a subscription renewal the counters are
+  new; settling or releasing an old-period reservation only moves the record, never the new period's counters.
+* `shadow=True` writes the SAME structure under the `billing-shadow#` namespace. Observe mode uses it, so hypothetical
+  decisions are computed from real accounting without debiting any customer-visible counter, and flipping to enforce
+  starts from clean counters.
+* Moments are charged once per account per moment id, ever (`m#<moment_id>`), so cache hits, retries, duplicate uploads,
+  concurrent duplicates and re-analysis never spend the allowance twice.
+"""
+from __future__ import annotations
+
+import time
+import uuid
+from typing import Any, Callable, Optional
+
+from .config import BillingConfig
+from .model import (
+    ACTION_CONTACT, ACTION_SUBSCRIBE, ACTION_WAIT_RENEWAL, BillingDenied, BillingStoreError, CONTRACT_VERSION, Entitlement,
+    Hold, MOMENT_ALLOWANCE_EXHAUSTED, PLAN_ADMIN, PLAN_BETA, PLAN_FREE, PLAN_PLUS, RS_REFUNDED, RS_RELEASED, RS_RESERVED,
+    RS_SETTLED, ST_ADMIN, ST_BETA, ST_FREE, ST_PLUS_ACTIVE, ST_PLUS_EXPIRED, ST_PLUS_GRACE, SUBSCRIPTION_REQUIRED,
+    TRIAL_EXPIRED, TransactionBoundElsewhere, VIDEO_CREDITS_EXHAUSTED,
+)
+
+_RES_NS = uuid.UUID("6f6c1b4e-0000-4000-8000-000000000005")
+LIVE, SHADOW = "billing#", "billing-shadow#"
+APPLE_TXN_PK = "__apple_txn__"
+_MAX_TRIES = 5
+
+_ATTRS = {"video": ("b_v_avail", "b_v_resv", "b_v_used"), "moment": ("b_m_avail", "b_m_resv", "b_m_used")}
+
+
+def reservation_id(operation_id: str) -> str:
+    return str(uuid.uuid5(_RES_NS, operation_id))
+
+
+def _n(v: float | int) -> dict:
+    return {"N": str(int(v)) if float(v) == int(v) else str(v)}
+
+
+def _s(v: str) -> dict:
+    return {"S": v}
+
+
+def _err_name(e: Exception) -> str:
+    return type(e).__name__
+
+
+def _reasons(e: Exception) -> list[str]:
+    r = getattr(e, "response", None) or {}
+    return [x.get("Code", "") for x in (r.get("CancellationReasons") or [])]
+
+
+def _is_cond_fail(e: Exception) -> bool:
+    n = _err_name(e)
+    if "ConditionalCheckFailed" in n:
+        return True
+    if "TransactionCanceled" in n:
+        rs = _reasons(e)
+        return bool(rs) and all(c in ("ConditionalCheckFailed", "None") for c in rs)
+    return False
+
+
+def _is_conflict(e: Exception) -> bool:
+    return "TransactionConflict" in str(e) or any(c == "TransactionConflict" for c in _reasons(e))
+
+
+def _int(item: dict, k: str, default: int = 0) -> int:
+    v = item.get(k)
+    return int(float(v["N"])) if v and "N" in v else default
+
+
+def _opt(item: dict, k: str) -> Optional[int]:
+    v = item.get(k)
+    return int(float(v["N"])) if v and "N" in v else None
+
+
+def _str(item: dict, k: str, default: str = "") -> str:
+    v = item.get(k)
+    return v["S"] if v and "S" in v else default
+
+
+def parse_entitlement(uid: str, it: dict) -> Entitlement:
+    return Entitlement(
+        uid=uid, plan=_str(it, "b_plan", PLAN_FREE), status=_str(it, "b_status", ST_FREE),
+        unlimited=bool(it.get("b_unlimited", {}).get("BOOL", False)),
+        trial_start=_opt(it, "b_trial_start"), trial_end=_opt(it, "b_trial_end"),
+        period_id=_str(it, "b_period_id", "starter"), period_start=_opt(it, "b_period_start"),
+        period_end=_opt(it, "b_period_end"), grace_end=_opt(it, "b_grace_end"),
+        v_total=_int(it, "b_v_total"), v_avail=_int(it, "b_v_avail"), v_resv=_int(it, "b_v_resv"), v_used=_int(it, "b_v_used"),
+        m_total=_int(it, "b_m_total"), m_avail=_int(it, "b_m_avail"), m_resv=_int(it, "b_m_resv"), m_used=_int(it, "b_m_used"),
+        refunds=_int(it, "b_refunds"), orig_txn=(_str(it, "b_orig_txn") or None), ver=_int(it, "b_ver", 1),
+        cfg=_str(it, "b_cfg"), created=_int(it, "b_created"), updated=_int(it, "b_updated"),
+    )
+
+
+class BillingLedger:
+    def __init__(self, *, ddb=None, table: str = "", region: str = "us-east-1", cfg: Optional[BillingConfig] = None,
+                 shadow: bool = False, clock: Callable[[], float] = time.time):
+        import os
+        self._ddb = ddb
+        self.table = table or os.environ.get("STORY_USER_USAGE_TABLE", "")
+        self.region = region or os.environ.get("AWS_REGION", "us-east-1")
+        self.cfg = cfg or BillingConfig.from_env()
+        self.shadow = shadow
+        self.ns = SHADOW if shadow else LIVE
+        self._clock = clock
+
+    # ---- plumbing ---------------------------------------------------------------------------------------------
+    def _c(self):
+        if self._ddb is None:
+            import boto3
+            self._ddb = boto3.client("dynamodb", region_name=self.region)
+        return self._ddb
+
+    def _now(self) -> int:
+        return int(self._clock())
+
+    def _key(self, uid: str, sk: str) -> dict:
+        return {"story_user_id": _s(uid), "quota_period": _s(sk)}
+
+    def _ent_key(self, uid: str) -> dict:
+        return self._key(uid, f"{self.ns}entitlement")
+
+    def _get(self, uid: str, sk: str) -> dict:
+        try:
+            return self._c().get_item(TableName=self.table, Key=self._key(uid, sk), ConsistentRead=True).get("Item") or {}
+        except Exception as e:  # noqa: BLE001
+            raise BillingStoreError(f"get_item: {_err_name(e)}") from e
+
+    def _update(self, uid: str, sk: str, ue: str, values: dict, cond: Optional[str] = None) -> bool:
+        """Single conditional write. True = applied, False = condition failed, BillingStoreError = store problem."""
+        kw: dict[str, Any] = {"TableName": self.table, "Key": self._key(uid, sk), "UpdateExpression": ue,
+                              "ExpressionAttributeValues": values}
+        if cond:
+            kw["ConditionExpression"] = cond
+        try:
+            self._c().update_item(**kw)
+            return True
+        except Exception as e:  # noqa: BLE001
+            if _is_cond_fail(e):
+                return False
+            raise BillingStoreError(f"update_item: {_err_name(e)}") from e
+
+    def _txn(self, legs: list[dict]) -> bool:
+        """All-or-nothing across the operation item and the entitlement item. True = committed, False = a guard
+        failed (caller re-reads and re-decides). Transient conflicts are retried with the SAME idempotent legs."""
+        items = [{"Update": {"TableName": self.table, **leg}} for leg in legs]
+        for attempt in range(3):
+            try:
+                self._c().transact_write_items(TransactItems=items)
+                return True
+            except Exception as e:  # noqa: BLE001
+                if _is_cond_fail(e):
+                    return False
+                if _is_conflict(e):
+                    time.sleep(0.03 * (attempt + 1))
+                    continue
+                raise BillingStoreError(f"transact: {_err_name(e)}") from e
+        return False
+
+    # ---- entitlement lifecycle --------------------------------------------------------------------------------
+    def get_entitlement(self, uid: str) -> Optional[Entitlement]:
+        it = self._get(uid, f"{self.ns}entitlement")
+        return parse_entitlement(uid, it) if it else None
+
+    def ensure_entitlement(self, uid: str) -> Entitlement:
+        """Return the entitlement, creating the Free starter on first use. Creation is create-only (conditional), so
+        concurrent first calls produce exactly one record. The 14-day trial clock does NOT start here; it starts at
+        the first SUCCESSFUL billable operation (see `_finish`)."""
+        cur = self.get_entitlement(uid)
+        if cur is not None:
+            return cur
+        now, lim = self._now(), self.cfg.free_starter
+        vals = {":plan": _s(PLAN_FREE), ":st": _s(ST_FREE), ":pid": _s("starter"), ":ver": _n(1),
+                ":vt": _n(lim.videos), ":mt": _n(lim.moments), ":zero": _n(0), ":cfg": _s(self.cfg.config_version),
+                ":now": _n(now)}
+        ue = ("SET b_plan = :plan, b_status = :st, b_period_id = :pid, b_ver = :ver, b_cfg = :cfg, "
+              "b_created = :now, b_updated = :now, "
+              "b_v_total = :vt, b_v_avail = :vt, b_v_resv = :zero, b_v_used = :zero, "
+              "b_m_total = :mt, b_m_avail = :mt, b_m_resv = :zero, b_m_used = :zero, b_refunds = :zero")
+        self._update(uid, f"{self.ns}entitlement", ue, vals, "attribute_not_exists(b_plan)")
+        got = self.get_entitlement(uid)
+        if got is None:
+            raise BillingStoreError("entitlement create did not persist")
+        return got
+
+    def get_or_create_apple_account_token(self, uid: str) -> str:
+        """Stable per-account UUID for StoreKit `appAccountToken` (Apple requires a UUID; story_user_id is not
+        guaranteed to be one). Always in the LIVE namespace: it is identity, not usage, and must be identical in
+        observe and enforce."""
+        sk = "billing#account"
+        it = self._get(uid, sk)
+        if it and "b_apple_token" in it:
+            return it["b_apple_token"]["S"]
+        self._update(uid, sk, "SET b_apple_token = :t, b_created = :now",
+                     {":t": _s(str(uuid.uuid4())), ":now": _n(self._now())}, "attribute_not_exists(b_apple_token)")
+        return self._get(uid, sk)["b_apple_token"]["S"]
+
+    # ---- decisions --------------------------------------------------------------------------------------------
+    def _decide(self, ent: Entitlement, kind: str, now: int) -> None:
+        """Raise BillingDenied if this entitlement cannot start one more `kind` unit; return None otherwise."""
+        eff = ent.effective_status(now)
+        snap = lambda: self._view(ent, now)  # noqa: E731
+        if ent.unlimited or eff == ST_BETA:
+            return
+        if eff == ST_PLUS_EXPIRED:
+            raise BillingDenied(SUBSCRIPTION_REQUIRED, ACTION_SUBSCRIBE, snap())
+        avail = ent.v_avail if kind == "video" else ent.m_avail
+        if ent.plan == PLAN_FREE and ent.trial_end is not None and now > ent.trial_end:
+            raise BillingDenied(TRIAL_EXPIRED, ACTION_SUBSCRIBE, snap())
+        if avail < 1:
+            code = VIDEO_CREDITS_EXHAUSTED if kind == "video" else MOMENT_ALLOWANCE_EXHAUSTED
+            action = (ACTION_SUBSCRIBE if ent.plan == PLAN_FREE
+                      else ACTION_CONTACT if ent.plan == PLAN_ADMIN else ACTION_WAIT_RENEWAL)
+            raise BillingDenied(code, action, snap())
+
+    # ---- reserve / settle / release (video credit) ---------------------------------------------------------------
+    def reserve_video(self, uid: str, operation_id: str) -> Hold:
+        rid = reservation_id(operation_id)
+        return self._reserve(uid, "video", f"{self.ns}v#{rid}", rid)
+
+    def settle_video(self, uid: str, operation_id: str) -> str:
+        return self._finish(uid, "video", f"{self.ns}v#{reservation_id(operation_id)}", settle=True)
+
+    def release_video(self, uid: str, operation_id: str) -> str:
+        return self._finish(uid, "video", f"{self.ns}v#{reservation_id(operation_id)}", settle=False)
+
+    # ---- reserve / settle / release (new unique Moment analysis) --------------------------------------------------
+    @staticmethod
+    def _mid(moment_id: str) -> str:
+        return str(moment_id).strip().lower()
+
+    def reserve_moment(self, uid: str, moment_id: str) -> Hold:
+        mid = self._mid(moment_id)
+        return self._reserve(uid, "moment", f"{self.ns}m#{mid}", mid)
+
+    def settle_moment(self, uid: str, moment_id: str) -> str:
+        return self._finish(uid, "moment", f"{self.ns}m#{self._mid(moment_id)}", settle=True)
+
+    def release_moment(self, uid: str, moment_id: str) -> str:
+        return self._finish(uid, "moment", f"{self.ns}m#{self._mid(moment_id)}", settle=False)
+
+    # ---- core: reserve ----------------------------------------------------------------------------------------
+    def _reserve(self, uid: str, kind: str, sk: str, key: str) -> Hold:
+        avail_a, resv_a, _used_a = _ATTRS[kind]
+        for _ in range(_MAX_TRIES):
+            now = self._now()
+            ent = self.ensure_entitlement(uid)
+            res = self._get(uid, sk)
+            st = _str(res, "b_state") or None
+            if st in (RS_SETTLED, RS_REFUNDED):
+                return Hold(kind, key, RS_SETTLED, False, "already_analyzed" if kind == "moment" else "idempotent")
+            if st == RS_RESERVED:
+                age = now - _int(res, "b_updated", now)
+                if kind == "moment" and age >= self.cfg.stale_reservation_s:
+                    # The request that held this reservation is presumed dead; take it over WITHOUT a second
+                    # charge. The compare-and-set on b_updated lets exactly one caller win a stale reclaim.
+                    if self._update(uid, sk, "SET b_updated = :now",
+                                    {":now": _n(now), ":rs": _s(RS_RESERVED), ":old": _n(_int(res, "b_updated"))},
+                                    "b_state = :rs AND b_updated = :old"):
+                        return Hold(kind, key, RS_RESERVED, True, "reclaimed")
+                    continue
+                return Hold(kind, key, RS_RESERVED, False, "idempotent" if kind == "video" else "in_flight")
+            self._decide(ent, kind, now)             # may raise BillingDenied (typed)
+            if ent.unlimited or ent.effective_status(now) == ST_BETA:
+                return Hold(kind, key, "unlimited", False, "unlimited")
+
+            res_vals = {":rs": _s(RS_RESERVED), ":k": _s(kind), ":p": _s(ent.period_id), ":now": _n(now)}
+            res_cond = "attribute_not_exists(b_state)"
+            if st == RS_RELEASED:
+                res_cond = "b_state = :rel"
+                res_vals[":rel"] = _s(RS_RELEASED)
+            ent_vals = {":one": _n(1), ":neg1": _n(-1), ":ver": _n(ent.ver), ":now": _n(now)}
+            ent_cond = f"{avail_a} >= :one AND b_ver = :ver"
+            if ent.plan == PLAN_FREE:
+                ent_cond += " AND (attribute_not_exists(b_trial_end) OR b_trial_end >= :now)"
+            ok = self._txn([
+                {"Key": self._key(uid, sk),
+                 "UpdateExpression": "SET b_state = :rs, b_kind = :k, b_period = :p, "
+                                     "b_created = if_not_exists(b_created, :now), b_updated = :now",
+                 "ConditionExpression": res_cond, "ExpressionAttributeValues": res_vals},
+                {"Key": self._ent_key(uid),
+                 "UpdateExpression": f"SET b_updated = :now ADD {avail_a} :neg1, {resv_a} :one",
+                 "ConditionExpression": ent_cond, "ExpressionAttributeValues": ent_vals},
+            ])
+            if ok:
+                return Hold(kind, key, RS_RESERVED, True)
+        raise BillingStoreError("reserve: contention not resolved")
+
+    # ---- core: settle / release -------------------------------------------------------------------------------
+    def _finish(self, uid: str, kind: str, sk: str, *, settle: bool) -> str:
+        avail_a, resv_a, used_a = _ATTRS[kind]
+        for _ in range(_MAX_TRIES):
+            now = self._now()
+            res = self._get(uid, sk)
+            st = _str(res, "b_state") or None
+            if st is None:
+                return "missing"
+            if settle and st in (RS_SETTLED, RS_REFUNDED):
+                return "noop"
+            if (not settle) and st in (RS_RELEASED, RS_SETTLED, RS_REFUNDED):
+                return "noop"            # releasing a settled credit is a refund, never a silent release
+            late = settle and st == RS_RELEASED       # work was delivered after the credit was released
+            new_state = RS_SETTLED if settle else RS_RELEASED
+            res_vals = {":ns": _s(new_state), ":from": _s(st), ":now": _n(now)}
+            res_ue = "SET b_state = :ns, b_updated = :now"
+            if settle:
+                res_ue += ", b_settled_at = :now"
+            legs = [{"Key": self._key(uid, sk), "UpdateExpression": res_ue,
+                     "ConditionExpression": "b_state = :from", "ExpressionAttributeValues": res_vals}]
+            ent = self.get_entitlement(uid)
+            if ent is not None and ent.period_id == _str(res, "b_period") and not ent.unlimited:
+                ent_vals: dict = {":pid": _s(ent.period_id), ":now": _n(now), ":one": _n(1)}
+                ue = "SET b_updated = :now"
+                if settle and ent.plan == PLAN_FREE:
+                    # Trial starts at the FIRST successful billable operation, whichever meter it was.
+                    ue += ", b_trial_start = if_not_exists(b_trial_start, :now), b_trial_end = if_not_exists(b_trial_end, :tend)"
+                    ent_vals[":tend"] = _n(now + self.cfg.trial_days * 86400)
+                if late:
+                    ue += f" ADD {used_a} :one, {avail_a} :neg1"          # overage is allowed: the work already exists
+                    ent_vals[":neg1"] = _n(-1)
+                    cond = "b_period_id = :pid"
+                elif settle:
+                    ue += f" ADD {resv_a} :neg1, {used_a} :one"
+                    ent_vals[":neg1"] = _n(-1)
+                    cond = f"b_period_id = :pid AND {resv_a} >= :one"
+                else:
+                    ue += f" ADD {resv_a} :neg1, {avail_a} :one"
+                    ent_vals[":neg1"] = _n(-1)
+                    cond = f"b_period_id = :pid AND {resv_a} >= :one"
+                legs.append({"Key": self._ent_key(uid), "UpdateExpression": ue, "ConditionExpression": cond,
+                             "ExpressionAttributeValues": ent_vals})
+            if self._txn(legs):
+                return "settled" if settle else "released"
+        raise BillingStoreError("finish: contention not resolved")
+
+    # ---- controlled refund of a settled video credit ----------------------------------------------------------
+    def refund_video(self, uid: str, operation_id: str, reason: str) -> str:
+        """Return one settled video credit after a device render failure the client reports. The server cannot see
+        on-device rendering, so a claim is accepted only once per operation, only within the window after settlement,
+        only in the same period, and only up to `refunds_per_period` per period. Returns refunded | noop |
+        not_eligible:<why>."""
+        sk = f"{self.ns}v#{reservation_id(operation_id)}"
+        for _ in range(_MAX_TRIES):
+            now = self._now()
+            res = self._get(uid, sk)
+            st = _str(res, "b_state") or None
+            if st is None:
+                return "not_eligible:unknown_operation"
+            if st == RS_REFUNDED:
+                return "noop"
+            if st != RS_SETTLED:
+                return "not_eligible:not_settled"
+            if now - _int(res, "b_settled_at", 0) > self.cfg.refund_window_s:
+                return "not_eligible:window_elapsed"
+            ent = self.get_entitlement(uid)
+            if ent is None or ent.period_id != _str(res, "b_period") or ent.unlimited:
+                return "not_eligible:period_or_plan"
+            if ent.refunds >= self.cfg.refunds_per_period:
+                return "not_eligible:refund_cap"
+            ok = self._txn([
+                {"Key": self._key(uid, sk),
+                 "UpdateExpression": "SET b_state = :rf, b_updated = :now, b_refund_reason = :why",
+                 "ConditionExpression": "b_state = :st",
+                 "ExpressionAttributeValues": {":rf": _s(RS_REFUNDED), ":st": _s(RS_SETTLED), ":now": _n(now),
+                                               ":why": _s(str(reason)[:40])}},
+                {"Key": self._ent_key(uid),
+                 "UpdateExpression": "SET b_updated = :now ADD b_v_used :neg1, b_v_avail :one, b_refunds :one",
+                 "ConditionExpression": "b_period_id = :pid AND b_refunds < :cap AND b_v_used >= :one",
+                 "ExpressionAttributeValues": {":pid": _s(ent.period_id), ":cap": _n(self.cfg.refunds_per_period),
+                                               ":now": _n(now), ":neg1": _n(-1), ":one": _n(1)}},
+            ])
+            if ok:
+                return "refunded"
+        raise BillingStoreError("refund: contention not resolved")
+
+    # ---- reconciliation ---------------------------------------------------------------------------------------
+    def reconcile_video_job(self, uid: str, operation_id: str, job_status: str) -> str:
+        """Drive a video reservation to the state its job's durable terminal status demands. A COMPLETED job settles
+        (the result was durably recorded, so the credit is owed even if the worker died before settling); every other
+        terminal status releases. Idempotent; safe to call from the sweep and from the worker."""
+        if job_status == "completed":
+            return self.settle_video(uid, operation_id)
+        return self.release_video(uid, operation_id)
+
+    def reclaim_stale_moments(self, uid: str, limit: int = 25) -> int:
+        """Release Moment reservations abandoned by a crashed AU request. Needs dynamodb:Query on the table; without
+        it this is a no-op (stale reservations are still reclaimed one at a time when the same Moment is retried)."""
+        cutoff = self._now() - self.cfg.stale_reservation_s
+        try:
+            r = self._c().query(
+                TableName=self.table, KeyConditionExpression="story_user_id = :pk AND begins_with(quota_period, :sk)",
+                FilterExpression="b_state = :rs AND b_updated < :cut",
+                ExpressionAttributeValues={":pk": _s(uid), ":sk": _s(f"{self.ns}m#"), ":rs": _s(RS_RESERVED),
+                                           ":cut": _n(cutoff)}, Limit=limit)
+        except Exception:  # noqa: BLE001  (AccessDenied until Query is granted; never break the caller)
+            return 0
+        n = 0
+        for it in r.get("Items", []):
+            mid = it["quota_period"]["S"].split("m#", 1)[-1]
+            if self.release_moment(uid, mid) == "released":
+                n += 1
+        return n
+
+    # ---- plan changes (Apple server integration calls these in B2) ------------------------------------------------
+    def _plan_update(self, uid: str, ent: Entitlement, sets: dict[str, dict], extra_cond: str = "",
+                     extra_vals: Optional[dict] = None) -> bool:
+        now = self._now()
+        names = list(sets)
+        ue = "SET b_ver = :nver, b_updated = :now, " + ", ".join(f"{k} = :v{i}" for i, k in enumerate(names))
+        vals = {":nver": _n(ent.ver + 1), ":now": _n(now), ":ver": _n(ent.ver), **(extra_vals or {})}
+        for i, k in enumerate(names):
+            vals[f":v{i}"] = sets[k]
+        cond = "b_ver = :ver" + (f" AND {extra_cond}" if extra_cond else "")
+        return self._update(uid, f"{self.ns}entitlement", ue, vals, cond)
+
+    def grandfather(self, uid: str) -> Entitlement:
+        """Existing beta accounts keep unrestricted use. Idempotent."""
+        for _ in range(_MAX_TRIES):
+            ent = self.ensure_entitlement(uid)
+            if ent.plan == PLAN_BETA:
+                return ent
+            if self._plan_update(uid, ent, {"b_plan": _s(PLAN_BETA), "b_status": _s(ST_BETA),
+                                            "b_unlimited": {"BOOL": True}}):
+                break
+        return self.get_entitlement(uid)  # type: ignore[return-value]
+
+    def admin_grant(self, uid: str, *, videos: int, moments: int, until: Optional[int] = None, reason: str = "") -> Entitlement:
+        """Support grant: fresh finite allowances, optionally time-limited. Replaces the current period counters."""
+        for _ in range(_MAX_TRIES):
+            ent = self.ensure_entitlement(uid)
+            now = self._now()
+            sets = {"b_plan": _s(PLAN_ADMIN), "b_status": _s(ST_ADMIN), "b_unlimited": {"BOOL": False},
+                    "b_period_id": _s(f"admin:{now}"), "b_period_start": _n(now),
+                    "b_v_total": _n(videos), "b_v_avail": _n(videos), "b_v_resv": _n(0), "b_v_used": _n(0),
+                    "b_m_total": _n(moments), "b_m_avail": _n(moments), "b_m_resv": _n(0), "b_m_used": _n(0),
+                    "b_refunds": _n(0), "b_grant_reason": _s(reason[:80])}
+            if until is not None:
+                sets["b_period_end"] = _n(until)
+            if self._plan_update(uid, ent, sets):
+                break
+        return self.get_entitlement(uid)  # type: ignore[return-value]
+
+    def apply_subscription(self, uid: str, *, status: str, period_id: str, period_start: int, period_end: int,
+                           event_ts: int, grace_end: Optional[int] = None, orig_txn: Optional[str] = None) -> Entitlement:
+        """Apply a VERIFIED Apple subscription state (B2 calls this after signature verification; the client never does).
+
+        * Period boundaries come from Apple, not the calendar: a new `period_id` resets the Plus allowances.
+        * `event_ts` (Apple's signed time) orders events: an older event than the one already applied is ignored, so a
+          delayed webhook cannot resurrect an expired subscription or undo a renewal.
+        * Grandfathered and admin-granted accounts are never downgraded by a store event."""
+        if status not in (ST_PLUS_ACTIVE, ST_PLUS_GRACE, ST_PLUS_EXPIRED):
+            raise ValueError(f"unsupported subscription status {status!r}")
+        for _ in range(_MAX_TRIES):
+            ent = self.ensure_entitlement(uid)
+            if ent.plan in (PLAN_BETA, PLAN_ADMIN):
+                return ent
+            sets: dict[str, dict] = {"b_plan": _s(PLAN_PLUS), "b_status": _s(status), "b_evt_ts": _n(event_ts),
+                                     "b_period_end": _n(period_end), "b_period_start": _n(period_start)}
+            if orig_txn:
+                sets["b_orig_txn"] = _s(orig_txn)
+            if grace_end is not None:
+                sets["b_grace_end"] = _n(grace_end)
+            if status != ST_PLUS_EXPIRED and (ent.plan != PLAN_PLUS or ent.period_id != period_id):
+                lim = self.cfg.plus
+                sets.update({"b_period_id": _s(period_id), "b_v_total": _n(lim.videos), "b_v_avail": _n(lim.videos),
+                             "b_v_resv": _n(0), "b_v_used": _n(0), "b_m_total": _n(lim.moments),
+                             "b_m_avail": _n(lim.moments), "b_m_resv": _n(0), "b_m_used": _n(0), "b_refunds": _n(0)})
+            ok = self._plan_update(uid, ent, sets, "(attribute_not_exists(b_evt_ts) OR b_evt_ts <= :ets)",
+                                   {":ets": _n(event_ts)})
+            if ok:
+                return self.get_entitlement(uid)  # type: ignore[return-value]
+            cur = self.get_entitlement(uid)
+            if cur is not None and cur.ver == ent.ver:
+                return cur            # the failed guard was the event-order check: a newer event already applied
+        raise BillingStoreError("apply_subscription: contention not resolved")
+
+    def bind_apple_transaction(self, original_transaction_id: str, uid: str) -> None:
+        """Bind an Apple original transaction to exactly ONE YoTale account (create-only). Raises
+        TransactionBoundElsewhere if another account already owns it."""
+        sk = f"billing#txn#{original_transaction_id}"
+        applied = self._update(APPLE_TXN_PK, sk, "SET b_uid = :u, b_created = :now",
+                               {":u": _s(uid), ":now": _n(self._now())}, "attribute_not_exists(b_uid)")
+        if applied:
+            return
+        owner = _str(self._get(APPLE_TXN_PK, sk), "b_uid")
+        if owner != uid:
+            raise TransactionBoundElsewhere(original_transaction_id)
+
+    # ---- read model -------------------------------------------------------------------------------------------
+    def entitlement_view(self, uid: str, *, create: bool = True) -> dict:
+        ent = self.ensure_entitlement(uid) if create else self.get_entitlement(uid)
+        if ent is None:
+            return {"contract_version": CONTRACT_VERSION, "plan": None}
+        return self._view(ent, self._now())
+
+    def _view(self, ent: Entitlement, now: int) -> dict:
+        eff = ent.effective_status(now)
+        trial = ent.trial_state(now)
+        free = ent.plan == PLAN_FREE
+        remaining_v, remaining_m = max(ent.v_avail, 0), max(ent.m_avail, 0)
+        return {
+            "contract_version": CONTRACT_VERSION,
+            "plan": ent.plan, "status": eff, "unlimited": ent.unlimited,
+            "trial": {"state": trial, "started_at": ent.trial_start, "ends_at": ent.trial_end,
+                      "days": self.cfg.trial_days},
+            "period": {"id": ent.period_id, "start": ent.period_start, "end": ent.period_end},
+            "videos": {"total": ent.v_total, "used": ent.v_used, "reserved": ent.v_resv, "remaining": remaining_v},
+            "moments": {"total": ent.m_total, "used": ent.m_used, "reserved": ent.m_resv, "remaining": remaining_m},
+            "refunds": {"used": ent.refunds, "allowed": self.cfg.refunds_per_period},
+            "upgrade": {"eligible": free or eff == ST_PLUS_EXPIRED,
+                        "suggest": free and ent.v_used >= 1,     # nudge after the first finished video, never a block
+                        "blocking": free and (trial == "expired" or remaining_v < 1 or remaining_m < 1)},
+            "entitlement_version": ent.ver, "apple_original_transaction_id": ent.orig_txn,
+        }

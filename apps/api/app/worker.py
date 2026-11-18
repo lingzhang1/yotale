@@ -210,6 +210,39 @@ def _quota_release_job(job: dict, *, incurred_usd: float = 0.0) -> None:
         pass
 
 
+# Billing V1 — worker-side video-credit settlement. Independent of the operational quota above: it only acts when
+# STORY_BILLING_MODE is observe|enforce, only for jobs that hold a billing reservation (coverage jobs never do, so
+# the calls are harmless no-ops for them), and never raises into the worker.
+try:
+    from billing import BillingLedger as _BillingLedger, billing_mode as _billing_mode
+except Exception:  # noqa: BLE001
+    _BillingLedger = None
+
+    def _billing_mode() -> str:  # type: ignore[misc]
+        return "off"
+
+
+def _billing_ledger():
+    mode = _billing_mode()
+    if _BillingLedger is None or mode == "off" or not _quota_usage_table():
+        return None
+    return _BillingLedger(table=_quota_usage_table(), shadow=(mode == "observe"))
+
+
+def _billing_finish_job(job: dict, *, completed: bool) -> None:
+    """A job reached a terminal state. COMPLETED -> settle the video credit (the result is durably recorded, so the
+    credit is owed even on an SQS redelivery); anything else -> release it. Idempotent (state-guarded)."""
+    uid, scoped_op = job.get("owner"), job.get("operation_id")
+    if not uid or not scoped_op or uid == "dev":
+        return
+    try:
+        led = _billing_ledger()
+        if led is not None:
+            led.reconcile_video_job(uid, scoped_op, "completed" if completed else "failed")
+    except Exception as e:  # noqa: BLE001 — billing drift is reconcilable by the sweep; never break the worker
+        print(json.dumps({"msg": "worker_billing_error", "error": f"{type(e).__name__}: {e}"[:200]}))
+
+
 def _planner_models() -> tuple[str, str]:
     """(primary, fallback) edit-plan model ids from the ACTIVE provider route (e.g. gpt-5.1 / gemini-*), used
     only when the gateway did not report a served model. Never an obsolete Anthropic identifier."""
@@ -404,6 +437,7 @@ def _run_one(store: _jobs.JobStore, job_id: str) -> str:
         store.fail(job_id, "unknown_operation",
                    f"operation_type={op!r} not in {sorted(_jobs.KNOWN_OPERATIONS)}")
         _quota_release_job(job, incurred_usd=0.0)
+        _billing_finish_job(job, completed=False)
         return "failed:unknown_operation"
     # Phase 4: a CANCELLED terminal (any of the several cancel return points in the run paths) refunds the
     # user allowance + releases the active-job slot, each EXACTLY ONCE. Idempotent, so this is safe even if a
@@ -412,6 +446,7 @@ def _run_one(store: _jobs.JobStore, job_id: str) -> str:
     # engine did not publish a billed result; any mid-run spend is a reconcilable under-count, not a charge).
     if isinstance(result, str) and result.startswith("cancelled"):
         _quota_release_job(job, incurred_usd=0.0)
+        _billing_finish_job(job, completed=False)
     return result
 
 
@@ -675,6 +710,7 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
         if ok:
             # Phase 4: settle the ACTUAL incurred Bedrock spend + release the active-job slot (exactly once).
             _quota_settle_job(job, actual_usd=_job_cost_usd(diag_out))
+            _billing_finish_job(job, completed=True)     # Billing V1: the video credit is earned only now
         return "completed" if ok else "publish_lost_lease"
     except Exception as exc:  # noqa: BLE001 — classify everything into a terminal failure
         cat, detail = _classify(exc, locals().get("inputs"))
@@ -737,6 +773,7 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
         except Exception:  # noqa: BLE001
             _incurred = 0.0
         _quota_release_job(job, incurred_usd=_incurred)
+        _billing_finish_job(job, completed=False)        # Billing V1: a failed generation returns the credit
         return f"failed:{cat}"
 
 
@@ -791,6 +828,10 @@ def handler(event, context):
             for o in orphans:
                 _quota_release_job({"owner": o["owner"], "operation_id": o["operation_id"],
                                     "job_id": o["job_id"]}, incurred_usd=0.0)
+                # Billing V1: drive the credit to what the job's DURABLE terminal status demands. A job that
+                # completed but whose worker died before settling is SETTLED here, never refunded.
+                _billing_finish_job({"owner": o["owner"], "operation_id": o["operation_id"]},
+                                    completed=(o.get("terminal_status") == "completed"))
         except Exception as e:  # noqa: BLE001 — sweep is best-effort; never break the reconcile tick
             print(json.dumps({"msg": "worker_quota_sweep_error", "error": f"{type(e).__name__}: {e}"[:300]}))
         print(json.dumps({"msg": "worker_reconcile", "reenqueued": reenq,

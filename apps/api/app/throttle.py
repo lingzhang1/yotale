@@ -103,6 +103,8 @@ ROUTE_CLASS: dict[tuple[str, str], str] = {
     ("POST", "/v1/media/{cloud_media_id}/multipart/complete"): "presign",
     # --- read / poll: reads, polling, media download, batch-get, cancel/reconcile (cheap) ---
     ("GET", "/v1/me"): "read",
+    ("GET", "/v1/billing/entitlement"): "read",       # Billing V1: authoritative entitlement read model
+    ("POST", "/v1/billing/video-refund"): "writes",   # Billing V1: controlled one-credit refund claim (capped, audited)
     ("GET", "/v1/stories"): "read",
     ("GET", "/v1/stories/{story_id}"): "read",
     ("GET", "/v1/media"): "read",
