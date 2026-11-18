@@ -199,8 +199,8 @@ Billing data is account data and must follow the account lifecycle; nothing is "
 
 | Suite | Result |
 |---|---|
-| Backend (`apps/api/tests`, `packages`, `contracts/tests`, `evals/harness`) with DynamoDB Local | see PR 2 description for the final count |
-| Same, DynamoDB Local unavailable | passes, with every `local` variant skipped and the reason printed |
+| Backend (`apps/api/tests`, `packages`, `contracts/tests`, `evals/harness`) with DynamoDB Local (`REQUIRE_DDB_LOCAL=1`) | **1569 passed** |
+| Same, DynamoDB Local unavailable | **1471 passed, 98 skipped** (every `local` variant skipped with the reason printed) |
 | CDK jest (`infrastructure/cdk`, all suites) | 77 passed, including 5 new `STORY_BILLING_MODE` posture tests |
 | Release gate `pre`, development and beta (synthesized templates, offline) | ACCEPTED |
 | Worker asset | `billing` imports with the standard library only |
