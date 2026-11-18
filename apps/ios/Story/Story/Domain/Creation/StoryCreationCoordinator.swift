@@ -585,6 +585,17 @@ final class StoryCreationCoordinator {
 
         // ---- preparing: gather REAL persisted inputs; missing prerequisite -> honest failure ----
         state = .preparing
+        // Performance timeline: one op id correlates every stage of this attempt; the stall probe measures how
+        // long the main thread fails to respond (the UI freezes) and the peak memory footprint.
+        RenderTiming.startOperation(story.planOperationId ?? UUID().uuidString)
+        RenderTiming.emit(stage: "create_start", ms: 0, detail: "op_type=\(pendingOperationType)")
+        let stallProbe = MainThreadStallProbe()
+        stallProbe.start()
+        defer {
+            let r = stallProbe.stop()
+            RenderTiming.emit(stage: "main_thread", ms: r.maxStallMs,
+                              detail: "max_stall_ms=\(r.maxStallMs) stalls_over_250ms=\(r.stallsOver250) peak_mem_mb=\(r.peakMB)")
+        }
         let tRun = RenderTiming.begin("create_total")
         let tReq = RenderTiming.begin("build_request")
         let build: EditPlanRequestBuilder.Build
@@ -890,7 +901,7 @@ final class StoryCreationCoordinator {
                 }
             }
 
-            tPoll.end("status=\(final.status.rawValue) sheets=\(Int(final.diagnostics?["sheet_count"]?.doubleValue ?? 0))")
+            tPoll.end("status=\(final.status.rawValue) status_reads=\(pollStatusReads) sheets=\(Int(final.diagnostics?["sheet_count"]?.doubleValue ?? 0))")
             switch final.status {
             case .completed:
                 guard let p = final.plan else { return finishFailed(.planUnavailable) }
@@ -1097,11 +1108,16 @@ final class StoryCreationCoordinator {
 
     /// Poll one job to terminal, mirroring its status into the Story + pending row + planning sub-line. Shared
     /// by the initial poll and the stale-job re-submit recovery.
+    /// Successful status reads during the current plan poll (performance timeline only).
+    @ObservationIgnored private var pollStatusReads = 0
+
     private func pollWithStatusUpdates(jobId: String, story: StoryModel) async throws -> EditPlanJobState {
-        try await jobClient.pollUntilTerminal(
+        pollStatusReads = 0
+        return try await jobClient.pollUntilTerminal(
             jobId: jobId, maxSeconds: 900,
             shouldCancel: { [weak self] in self?.cancelRequested ?? false },
             onState: { [weak self] st in
+                self?.pollStatusReads += 1
                 story.planJobStatus = st.status.rawValue
                 self?.updatePendingStatus(story: story, jobStatus: st.status.rawValue)
                 self?.planningSubstatus = {

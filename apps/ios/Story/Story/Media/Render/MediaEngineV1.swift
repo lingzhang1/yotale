@@ -734,32 +734,6 @@ struct RenderResult {
 }
 
 
-/// Render-stage timing (diagnostic only). Emits one PUBLIC os_log line per stage with elapsed milliseconds, plus an
-/// os_signpost interval so Instruments shows the same stages. Carries no user content: stage names and numbers only.
-/// Filter the console with: category:timing  (subsystem ai.yotale.story).
-enum RenderTiming {
-    private static let log = Logger(subsystem: "ai.yotale.story", category: "timing")
-    private static let signposter = OSSignposter(subsystem: "ai.yotale.story", category: "timing")
-
-    /// Marks the start of a stage; call `end(_:detail:)` on the returned value.
-    struct Mark {
-        let stage: String
-        let start: CFAbsoluteTime
-        let state: OSSignpostIntervalState
-        func end(_ detail: String = "") {
-            let ms = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
-            RenderTiming.signposter.endInterval("stage", state)
-            RenderTiming.log.notice("render-timing stage=\(stage, privacy: .public) ms=\(ms) \(detail, privacy: .public) thermal=\(ProcessInfo.processInfo.thermalState.rawValue)")
-        }
-    }
-
-    static func begin(_ stage: String) -> Mark {
-        let id = signposter.makeSignpostID()
-        let state = signposter.beginInterval("stage", id: id, "\(stage, privacy: .public)")
-        return Mark(stage: stage, start: CFAbsoluteTimeGetCurrent(), state: state)
-    }
-}
-
 extension MediaEngineV1 {
     /// Full render: build composition -> export H.264 MP4 -> verify duration -> persist. Cancellable.
     /// Cleans up any partial output on failure/cancel. NEVER modifies source Moments.
