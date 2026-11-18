@@ -29,7 +29,8 @@ from contracts.schemas.ai_contracts import (
     MusicAlignment,
     OutputFormat,
 )
-from model_gateway import ModelGateway, StructuredOutputError, StructuredRequest, ProviderError
+from model_gateway import (ModelGateway, StructuredOutputError, StructuredRequest, ProviderError,
+                           OutputTruncatedError, classify_provider_error, sanitize_error)
 
 PROMPT_VERSION = "edit_plan/4"  # Editorial Timing significance-weighting amendment (v2/v3 preserved for reproducibility)
 TASK = "edit_plan.generate"
@@ -2284,6 +2285,35 @@ def _to_contract(plan: dict, inputs: EditPlanInputs) -> EditPlanV2Contract:
     )
 
 
+# --- Output-token budget (reliability; never a creative quota) -------------------------------------------------
+# One EditPlan segment serialises to about 95 output tokens: the dev 66-Moment job stored 10,529 output tokens
+# over two calls (initial plan + one repair), about 5.3k per 56-segment plan. The expected segment count follows
+# the REQUESTED DURATION and the type's typical shot length, never the Moment count.
+_TOKENS_PER_SEGMENT = 100
+_PLAN_BASE_TOKENS = 400
+_OVERPLAN_ALLOWANCE = 1.25     # the model plans past the target before the duration fitter trims it
+_HEADROOM = 1.25
+_TYPICAL_SHOT_S = {"highlights": 2.5, "full_story": 6.0}
+_TRUNCATION_STOPS = frozenset({"max_tokens", "length", "MAX_TOKENS"})
+DEFAULT_OUTPUT_FLOOR = 8192
+DEFAULT_OUTPUT_CEILING = 32768    # provider limits: gpt-5.1 128,000; gemini-3.8-flash 65,536 (documented maxima)
+
+
+def estimate_output_budget(target_seconds: float | None, editorial_type: str | None, *,
+                           floor: int = DEFAULT_OUTPUT_FLOOR, cap: int = 16384) -> int:
+    """Initial max output tokens for the planner call. Grows with the requested duration (expected shots =
+    target / typical shot length), is independent of how many Moments the Story has, never below `floor`, and
+    never above `cap`. It only sizes the allowance: it does not ask the model for more shots."""
+    try:
+        target = float(target_seconds or 0.0)
+    except (TypeError, ValueError):
+        target = 0.0
+    shot_s = _TYPICAL_SHOT_S.get(editorial_type or "", 4.0)
+    expected_shots = math.ceil(max(target, 0.0) / shot_s) * _OVERPLAN_ALLOWANCE
+    est = (_PLAN_BASE_TOKENS + _TOKENS_PER_SEGMENT * expected_shots) * _HEADROOM
+    return int(min(max(floor, math.ceil(est / 256) * 256), max(cap, floor)))
+
+
 class RealEditPlannerEngine:
     """Opus 4.6 via the generic ModelGateway. Validates deterministically; never fabricates.
 
@@ -2299,7 +2329,7 @@ class RealEditPlannerEngine:
     `last_diagnostics` records what happened for the reliability measurement / server logs."""
 
     def __init__(self, gateway: ModelGateway, *, max_tokens: int = 8192, executability_repair_attempts: int = 1,
-                 max_tokens_ceiling: int = 16384):
+                 max_tokens_ceiling: int = DEFAULT_OUTPUT_CEILING):
         self._gw = gateway
         self._system = _load_system()
         self._max_tokens = max_tokens
@@ -2309,6 +2339,29 @@ class RealEditPlannerEngine:
         self._max_tokens_ceiling = max(max_tokens, max_tokens_ceiling)
         self._exec_repairs = max(0, executability_repair_attempts)
         self.last_diagnostics: dict[str, Any] = {}
+        # Absolute wall-clock deadline (time.time()) for the whole job, set by the worker. Adapters refuse to
+        # start an attempt that cannot finish before it. None = no caller deadline.
+        self.deadline_ts: float | None = None
+
+    def _record_attempts(self, diag: dict, exc: BaseException | None) -> None:
+        """Append the gateway's safe per-attempt records (bounded) to the job diagnostics, and when a call
+        failed keep its typed category and, if the primary provider failed first, WHY. No prompts, images or raw
+        responses are recorded."""
+        recs = list(getattr(self._gw, "last_attempts", None) or [])
+        log = diag.setdefault("provider_attempts", [])
+        for r in recs:
+            if len(log) < 24:
+                log.append({**r, "prompt_version": PROMPT_VERSION})
+        if exc is not None:
+            pf = getattr(exc, "primary_failure", None)
+            diag["last_error_category"] = ("truncated" if isinstance(exc, OutputTruncatedError)
+                                           else classify_provider_error(exc))
+            diag["last_error"] = sanitize_error(exc)
+            if pf:
+                diag["primary_failure"] = pf
+        if getattr(self._gw, "last_fallback", False) and getattr(self._gw, "last_error", None):
+            diag.setdefault("primary_failure", {"category": "provider",
+                                                "error": sanitize_error(self._gw.last_error)})
 
     def generate(self, inputs: EditPlanInputs) -> EditPlanV2Contract:
         diag: dict[str, Any] = {
@@ -2327,26 +2380,49 @@ class RealEditPlannerEngine:
             # `images` defaults to the full payload; a repair may pass a SMALLER set (Phase 3) when the
             # validator errors are purely numeric/structural and re-sending every contact sheet is wasted cost.
             call_images = list(inputs.images) if images is None else images
-            caps = [self._max_tokens]
-            if self._max_tokens_ceiling > self._max_tokens:
-                caps.append(self._max_tokens_ceiling)
+            _tgt = inputs.creative_intent.get("target_duration_seconds") if isinstance(inputs.creative_intent, dict) else None
+            initial = estimate_output_budget(_tgt, inputs.editorial_type, floor=self._max_tokens,
+                                             cap=min(16384, self._max_tokens_ceiling))
+            caps = [initial]
+            # ONE escalation at most: double the budget, bounded by the ceiling. A genuinely runaway plan still
+            # fails after two generations instead of looping.
+            escalated = min(self._max_tokens_ceiling, max(initial * 2, 16384))
+            if escalated > initial:
+                caps.append(escalated)
+            diag["initial_max_tokens"] = initial
             result = None
-            for cap in caps:
+            for idx, cap in enumerate(caps):
                 req = StructuredRequest(
                     task=TASK, schema=SCHEMA, prompt_version=PROMPT_VERSION, system=self._system,
                     user_content=user_content, max_repair_attempts=2,
                     max_tokens=cap, temperature=0.0,
-                    images=call_images)
-                result = self._gw.generate_structured(req)  # raises StructuredOutputError/ProviderError
+                    images=call_images, deadline_ts=self.deadline_ts)
+                try:
+                    result = self._gw.generate_structured(req)  # raises StructuredOutputError/ProviderError
+                except Exception as exc:  # noqa: BLE001 - record, then re-raise or escalate
+                    self._record_attempts(diag, exc)
+                    if isinstance(exc, OutputTruncatedError):
+                        diag["truncation_escalations"] = diag.get("truncation_escalations", 0) + 1
+                        if idx + 1 < len(caps):
+                            diag["truncation_recovery"] = "retrying"
+                            continue
+                        diag["truncation_recovery"] = "failed"
+                    self.last_diagnostics = diag
+                    raise
+                self._record_attempts(diag, None)
                 diag["model_calls"] += 1
                 u = result.usage
                 if u:
                     diag["input_tokens"] += (u.input_tokens or 0)
                     diag["output_tokens"] += (u.output_tokens or 0)
                     diag["last_output_tokens"] = u.output_tokens or 0
+                    if u.reasoning_tokens:
+                        diag["reasoning_tokens"] = diag.get("reasoning_tokens", 0) + u.reasoning_tokens
                 diag["last_stop_reason"] = result.stop_reason
                 diag["last_max_tokens_used"] = cap
-                if result.stop_reason != "max_tokens":
+                if result.stop_reason not in _TRUNCATION_STOPS:
+                    if diag.get("truncation_recovery") == "retrying":
+                        diag["truncation_recovery"] = "recovered"
                     break   # not truncated — accept this result
                 diag["truncation_escalations"] = diag.get("truncation_escalations", 0) + 1
                 # else: truncated — loop retries at the higher cap (if any left)
@@ -2373,7 +2449,7 @@ class RealEditPlannerEngine:
             req = StructuredRequest(
                 task="edit_plan.critique", schema=cs, prompt_version=PROMPT_VERSION, system=self._system,
                 user_content=user_content, max_repair_attempts=1, max_tokens=600, temperature=0.0,
-                images=list(inputs.images))
+                images=list(inputs.images), deadline_ts=self.deadline_ts)
             result = self._gw.generate_structured(req)
             diag["model_calls"] += 1
             u = result.usage

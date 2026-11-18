@@ -426,10 +426,14 @@ class JobStore:
         return self._set_status(job_id, "completed", require=["running"], lease_token=lease_token,
                                 extra={"plan": {"M": _ser(plan)}, "diagnostics": {"M": _ser(diagnostics)}})
 
-    def fail(self, job_id: str, category: str, detail: str, lease_token: str | None = None) -> bool:
+    def fail(self, job_id: str, category: str, detail: str, lease_token: str | None = None,
+             diagnostics: dict | None = None) -> bool:
+        extra = {"failure_category": {"S": category}, "failure_detail": {"S": detail[:400]}}
+        if diagnostics:
+            # Safe provider-attempt metadata only (the caller sanitizes); lets a failed job be inspected.
+            extra["diagnostics"] = {"M": _ser(diagnostics)}
         return self._set_status(job_id, "failed", require=["running", "queued"], lease_token=lease_token,
-                                extra={"failure_category": {"S": category},
-                                       "failure_detail": {"S": detail[:400]}})
+                                extra=extra)
 
     def request_cancel(self, job_id: str) -> Optional[str]:
         """User cancel. queued|running -> cancel_requested. Terminal -> no-op. Returns resulting status."""
