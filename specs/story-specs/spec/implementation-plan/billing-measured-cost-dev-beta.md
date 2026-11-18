@@ -89,6 +89,27 @@ Samples are small (9 and 12 jobs), so the improvement is directional, not proven
 Unmeasured-component call counts after the cutoff (beta / dev): coverage jobs 15 / 16, story guide v2 7 / 6,
 music plan 9 / 10, duration 6 / 5, creative intent 4 / 5. No token cost exists for these yet (section 3).
 
+### Case study: one beta story, "Iceland" (90 moments), 2026-11-18
+
+Story `BA07A414-B660-4DD6-97EC-8C7952686B37`, user `61310227`, created 07:49:41 UTC. Everything below is logged
+between that time and 08:33 UTC: assets imported, then Highlights original, another version as Full Story, and a
+revise. All three plans ran `edit_plan/5.6` on `gpt-5.1`, 1 model call each, 0 repairs.
+
+| Step | Time (UTC) | Mode | Input / output tokens | Cost |
+|---|---|---|---|---|
+| Asset understanding, 95 calls for 90 moments (`gemini-3.8-flash`, about 30.2k in / 640 out each) | 07:51 to 08:15 | one-time import | n/a | **$1.019** ($0.0113 per moment) |
+| Original, Highlights | 08:17 | multimodal, 89 sheet images | 69,463 / 6,101 | **$0.148** |
+| Another version, Full Story | 08:24 | multimodal, 89 sheet images | 89,186 / 5,659 | **$0.168** |
+| Revise | 08:32 | text only | 23,653 / 4,151 | **$0.071** |
+| **Measured total** | | | | **$1.406** |
+
+- Edit plans total $0.387 for three videos, about $0.13 each. Asset understanding is 72% of the measured total.
+- Marginal cost of one more version from the same moments is $0.07 to $0.17. Import is a one-time cost per story.
+- Not measured for this story (counts only): 6 coverage job submissions (5 completed), 2 story guide v2, 2 music plan,
+  1 duration recommendation, 1 creative intent, 3 music candidate lookups and 3 soundtrack links, 3 reference images.
+  No token cost exists for these (section 3), so $1.406 is a **lower bound**; asset understanding is also a lower
+  bound because Gemini thinking tokens are not in the AU log.
+
 ### Per video
 
 | | Beta | Dev |
