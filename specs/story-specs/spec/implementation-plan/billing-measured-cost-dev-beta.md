@@ -65,6 +65,30 @@ the AU log has no user id, but the beta ledger shows a second user active on 202
 none that day) while beta AU logged 61 calls that day. At least part of beta's AU volume is another user's imports.
 Per-call AU cost is identical ($0.0107). The `model_call_usage` logging should carry a user id to settle this.
 
+### Re-query: only data after the edit-plan 5.6 pin (from 2026-11-17 00:07 PST = 08:07 UTC)
+
+Cutoff is the owner-stated "Nov 17, 12:07 AM"; commits are timestamped PST, and the beta 5.6 pin merged at
+00:01 PST on 2026-11-17, so 12:07 AM is read as PST. Retained job rows after the cutoff all show
+`prompt_version = edit_plan/5.6` (dev 10 completed + 1 failed, beta 5 completed). Both environments, real user only
+(dev `854abd33`, beta `61310227`), `gpt-5.1`, current prices. Queried 2026-11-18.
+
+| After cutoff | Beta | Dev |
+|---|---|---|
+| Original | **$0.079** avg (n=6, median input 29.1k tok, 1.0 calls) | $0.113 avg, $0.072 median (n=5, max $0.276) |
+| Explore | $0.101 (n=3) | $0.071 (n=5) |
+| Revise | no jobs | $0.015 (n=2, one logged 0 tokens) |
+| **All edit plans** | **$0.086 avg**, $0.072 median, $0.78 total (n=9) | **$0.079 avg**, $0.048 median, $0.95 total (n=12) |
+| Model calls per job | 1.0 | 1.0 |
+| Asset understanding | 95 calls, $1.02 ($0.0107 each) | 0 calls (no new imports; all cache hits) |
+| **Measured per video** | **about $0.20** (edit plan $0.086 + AU $0.113 amortized over 9 videos) | **about $0.08** (edit plan only) |
+
+Versus the earlier real-user window (Nov 1 onward): beta all-edit-plan $0.104 to $0.086, dev $0.086 to $0.079.
+Model calls per job fell to 1.0 (previously 1.5 to 1.9) and beta median input fell from 51.8k to 29.1k tokens.
+Samples are small (9 and 12 jobs), so the improvement is directional, not proven.
+
+Unmeasured-component call counts after the cutoff (beta / dev): coverage jobs 15 / 16, story guide v2 7 / 6,
+music plan 9 / 10, duration 6 / 5, creative intent 4 / 5. No token cost exists for these yet (section 3).
+
 ### Per video
 
 | | Beta | Dev |
