@@ -275,4 +275,64 @@ final class VisualEvidencePreparationTests: XCTestCase {
         print("P1F_PAYLOAD rich35 sheets=\(r.sheets.count) wireBytes=\(r.wireBytes) tier=\(r.budget.selectedTier) "
               + "preferred=\(first.preferred) eventsCovered=\(r.coverage.eventsCovered)/\(r.coverage.eventsTotal)")
     }
+
+    // MARK: - Perf milestone (2026-11-18): bounded concurrent cache lookups
+
+    func test_cache_lookups_overlap_but_never_exceed_the_concurrency_bound() async {
+        let refs = (0..<20).map { _ in ref() }
+        var active = 0, peak = 0
+        var looked = Set<UUID>()
+        let r = await VisualEvidencePreparation.prepare(
+            moments: refs, localURL: { _ in nil },
+            fetchCachedFrames: { m in
+                active += 1; peak = max(peak, active); looked.insert(m.momentId)
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                active -= 1
+                return self.tinyFrames()
+            },
+            restoreSources: { _ in ([:], []) })
+        XCTAssertEqual(looked, Set(refs.map { $0.momentId }), "every eligible Moment is still looked up")
+        XCTAssertLessThanOrEqual(peak, VisualEvidencePreparation.evidenceFetchConcurrency)
+        XCTAssertGreaterThan(peak, 1, "lookups must overlap")
+        XCTAssertEqual(r.cacheHitCount, 20)
+        XCTAssertEqual(r.sheets.count, 20)
+    }
+
+    func test_out_of_order_completion_gives_the_same_sheets_in_the_same_order_as_instant_lookups() async {
+        let refs = (0..<12).map { i in ref(events: [Double(i % 5) + 1]) }
+        let frames = Dictionary(uniqueKeysWithValues: refs.map { ($0.momentId, self.tinyFrames(9)) })
+        let baseline = await VisualEvidencePreparation.prepare(
+            moments: refs, localURL: { _ in nil },
+            fetchCachedFrames: { frames[$0.momentId] }, restoreSources: { _ in ([:], []) })
+        // Earlier Moments finish LAST: completion order is the reverse of request order.
+        let shuffled = await VisualEvidencePreparation.prepare(
+            moments: refs, localURL: { _ in nil },
+            fetchCachedFrames: { m in
+                let i = refs.firstIndex { $0.momentId == m.momentId } ?? 0
+                try? await Task.sleep(nanoseconds: UInt64((12 - i) * 3_000_000))
+                return frames[m.momentId]
+            },
+            restoreSources: { _ in ([:], []) })
+        XCTAssertEqual(shuffled.sheets.map(\.momentId), baseline.sheets.map(\.momentId))
+        XCTAssertEqual(shuffled.sheets.map(\.jpeg), baseline.sheets.map(\.jpeg))
+        XCTAssertEqual(shuffled.sheets.map(\.frameMs), baseline.sheets.map(\.frameMs))
+        XCTAssertEqual(shuffled.budget.selectedTier, baseline.budget.selectedTier)
+    }
+
+    func test_one_slow_failing_lookup_does_not_affect_the_others() async {
+        let refs = (0..<8).map { _ in ref() }
+        let bad = refs[2].momentId
+        var asked: [UUID] = []
+        let r = await VisualEvidencePreparation.prepare(
+            moments: refs, localURL: { _ in nil },
+            fetchCachedFrames: { m in
+                if m.momentId == bad { try? await Task.sleep(nanoseconds: 30_000_000); return nil }
+                return self.tinyFrames()
+            },
+            restoreSources: { want in asked = want; return ([:], want) })
+        XCTAssertEqual(asked, [bad], "only the failed lookup falls back to restore")
+        XCTAssertEqual(r.cacheHitCount, 7)
+        XCTAssertEqual(ids(r.sheets), Set(refs.map { $0.momentId }).subtracting([bad]))
+        XCTAssertEqual(r.restoreUnavailableIds, [bad.uuidString.lowercased()])
+    }
 }
