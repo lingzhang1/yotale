@@ -378,13 +378,37 @@ enum AUEvidenceCacheHit {
     /// sheet is built under the shared payload budget — a cache hit has no exemption. Needs no local video.
     static func fetchFrames(momentId: UUID,
                             service: AUEvidenceService = AUEvidenceService()) async -> [AUExtractedFrame]? {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        var tManifest = t0, tDownload = t0
+        var bytes = 0
+        func ms(_ a: CFAbsoluteTime, _ b: CFAbsoluteTime) -> Int { Int((b - a) * 1000) }
         do {
             let (manifest, download) = try await service.fetchManifest(momentId: momentId)
+            tManifest = CFAbsoluteTimeGetCurrent()
             let packed = try await service.downloadPacked(download, manifest: manifest)
+            tDownload = CFAbsoluteTimeGetCurrent()
+            bytes = packed.count
             let frames = try service.unpackFrames(packed, manifest: manifest)
+            let tEnd = CFAbsoluteTimeGetCurrent()
+            // Per-Moment timings (counts/bytes/ms only; no id). Runs off the main actor.
+            RenderTiming.emit(stage: "evidence_fetch_one", ms: ms(t0, tEnd),
+                              detail: "hit=true manifest_ms=\(ms(t0, tManifest)) download_ms=\(ms(tManifest, tDownload)) unpack_ms=\(ms(tDownload, tEnd)) bytes=\(bytes) frames=\(frames.count)")
             return frames.isEmpty ? nil : frames.sorted { $0.tMs < $1.tMs }
         } catch {
+            RenderTiming.emit(stage: "evidence_fetch_one", ms: ms(t0, CFAbsoluteTimeGetCurrent()),
+                              detail: "hit=false error=\(Self.errorClass(error)) bytes=\(bytes)")
             return nil   // any miss/integrity/transport failure -> caller uses the restore/extract fallback
+        }
+    }
+
+    /// A privacy-safe class name for a lookup failure (never the message, which could carry a URL).
+    private static func errorClass(_ error: Error) -> String {
+        guard let e = error as? AUEvidenceError else { return "other" }
+        switch e {
+        case .miss: return "miss"
+        case .integrity: return "integrity"
+        case .transport: return "transport"
+        case .badStatus(let c): return "status_\(c)"
         }
     }
 }
