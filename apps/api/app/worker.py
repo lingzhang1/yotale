@@ -59,6 +59,17 @@ _ENV = os.environ.get("STORY_ENVIRONMENT", "development")
 # quota wiring and a packaging gap must never break plan execution). user_quota is a bundled package; the
 # worker CANNOT import app.* (FastAPI not bundled), so it uses the pure module directly.
 try:
+    from model_gateway import call_context as _call_context, set_call_context as _set_call_context
+except Exception:  # noqa: BLE001 — attribution is best-effort; never break plan execution
+    from contextlib import nullcontext as _nc
+
+    def _call_context(**_kw):  # type: ignore[misc]
+        return _nc()
+
+    def _set_call_context(**_kw):  # type: ignore[misc]
+        return None
+
+try:
     from user_quota import UserQuota as _UserQuota
 except Exception:  # noqa: BLE001
     _UserQuota = None
@@ -380,10 +391,14 @@ def _run_one(store: _jobs.JobStore, job_id: str) -> str:
     if not job:
         return "missing"
     op = job.get("operation_type", _jobs.OP_EDIT_PLAN)
+    # B0 cost attribution: every model_call_usage line emitted while this job runs carries the job owner, job id
+    # and operation (opaque ids / closed vocabulary only). story_id is added once the request body is parsed.
     if op == _jobs.OP_COVERAGE_V2:
-        result = _run_coverage(store, job_id, job)
+        with _call_context(story_user_id=job.get("owner"), job_id=job_id, operation="worker:coverage_v2"):
+            result = _run_coverage(store, job_id, job)
     elif op == _jobs.OP_EDIT_PLAN:
-        result = _run_edit_plan(store, job_id, job)
+        with _call_context(story_user_id=job.get("owner"), job_id=job_id, operation="worker:edit_plan"):
+            result = _run_edit_plan(store, job_id, job)
     else:
         # Unknown operation: fail the job safely (never execute an unrecognized payload against any engine).
         store.fail(job_id, "unknown_operation",
@@ -426,6 +441,7 @@ def _run_coverage(store: _jobs.JobStore, job_id: str, job: dict) -> str:
             # staged coverage body is written as body.json; load_request returns (body, sheets)
 
         b = json.loads(body_json)
+        _set_call_context(story_id=b.get("story_id"))
 
         # ACCEPTANCE HOOK (test-only, env-gated): deterministic long-run simulation without model cost.
         if os.environ.get("STORY_WORKER_ALLOW_TEST_DELAY") == "1":
@@ -513,6 +529,8 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
         # The body was already validated at submit time by the endpoint's EditPlanRequest model. The worker
         # parses the raw dict directly — it must NOT import app.main (that pulls FastAPI/uvicorn, not bundled).
         b = json.loads(env["body"])
+        _rc = b.get("revision_context") if isinstance(b.get("revision_context"), dict) else {}
+        _set_call_context(story_id=b.get("story_id"), operation=f"worker:edit_plan:{_rc.get('mode') or 'original'}")
         inputs = EditPlanInputs(
             story_id=str(b["story_id"]), creative_intent_id=str(b["creative_intent_id"]),
             creative_intent=b["creative_intent"], story_guide=b.get("story_guide", {}),

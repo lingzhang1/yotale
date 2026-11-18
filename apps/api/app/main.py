@@ -136,6 +136,8 @@ from app.store import InMemoryStoryStore
 from app.auth import (  # P0 Beta Auth: trusted-identity dependencies + central deny-by-default boundary
     optional_user, require_user, Principal, auth_boundary, _docs_public,
 )
+from model_gateway import set_call_context as _set_cost_ctx  # B0: attribute model calls to a story
+from app.cost_context import cost_context_middleware  # B0: per-call cost attribution context
 from app.throttle import throttle_middleware  # P0 Beta Security Phase 3: per-user rate limiting
 from app import quota_gate  # P0 Beta Security Phase 4: per-user AI quota + spend protection
 
@@ -661,6 +663,7 @@ def create_app() -> FastAPI:
     # handler), throttle next, and auth LAST (outermost). Auth resolves request.state.principal first; then
     # throttle (rate per minute); then quota (cumulative AI spend/allowance + active-job slots). P0 Beta
     # Security Phases 3 (throttle) + 4 (quota).
+    app.middleware("http")(cost_context_middleware)   # innermost: attribution for model_call_usage
     app.middleware("http")(quota_gate.quota_middleware)
     app.middleware("http")(throttle_middleware)
     app.middleware("http")(auth_boundary)
@@ -1438,6 +1441,7 @@ def create_app() -> FastAPI:
             # NEVER log: raw understanding prose / summaries. Metadata only (06/E §privacy).
         }
         try:
+            _set_cost_ctx(story_id=body.story_id)  # B0 attribution
             cov = engine.compute(CoverageInput(
                 story_id=body.story_id, creative_intent=body.creative_intent, scope=body.scope,
                 moment_understandings=body.moment_understandings, pending_count=body.pending_count,
@@ -1486,6 +1490,7 @@ def create_app() -> FastAPI:
                 "task": "story_guide.generate_v2", "prompt_version": "story_guide/v2",
                 "schema_version": "story_guide/2"}
         try:
+            _set_cost_ctx(story_id=body.story_id)  # B0 attribution
             guide = engine.generate(GuideInput(
                 story_id=body.story_id, creative_intent=body.creative_intent, scope=body.scope,
                 source_creative_intent_version=body.source_creative_intent_version,
@@ -1523,6 +1528,7 @@ def create_app() -> FastAPI:
                 "task": "story_guide.refine_v2", "prompt_version": "story_guide/refine-v1",
                 "schema_version": "story_guide/2"}
         try:
+            _set_cost_ctx(story_id=body.story_id)  # B0 attribution
             result = engine.refine(RefineInput(
                 story_id=body.story_id, creative_intent=body.creative_intent, scope=body.scope,
                 current_framing_summary=body.current_framing_summary,
@@ -1737,6 +1743,7 @@ def create_app() -> FastAPI:
                 "task": "edit_plan.generate", "schema_version": "edit_plan/2",
                 "has_music_analysis": body.music_analysis is not None, "moment_count": len(body.moments),
                 "planning_mode": "text_only"}
+        _set_cost_ctx(story_id=body.story_id)  # B0 attribution
         inputs = EditPlanInputs(
             story_id=str(body.story_id), creative_intent_id=str(body.creative_intent_id),
             creative_intent=body.creative_intent, story_guide=body.story_guide,
@@ -2202,6 +2209,7 @@ def create_app() -> FastAPI:
         base = {"operation": "music_plan", "correlation_id": correlation_id,
                 "task": "music_plan.generate", "schema_version": "music_plan/1",
                 "target_s": body.target_duration_seconds}
+        _set_cost_ctx(story_id=body.story_id)  # B0 attribution
         inputs = MusicPlanInputs(
             story_id=str(body.story_id),
             creative_intent=body.creative_intent,
@@ -2458,6 +2466,7 @@ def create_app() -> FastAPI:
                 "task": "story_coverage.v2", "schema_version": "story_coverage/2",
                 "moment_count": len(body.moment_understandings), "pending_count": body.pending_count}
         try:
+            _set_cost_ctx(story_id=body.story_id)  # B0 attribution
             cov = engine.compute(CoverageV2Input(
                 story_id=body.story_id, story_guide=body.story_guide,
                 story_guide_version=body.story_guide_version, creative_intent=body.creative_intent,

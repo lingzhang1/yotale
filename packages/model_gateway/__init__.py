@@ -15,10 +15,12 @@ Creative Intent).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -163,6 +165,58 @@ def make_attempt(*, provider: str, model: str | None, n: int, max_tokens: int, l
     return rec
 
 
+# ---------------------------------------------------------------------------
+# Call context: who/what a model call is for (cost attribution)
+#
+# A ContextVar (not a parameter) so attribution reaches every adapter attempt without changing any engine
+# signature. Set once per request by the API middleware (story_user_id, correlation_id, operation) and per
+# job by the worker (story_user_id, job_id, operation, story_id); handlers may add story_id. Values are opaque
+# backend ids and closed-vocabulary operation names: never prompts, media or secrets. ContextVars propagate
+# into Starlette's threadpool (context is copied) and into asyncio child tasks created after they are set.
+# ---------------------------------------------------------------------------
+_CTX_FIELDS = ("story_user_id", "story_id", "operation", "job_id", "correlation_id", "retry_of")
+_CALL_CTX: "contextvars.ContextVar[dict]" = contextvars.ContextVar("model_call_ctx", default={})
+
+
+def set_call_context(**fields: Any) -> "contextvars.Token":
+    """Merge attribution fields into the current call context; returns a token for reset_call_context().
+    Unknown keys and None values are ignored. A fresh per-context call counter starts on first use."""
+    cur = dict(_CALL_CTX.get())
+    for k, v in fields.items():
+        if k in _CTX_FIELDS and v is not None:
+            cur[k] = str(v)[:80]
+    cur.setdefault("_seq", [0])
+    return _CALL_CTX.set(cur)
+
+
+def reset_call_context(token: "contextvars.Token") -> None:
+    try:
+        _CALL_CTX.reset(token)
+    except (ValueError, LookupError):
+        pass
+
+
+@contextmanager
+def call_context(**fields: Any):
+    tok = set_call_context(**fields)
+    try:
+        yield
+    finally:
+        reset_call_context(tok)
+
+
+def current_call_context() -> dict:
+    return {k: v for k, v in _CALL_CTX.get().items() if k in _CTX_FIELDS}
+
+
+def _next_call_index() -> "int | None":
+    seq = _CALL_CTX.get().get("_seq")
+    if not isinstance(seq, list):
+        return None
+    seq[0] += 1
+    return seq[0]
+
+
 def log_model_call(task: str, rec: dict) -> None:
     """Emit ONE privacy-safe `model_call_usage` log line per BILLED provider attempt, for every capability
     (the single place all engines funnel through). Cost = tokens x the live observability price table.
@@ -194,6 +248,9 @@ def log_model_call(task: str, rec: dict) -> None:
             "reasoning_output_tokens": reasoning, "billed_output_tokens": billed_out,
             "estimated_cost_usd": round(cost, 6), "pricing_known": priced,
             "pricing_version": PRICING_VERSION,
+            "call_index": _next_call_index(),          # nth billed attempt within this request/job
+            "finish_reason": rec.get("finish_reason"),
+            **current_call_context(),                  # story_user_id / story_id / operation / job_id / ...
         })
     except Exception:  # noqa: BLE001
         pass
@@ -461,6 +518,10 @@ __all__ = [
     "ProviderTimeoutError",
     "ProviderDeadlineError",
     "log_model_call",
+    "set_call_context",
+    "reset_call_context",
+    "call_context",
+    "current_call_context",
     "make_attempt",
     "sanitize_error",
     "classify_provider_error",

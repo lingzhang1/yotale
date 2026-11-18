@@ -119,3 +119,67 @@ def test_no_prompt_media_or_user_fields_are_logged(cap):
     (_, f), = cap.lines
     assert not ({"prompt", "user_content", "system", "story_user_id", "images"} & set(f))
     assert observability.scrub_log_fields(f) == f  # nothing would be redacted
+
+
+# ---- attribution context (B0) ------------------------------------------------------------------------------
+
+def test_call_context_attributes_every_line_and_counts_calls(cap):
+    from model_gateway import call_context
+    gw = OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}))
+    with call_context(story_user_id="u-1", story_id="s-1", operation="worker:edit_plan:explore", job_id="j-1"):
+        gw.generate_structured(_req())
+        gw.generate_structured(_req())
+    assert [f["call_index"] for _, f in cap.lines] == [1, 2]
+    for _, f in cap.lines:
+        assert f["story_user_id"] == "u-1" and f["story_id"] == "s-1" and f["job_id"] == "j-1"
+        assert f["operation"] == "worker:edit_plan:explore"
+    # scrubbing must not redact the attribution ids
+    assert observability.scrub_log_fields(cap.lines[0][1]) == cap.lines[0][1]
+
+
+def test_no_context_means_no_attribution_fields(cap):
+    OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})).generate_structured(_req())
+    (_, f), = cap.lines
+    assert "story_user_id" not in f and "job_id" not in f
+
+
+def test_context_resets_after_block(cap):
+    from model_gateway import call_context, current_call_context
+    with call_context(story_user_id="u-1"):
+        assert current_call_context()["story_user_id"] == "u-1"
+    assert "story_user_id" not in current_call_context()
+
+
+def test_request_middleware_sets_context_for_sync_handlers():
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    from model_gateway import current_call_context
+    from app.cost_context import cost_context_middleware
+
+    app = FastAPI()
+
+    @app.get("/probe")
+    def probe():  # sync handler -> runs in the threadpool, which must see the context
+        return current_call_context()
+
+    @app.get("/probe-async")
+    async def probe_async():
+        return current_call_context()
+
+    class P:  # minimal principal
+        story_user_id = "u-9"
+        is_legacy = False
+
+    app.middleware("http")(cost_context_middleware)
+
+    @app.middleware("http")
+    async def auth(request: Request, call_next):  # outermost: resolves the principal first
+        request.state.principal = P()
+        return await call_next(request)
+
+    c = TestClient(app)
+    for path in ("/probe", "/probe-async"):
+        got = c.get(path).json()
+        assert got["story_user_id"] == "u-9" and got["operation"] == f"GET {path}" and got["correlation_id"]
