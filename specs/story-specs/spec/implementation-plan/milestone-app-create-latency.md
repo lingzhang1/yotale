@@ -125,7 +125,7 @@ Phone timeline (seconds) where the console lines exist; server worker time is jo
 
 | Run | Moments / sheets | Out | Total | Evidence | Submit | Plan (phone) | Worker | Render (export) | Max stall |
 |---|---|---|---|---|---|---|---|---|---|
-| Original, Full Story (`99f1320e`) | 37 / 37 | 99.6 s | 82.6 | 12.4 | 2.6 | 47.5 | 43.7 | 19.9 (19.6) | 364 ms |
+| Original, Highlights (`99f1320e`) | 37 / 37 | 99.6 s | 82.6 | 12.4 | 2.6 | 47.5 | 43.7 | 19.9 (19.6) | 364 ms |
 | Original (`1e10afe1`) | 21 / 21 | 40.0 s | 46.0 | 6.4 | 2.1 | 31.6 | 30.0 | 5.5 (5.3) | 219 ms |
 | Explore (`a0efddbd`) | 21 / 21 | 65.1 s | 35.0 | 6.5 | 2.1 | 15.7 | 16.6 | 10.3 (10.2) | 214 ms |
 | Revise, Highlights, text-light (`2d78aecc`) | ? / 0 | 44.7 s | no phone log | — | — | — | 17.5 | — | — |
@@ -136,3 +136,21 @@ Server planning per job (one model call each, no repair): input/output tokens 32
 Share of phone wall time: planning 57%, 69%, 45%; render 24%, 12%, 29%; evidence 15%, 14%, 19%; submit 3–6%. Evidence is 0.30–0.33 s per Moment in every run and repeatable (the same 21-Moment Story twice: fetch 5.3 s and 5.4 s). Export runs at 5.1–7.5× real time. Cloud backup verified 6–15 s after the output, off the critical path. Completion detection lag is about 1–4 s.
 
 The failed-then-retried attempt is one of the last two rows; its phone lines were not captured, so its failure stage is still unknown.
+
+### 9.2 Server planning after the planner-timeout fix (2026-11-18, 05:19–05:32 UTC)
+
+The dev worker was redeployed at 05:14 UTC with `4e6ae15` (`fix/planner-timeout`, budget-scaled planner HTTP timeout, not yet on master). Server time is job creation -> `worker_outcome`; model time is the `provider_attempts[].latency_ms` of the single call. No phone console lines were captured for these runs.
+
+| Run (job) | Story | Moments / sheets | Target | Segments | Tokens in / out | Model | Server |
+|---|---|---|---|---|---|---|---|
+| Create, Highlights (`ad1099ad`) | `51f3ff3c` | 68 / 68 | 135 s | 65 | 54.3k / 6.1k | 72.3 s | 76 s |
+| Create another version, Full Story (`f85bdeff`) | `51f3ff3c` | 68 / 68 | 235 s | 47 | 69.9k / 4.6k | 51.3 s | 55 s |
+| Revise (`84b88508`) | `beebc11b` | 21 / 0 | 40 s | 20 | no model call (`revision_path=deterministic`) | — | <1 s |
+| Create another version, Highlights (`728058bb`) | `beebc11b` | 21 / 21 | 40 s | 20 | 23.5k / 1.9k | 30.0 s | 32 s |
+| Create another version, Highlights (`7b49b7b9`) | `beebc11b` | 21 / 21 | 40 s | 20 | 23.5k / 1.9k | 34.9 s | 36 s |
+
+- `ad1099ad` is the same 68-Moment Story (identical sheet order) whose job `fc92ea54` failed at 04:36 on the 60 s adapter timeout. Its single call took 72.3 s, so it would have failed again under the old timeout.
+- Worker overhead outside the model call is 1–4 s; queue pickup is near zero.
+- Across the four multimodal jobs, model time rises roughly 10 ms per output token (1.9k -> 30–35 s, 4.6k -> 51 s, 6.1k -> 72 s). Four points, so this is a trend, not a fitted model.
+- Run-to-run noise: two near-identical jobs (same Story, same token counts) took 30.0 s and 34.9 s.
+- The Revise took the deterministic path and made no model call, so its latency is phone-side render only.
