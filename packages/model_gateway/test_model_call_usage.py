@@ -206,3 +206,69 @@ def test_nested_call_context_starts_a_fresh_count_but_merge_keeps_it(cap):
             gw.generate_structured(_req())
     assert [f["call_index"] for _, f in cap.lines] == [1, 2, 1]
     assert cap.lines[1][1]["story_id"] == "s-1" and "story_id" not in cap.lines[2][1]
+
+
+# ---- B0 verification: reset on every exit path, no leakage, cost basis ------------------------------------------
+
+def test_context_resets_when_the_block_raises():
+    from model_gateway import call_context, current_call_context
+    with pytest.raises(RuntimeError):
+        with call_context(story_user_id="u-1", job_id="j-1"):
+            raise RuntimeError("handler failed")
+    assert current_call_context() == {}
+
+
+def test_context_resets_when_the_task_is_cancelled():
+    import asyncio
+    from model_gateway import call_context, current_call_context
+
+    async def scenario():
+        started = asyncio.Event()
+
+        async def work():
+            with call_context(story_user_id="u-1"):
+                started.set()
+                await asyncio.sleep(30)
+
+        t = asyncio.create_task(work())
+        await started.wait()
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        return current_call_context()
+
+    assert asyncio.run(scenario()) == {}
+
+
+def test_concurrent_requests_do_not_see_each_others_attribution():
+    import asyncio
+    from model_gateway import call_context, current_call_context
+
+    async def req(uid, n):
+        with call_context(story_user_id=uid):
+            await asyncio.sleep(0.01 * n)
+            return current_call_context()["story_user_id"]
+
+    async def main():
+        return await asyncio.gather(*(req(f"u{i}", i % 3) for i in range(12)))
+
+    assert asyncio.run(main()) == [f"u{i}" for i in range(12)]
+
+
+def test_attribution_context_drops_unknown_fields_and_bounds_values():
+    from model_gateway import call_context, current_call_context
+    with call_context(story_user_id="u" * 500, email="a@b.com", prompt="secret", authorization="Bearer x",
+                      apple_transaction="signed.jws.value"):
+        got = current_call_context()
+    assert set(got) == {"story_user_id"} and len(got["story_user_id"]) == 80
+
+
+def test_log_line_has_estimated_cost_basis_and_no_free_text_fields(cap):
+    from model_gateway import call_context
+    gw = OpenAIModelGateway("gpt-5.1", api_key="k", http_post=_openai(
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}))
+    with call_context(story_user_id="u-1", email="a@b.com"):
+        gw.generate_structured(_req())
+    (_, f), = cap.lines
+    assert f["cost_basis"] == "estimated_list_price" and f["telemetry_version"] == 1
+    assert "email" not in f and not any("@" in str(v) for v in f.values())

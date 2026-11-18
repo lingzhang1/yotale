@@ -184,6 +184,8 @@ def set_call_context(*, fresh: bool = False, **fields: Any) -> "contextvars.Toke
     merging, so a handler adding `story_id` does not restart the request's count; `fresh=True` starts a new count."""
     cur = {} if fresh else dict(_CALL_CTX.get())      # a new unit of work inherits nothing from an outer one
     for k, v in fields.items():
+        # Allow-listed keys only: an email, token, prompt or any other field passed by mistake is DROPPED, and values
+        # are bounded, so the attribution context cannot become a channel for personal data into the logs.
         if k in _CTX_FIELDS and v is not None:
             cur[k] = str(v)[:80]
     if fresh or "_seq" not in cur:
@@ -251,6 +253,10 @@ def log_model_call(task: str, rec: dict) -> None:
             "reasoning_output_tokens": reasoning, "billed_output_tokens": billed_out,
             "estimated_cost_usd": round(cost, 6), "pricing_known": priced,
             "pricing_version": PRICING_VERSION,
+            # ESTIMATE = provider-reported token counts x the list-price table. It is never an invoice figure:
+            # reconcile against OpenAI/Google billing exports before relying on it for pricing.
+            "cost_basis": "estimated_list_price",
+            "telemetry_version": 1,
             "call_index": _next_call_index(),          # nth billed attempt within this request/job
             "finish_reason": rec.get("finish_reason"),
             **current_call_context(),                  # story_user_id / story_id / operation / job_id / ...

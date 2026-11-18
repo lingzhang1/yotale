@@ -9,6 +9,21 @@ Supersedes the single-session sample in `docs/architecture/billing/per-video-cos
 (branch `docs/billing-per-video-cost`, 2026-11-02, n=7 edit-plan ops on beta). Same method, wider sample, both
 accounts, plus an audit of what the accounting does NOT see.
 
+## 0. Current configuration (verified 2026-11-18) versus the historical data below
+
+Several figures in this document and in older milestone reports were measured under configurations that no longer apply. Current values,
+from `release/release.json` and CDK (not from older reports):
+
+| Setting | Historical (older reports) | Current |
+|---|---|---|
+| Planner | Opus 4.6 (October), `edit_plan/5.3` | `edit_plan/5.6`, time-boxed owner-approved pin in **development and beta** until 2026-11-30 |
+| Providers | Bedrock Anthropic | `STORY_MODEL_PROVIDER` removed; OpenAI `gpt-5.1` (plan, guide, coverage, ...) and Gemini `gemini-3.8-flash` (AU); Bedrock/Anthropic routing is disabled in code |
+| Beta quota posture | observe, $5 to $8 per user (B0 Phase 4 design) | **enforce**, $50 per user per month, 500 gens per day, 2 active jobs, $60 global (`quota_mode`, `user_monthly_usd` in release.json; CDK defaults) |
+| Evidence persistence | off (P1-F design) | **on** in development and beta (`evidence_persist: "1"`); stored evidence is therefore a real, unmeasured storage cost |
+| Sign-up | invite-only (Cognito email OTP milestone) | Cognito `selfSignUpEnabled: true` in CDK; the **development** pool has `AllowAdminCreateUserOnly=false` and no pre-sign-up trigger (live check). The **beta** pool was not live-checked (SSO session expired); it is built from the same CDK. `IdentityStore` marks every first sign-in `beta_access_status=invited`, which is admitted. Effective behaviour: anyone who can complete email OTP sign-up gets in. |
+
+Everything below this section reports data from the stated windows; read it against this table.
+
 ## 1. Sources and method
 
 | Source | Account | Used for |
@@ -195,8 +210,8 @@ Tests: `packages/model_gateway/test_model_call_usage.py` (7). Full `apps/api/tes
 `director_resolved` totals.** They describe the same calls; `model_call_usage` is the authoritative per-call line
 once deployed, the others stay for continuity.
 
-Not in this change (decisions for later): attributing calls to `story_user_id` (needs a request-scoped context),
-and settling real cost in the quota ledger via `quota_actual_usd`.
+Not in this change: settling real cost in the quota ledger via `quota_actual_usd`. User attribution has since been added
+(see `billing-b0-cost-attribution-and-unit-economics.md`).
 
 ## 8. Follow-up queries (after deploy)
 

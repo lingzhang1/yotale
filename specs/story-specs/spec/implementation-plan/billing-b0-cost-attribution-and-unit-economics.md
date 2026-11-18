@@ -9,7 +9,7 @@ AWS change.** Builds on `billing-measured-cost-dev-beta.md` (measured data) and 
 |---|---|
 | `model_call_usage` for every capability (AU, Coverage, Guide, AI Idea, Creative Intent, Duration, Music Plan, EditPlan) | **Done.** One line per billed provider attempt at the OpenAI/Gemini adapter seam. |
 | `story_user_id` on each line | **Done** (API: request middleware; worker: per-job context). |
-| `story_id`, when available | **Done** for coverage, coverage v2, guide v2, guide refine, edit plan, music plan (handler) and worker jobs (job body). Not available for AU, creative intent, duration, scene understanding, AI Idea: those request bodies carry no story id. |
+| `story_id`, when available | **Done, optional by design.** Set where a request body already carries a story id: coverage, coverage v2, guide v2, guide refine, edit plan, music plan (handler) and worker jobs (job body). **AU, creative intent, duration, scene understanding and AI Idea intentionally carry none.** A Moment can belong to several Stories, so per-account Moment cost is the authoritative source cost; per-Story attribution of it is not meaningful and no `story_id` is added to AU requests for reporting. |
 | operation type | **Done.** `operation` = `METHOD /route` on the API; `worker:edit_plan:<original|explore|revise>` or `worker:coverage_v2` in the worker. |
 | served provider/model, input/output/thinking tokens | **Done** (`provider`, `model_id`, `input_tokens`, `output_tokens`, `reasoning_output_tokens`, `billed_output_tokens`). |
 | actual model-call count | **Done.** `call_index` = nth billed attempt within the request/job. Sum per `job_id`. |
@@ -23,7 +23,7 @@ The API middleware `apps/api/app/cost_context.py` is registered innermost. The w
 
 Distinguishing provider-reported from estimated from unmeasured spend:
 - **Provider-reported tokens, estimated USD:** every `model_call_usage` line. USD is tokens x list price, never the provider invoice.
-- **Unmeasured:** S3 egress, evidence storage (persist flag is off), music provider fees (no contract), AWS fixed infra, Cognito.
+- **Unmeasured:** S3 egress, evidence-package storage (reusable-evidence persistence is ON in dev and beta per `release/release.json`, so this is a real, unmeasured cost), music provider fees (no contract), fixed AWS infra, Cognito.
 - **Retries are not double counted:** each provider attempt is one line with its own tokens. Aggregate with `sum(estimated_cost_usd)` grouped by
   `job_id` or `correlation_id`; do not add the older `bedrock_usage`, `asset_understanding_resolved`, `director_resolved` lines (same calls).
 
@@ -39,8 +39,7 @@ filter message = "model_call_usage"
 
 1. Nothing is deployed, so `model_call_usage` has no production data yet. Coverage, guide, creative intent, duration, music plan,
    interpret-revision and scene-understanding costs remain **unmeasured** until a deploy and a week of use.
-2. AU, creative intent, duration, scene understanding and AI Idea requests carry no story id; per-story attribution for those needs a
-   client-supplied story id on the request (a contract change, not made here).
+2. Per-Story attribution is optional and absent for AU and the Moment-level calls (see above). Per-account cost per Moment is authoritative; per-Story figures derived from the optional field are indicative only.
 3. Gemini thinking tokens were never logged before; AU cost in all historical data is a **lower bound**.
 4. S3 egress, evidence storage, music provider cost and non-per-user AWS cost are not measured.
 5. Failed-attempt cost with no usage metadata (transport errors) is invisible.
