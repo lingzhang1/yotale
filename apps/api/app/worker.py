@@ -501,6 +501,7 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
     token = store.claim_lease(job_id)
     if not token:
         return "lease_held"   # another worker owns it; drop this delivery
+    _job_started = time.time()
 
     prefix = job["request_ref"]["staging_prefix"]
     order = json.loads(job["request_ref"]["sheet_order"])
@@ -543,6 +544,9 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                     store.mark_cancelled(job_id); store.delete_staging(prefix); return "cancelled_during_delay"
 
         engine = _build_engine()
+        # Overall wall-clock budget for provider calls: the worker deadline minus a margin for validation,
+        # fitting and publishing. Adapters refuse to start an attempt that cannot finish before it.
+        engine.deadline_ts = _job_started + EXEC_DEADLINE_S - 45
         plan = engine.generate(inputs)   # SAME core: v5.2 + validator + fallback + bounded critique
         diag = getattr(engine, "last_diagnostics", {}) or {}
 
@@ -567,6 +571,10 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                                              "duration_fit",
                                              # Editorial vNext D3: deterministic selection diagnostics (no media,
                                              # no prompts, opaque 8-char Moment refs; computed, not model-written)
+                                             # provider reliability (safe metadata only)
+                                             "provider_attempts", "initial_max_tokens",
+                                             "truncation_escalations", "truncation_recovery",
+                                             "reasoning_tokens", "primary_failure",
                                              "selection")}
         diag_out["planning_mode"] = "multimodal" if images else "text_only"
         diag_out["sheet_count"] = len(images)
@@ -700,7 +708,8 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                                   {"env": _ENV, "service": "worker", "model_id": _planner_models()[0]})
             except Exception:  # noqa: BLE001
                 pass
-        store.fail(job_id, cat, detail, token)
+        detail = _with_primary_failure(detail, exc)
+        store.fail(job_id, cat, detail, token, diagnostics=_failure_diagnostics(_diag, exc))
         store.delete_staging(prefix)
         # Phase 4: FAILED generation refunds the user allowance but KEEPS incurred Bedrock spend (correction
         # 3/4). Release the active-job slot (exactly once).
@@ -711,6 +720,31 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
             _incurred = 0.0
         _quota_release_job(job, incurred_usd=_incurred)
         return f"failed:{cat}"
+
+
+def _with_primary_failure(detail: str, exc: BaseException) -> str:
+    """Append WHY the primary provider failed when a fallback ran and also failed (bounded, sanitized)."""
+    pf = getattr(exc, "primary_failure", None)
+    if isinstance(pf, dict) and pf.get("category"):
+        return f"{detail} | primary provider: {pf.get('category')}"[:400]
+    return detail
+
+
+_FAILURE_DIAG_KEYS = ("provider_attempts", "initial_max_tokens", "truncation_escalations", "truncation_recovery",
+                      "last_error_category", "last_error", "primary_failure", "model_calls", "input_tokens",
+                      "output_tokens", "reasoning_tokens", "executability_repairs_used")
+
+
+def _failure_diagnostics(diag: dict, exc: BaseException) -> dict:
+    """Safe provider-attempt metadata for a FAILED job (no prompts, images, raw output or credentials), so a
+    failure is as inspectable as a success. Always returns a small dict."""
+    out = {k: diag.get(k) for k in _FAILURE_DIAG_KEYS if diag.get(k) is not None}
+    out["prompt_version"] = _effective_prompt_version()
+    out["error_type"] = type(exc).__name__
+    pf = getattr(exc, "primary_failure", None)
+    if isinstance(pf, dict):
+        out["primary_failure"] = pf
+    return out
 
 
 def _plan_to_dict(plan) -> dict:
