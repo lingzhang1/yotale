@@ -222,25 +222,44 @@ def submit_reserve(request: Request, uid: str, scoped_op_id: str, job_id: str,
     if not created:
         _metric(request, "QuotaReserveSkippedRecovered", cls)
         return None
+    reserved = False
     try:
         q.reserve(uid, scoped_op_id, estimate_usd=estimate, gens=1)
+        reserved = True
         # reserve a queued+running slot keyed by the deterministic job id (same identity the store uses)
         q.reserve_slot(uid, job_id)
     except QuotaDenied as d:
         if enforce:
             _metric(request, "QuotaDenied", cls)
+            if reserved:
+                _rollback_denied_reservation(q, uid, scoped_op_id)
             return _denied(d.scope)
         _metric(request, "QuotaWouldDeny", cls)
         return None
     except QuotaStoreError:
         _metric(request, "QuotaStoreError", cls)
         if enforce:
+            if reserved:
+                _rollback_denied_reservation(q, uid, scoped_op_id)
             return JSONResponse(status_code=503, headers={"Retry-After": "30"},
                                 content={"error": "quota_store_unavailable", "class": cls,
                                          "retry_after_seconds": 30})
         return None
     _metric(request, "QuotaReserved", cls)
     return None
+
+
+def _rollback_denied_reservation(q, uid: str, scoped_op_id: str) -> None:
+    """The submit was DENIED after the allowance reservation succeeded (the slot cap was hit, or the store failed on the slot).
+    Return the allowance now and drop the terminal marker, so (a) nothing leaks into the per-user or GLOBAL breaker totals for a
+    job that will never run, and (b) a later retry of the SAME operation id (the store re-opens a denied job, bounded) reserves
+    afresh instead of finding a released marker and being treated as already reserved. Best-effort: the orphan sweep is the
+    backstop."""
+    try:
+        q.release_allowance(uid, scoped_op_id, gens=1, incurred_usd=0.0)
+        _prune_terminal_markers_best_effort(q, uid)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # --- worker terminal settlement (correction 7: worker retries; 6: slot release) -------------------------

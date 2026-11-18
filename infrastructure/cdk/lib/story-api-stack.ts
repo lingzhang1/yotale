@@ -310,6 +310,15 @@ export class StoryApiStack extends cdk.Stack {
     const observeOnly = environment === "development" || environment === "test";
     const quotaMode = observeOnly ? "observe" : "enforce";
     const throttleMode = observeOnly ? "observe" : "enforce";
+    // Billing V1 posture comes from the SAME manifest the release gate validates (release/release.json
+    // environments.<env>.billing_mode): one source of truth, no override input. Unset means off. A value outside
+    // off|observe|enforce fails the synth instead of silently deploying a disabled (or wrongly enabled) billing gate.
+    const billingModeRaw = releaseManifest?.environments?.[environment]?.billing_mode;
+    const billingMode: string = billingModeRaw === undefined || billingModeRaw === null ? "off" : String(billingModeRaw);
+    if (!["off", "observe", "enforce"].includes(billingMode)) {
+      throw new Error(`release/release.json environments.${environment}.billing_mode=${JSON.stringify(billingModeRaw)} ` +
+        `is invalid; expected one of off|observe|enforce`);
+    }
     const userMonthlyUsdDefault = environment === "beta" ? "50" : "8";
 
     // Worker Lambda — DOCKER-FREE zip asset (the sandbox cannot run Docker). scripts/build_worker_asset.sh
@@ -361,6 +370,7 @@ export class StoryApiStack extends cdk.Stack {
         // same in observe/enforce — they only reverse what reserve recorded).
         STORY_USER_USAGE_TABLE: `story-${environment}-user-usage`,
         STORY_QUOTA_MODE: quotaMode,
+        STORY_BILLING_MODE: billingMode,
       },
     });
     worker.addEventSource(new lambdaEventSources.SqsEventSource(jobsQueue, {
@@ -518,6 +528,7 @@ export class StoryApiStack extends cdk.Stack {
               // PROPOSAL (below the $100 beta AWS Budget alert), overridable per env.
               { name: "STORY_USER_USAGE_TABLE", value: userUsageTableName },
               { name: "STORY_QUOTA_MODE", value: quotaMode },
+              { name: "STORY_BILLING_MODE", value: billingMode },
               { name: "STORY_QUOTA_USER_MONTHLY_USD", value: process.env.STORY_QUOTA_USER_MONTHLY_USD ?? userMonthlyUsdDefault },
               { name: "STORY_QUOTA_USER_DAILY_GENS", value: process.env.STORY_QUOTA_USER_DAILY_GENS ?? "500" },
               { name: "STORY_QUOTA_MAX_ACTIVE_JOBS", value: process.env.STORY_QUOTA_MAX_ACTIVE_JOBS ?? "2" },

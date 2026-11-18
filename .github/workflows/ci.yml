@@ -33,6 +33,19 @@ jobs:
           # boto3 is a declared apps/api dependency (pyproject.toml) exercised by the music_provider
           # auth test; fastapi/httpx back the TestClient used by the endpoint tests. Installed here so
           # CI runs those suites as written rather than erroring on a missing import.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: DynamoDB Local (REAL DynamoDB expression, condition and transaction semantics for the billing and job-store tests)
+        run: |
+          # The in-memory doubles only model the expression shapes they were written for. Billing money paths and the async job
+          # store are therefore also run against DynamoDB Local, which found a reserved-word defect the doubles could not.
+          # REQUIRE_DDB_LOCAL=1 turns "DynamoDB Local unavailable" into a FAILURE, so CI can never silently run only the doubles.
+          mkdir -p "$RUNNER_TEMP/ddb-local"
+          curl -fsSL https://d1ni2b6xgvw0s0.cloudfront.net/v2.x/dynamodb_local_latest.tar.gz | tar -xz -C "$RUNNER_TEMP/ddb-local"
+          echo "DDB_LOCAL_DIR=$RUNNER_TEMP/ddb-local" >> "$GITHUB_ENV"
+          echo "REQUIRE_DDB_LOCAL=1" >> "$GITHUB_ENV"
       - name: Run pytest (packages + contracts)
         env:
           PYTHONPATH: ${{ github.workspace }}/packages:${{ github.workspace }}:${{ github.workspace }}/apps/api

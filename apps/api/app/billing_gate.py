@@ -15,27 +15,30 @@ BILLED_ROUTES or BILLING_EXEMPT below. A test enforces this, so a new paid endpo
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.throttle import ROUTE_CLASS
 
-try:
-    from billing import (
-        BillingDenied, BillingLedger, BillingStoreError, CONTRACT_VERSION, Hold, MODE_ENFORCE, MODE_OBSERVE, MODE_OFF,
-        billing_mode,
-    )
-except Exception:  # pragma: no cover - import-safe when the package is not bundled
-    BillingLedger = None  # type: ignore
+from billing.analysis import abandon as _abandon_analysis, complete as _complete_analysis, frames_fingerprint, normalize_claim, plan_analysis
+from billing import (
+    BillingConfigError, BillingDenied, BillingLedger, BillingStoreError, CONTRACT_VERSION, Hold, MODE_ENFORCE,
+    MODE_OBSERVE, MODE_OFF, billing_mode, validate_billing_config,
+)
 
-    def billing_mode() -> str:  # type: ignore
-        return "off"
+
+def validate_startup() -> str:
+    """Fail application startup on an invalid billing configuration (see packages/billing/config.py)."""
+    return validate_billing_config()
 
 log = logging.getLogger("story.billing")
 
@@ -69,7 +72,7 @@ _STORE_RETRY_AFTER = 30
 
 def _ledger(request: Request) -> Optional["BillingLedger"]:
     mode = billing_mode()
-    if mode == MODE_OFF or BillingLedger is None:
+    if mode == MODE_OFF:
         return None
     ov = getattr(request.app.state, "_billing_ledger_override", None)
     if ov is not None:
@@ -135,7 +138,7 @@ def _reserve(request: Request, kind: str, uid: str, key: str):
         return None, None
     enforce = billing_mode() == MODE_ENFORCE
     try:
-        hold = led.reserve_video(uid, key) if kind == "video" else led.reserve_moment(uid, key)
+        hold = led.reserve_video(uid, key)
     except BillingDenied as d:
         if enforce:
             _metric(request, "BillingDenied", kind)
@@ -157,34 +160,24 @@ def reserve_video(request: Request, uid: str, scoped_op_id: str):
     return _reserve(request, "video", uid, scoped_op_id)
 
 
-def reserve_moment(request: Request, uid: str, moment_id: str):
-    return _reserve(request, "moment", uid, moment_id)
-
-
 def settle(gate: Optional[Gate]) -> None:
-    """Spend the held unit. Never raises into the response: an unsettled hold is reconciled by the job sweep / stale
-    reclaim, and an under-charge is preferred to a failed customer response."""
+    """Spend the held video credit. Never raises into the response: an unsettled hold is reconciled by the job sweep, and an
+    under-charge is preferred to a failed customer response."""
     if gate is None:
         return
     try:
-        if gate.kind == "video":
-            gate.ledger.settle_video(gate.uid, gate.key)
-        else:
-            gate.ledger.settle_moment(gate.uid, gate.key)
+        gate.ledger.settle_video(gate.uid, gate.key)
     except Exception as e:  # noqa: BLE001
         log.warning("billing_settle_error", extra={"kind": gate.kind, "error": str(e)[:160]})
 
 
 def release(gate: Optional[Gate]) -> None:
-    """Return a held unit after a failed operation. Only the call that OWNS the charge releases it, so a duplicate
-    in-flight request failing cannot refund a charge that another request is still earning."""
+    """Return a held video credit after a failed operation. Only the call that OWNS the charge releases it, so a duplicate
+    request failing cannot refund a charge that another request is still earning."""
     if gate is None or not gate.owns_charge:
         return
     try:
-        if gate.kind == "video":
-            gate.ledger.release_video(gate.uid, gate.key)
-        else:
-            gate.ledger.release_moment(gate.uid, gate.key)
+        gate.ledger.release_video(gate.uid, gate.key)
     except Exception as e:  # noqa: BLE001
         log.warning("billing_release_error", extra={"kind": gate.kind, "error": str(e)[:160]})
 
@@ -225,6 +218,108 @@ def submit_reserve_video(request: Request, uid: str, scoped_op_id: str, *, creat
     return reserve_video(request, uid, scoped_op_id)
 
 
+# ---- asset analysis (Moment meter) ---------------------------------------------------------------------------------
+
+def verify_source(request: Request, uid: str, claim_sha: Optional[str]) -> bool:
+    """True only when THIS account owns a CLOUD-VERIFIED original whose full-file sha256 equals the client's claim. The media
+    record id is uuid5(owner + sha256), so this is one GetItem keyed by the account: another account's media can never
+    verify a claim, and an unverified, uploading or failed record never does either. Any error means "not verified"."""
+    claim = normalize_claim(claim_sha)
+    if not claim or not os.environ.get("STORY_MEDIA_TABLE") and getattr(request.app.state, "_media_store_override", None) is None:
+        return False
+    try:
+        from media_store import MediaStore, STATE_CLOUD_VERIFIED, cloud_media_id_for
+        store = getattr(request.app.state, "_media_store_override", None) or MediaStore()
+        rec = store.get(uid, cloud_media_id_for(uid, claim))
+        return bool(rec and rec.get("state") == STATE_CLOUD_VERIFIED and str(rec.get("content_sha256", "")).lower() == claim)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@dataclass
+class AnalysisOutcome:
+    value: object = None        # AUResult when the model ran; None when a cached result was served
+    reused: object = None       # the cached understanding when served from the ledger
+    response: Optional[JSONResponse] = None
+
+
+def _in_progress_response() -> JSONResponse:
+    return JSONResponse(status_code=503, headers={"Retry-After": "5"},
+                        content={"error": "analysis_in_progress", "retry_after_seconds": 5})
+
+
+async def run_analysis(request: Request, uid: str, moment_id: str, *, frames, claim_sha, version, analyze, to_json, from_json):
+    """Run one asset analysis through the source-binding ledger. Returns (value, reused, response); exactly one is meaningful.
+    Exceptions from `analyze` propagate AFTER the allowance is returned (only the request that owns the charge returns it)."""
+    led = _ledger(request)
+    if led is None:
+        return await analyze(), None, None
+    enforce = billing_mode() == MODE_ENFORCE
+    fp = frames_fingerprint(frames)
+    from model_gateway import current_call_context
+    corr = str(current_call_context().get("correlation_id") or uuid.uuid4())      # joins the ledger record to model_call_usage lines
+    deadline = time.monotonic() + led.cfg.analysis_wait_s
+    verified = await run_in_threadpool(verify_source, request, uid, claim_sha)   # blocking DynamoDB read: off the event loop
+    plan = None
+    while True:
+        try:
+            plan = await run_in_threadpool(lambda: plan_analysis(led, uid, moment_id, fp=fp, version=version, claim_sha=claim_sha,
+                                                                 verified=verified, corr=corr))
+        except BillingDenied as d:
+            if enforce:
+                _metric(request, "BillingDenied", "moment")
+                log.info("billing_denied", extra={"kind": "moment", "code": d.code, "story_user_id": uid})
+                return None, None, denial_response(d)
+            _metric(request, "BillingWouldDeny", "moment")
+            log.info("billing_would_deny", extra={"kind": "moment", "code": d.code, "story_user_id": uid})
+            return await analyze(), None, None
+        except BillingStoreError as e:
+            log.warning("billing_store_error", extra={"kind": "moment", "error": str(e)[:160]})
+            _metric(request, "BillingStoreError", "moment")
+            if enforce:
+                return None, None, store_unavailable_response()
+            return await analyze(), None, None
+        if plan.action == "reuse":
+            try:
+                cached = from_json(plan.result)
+            except Exception:  # noqa: BLE001 - a cached result that no longer validates is a refresh, not an error
+                cached = None
+            if cached is not None:
+                if enforce:
+                    _metric(request, "BillingAnalysisReused", "moment")
+                    log.info("billing_analysis_reused", extra={"story_user_id": uid, "moment_key": plan.key[:60], "reason": plan.reason})
+                    return None, cached, None
+                log.info("billing_would_reuse", extra={"story_user_id": uid, "moment_key": plan.key[:60]})
+                return await analyze(), None, None
+            if await run_in_threadpool(led.begin_refresh, uid, plan.key, corr):
+                plan.action, plan.reason = "refresh", "cached_result_invalid"
+            else:
+                plan.action = "in_flight"
+        if plan.action != "in_flight":
+            break
+        if not enforce:
+            log.info("billing_would_coalesce", extra={"story_user_id": uid, "moment_key": plan.key[:60]})
+            return await analyze(), None, None
+        if time.monotonic() >= deadline:
+            _metric(request, "BillingAnalysisInProgress", "moment")
+            return None, None, _in_progress_response()
+        await asyncio.sleep(0.4)
+    # plan.action is analyze or refresh: this request owns the work
+    try:
+        value = await analyze()
+    except BaseException:
+        try:
+            await run_in_threadpool(_abandon_analysis, led, uid, plan)
+        except Exception as e:  # noqa: BLE001
+            log.warning("billing_release_error", extra={"kind": "moment", "error": str(e)[:160]})
+        raise
+    try:
+        await run_in_threadpool(_complete_analysis, led, uid, plan, to_json(value), version)
+    except Exception as e:  # noqa: BLE001 — an unsettled hold is reclaimed after moment_stale_s; never fail the customer's response
+        log.warning("billing_settle_error", extra={"kind": "moment", "error": str(e)[:160]})
+    return value, None, None
+
+
 # ---- read model --------------------------------------------------------------------------------------------------
 
 def entitlement_payload(request: Request, uid: str) -> dict:
@@ -235,8 +330,6 @@ def entitlement_payload(request: Request, uid: str) -> dict:
         return base
     try:
         view = led.entitlement_view(uid)
-        if not led.shadow:
-            led.reclaim_stale_moments(uid)      # opportunistic, best-effort, needs dynamodb:Query
         token = led.get_or_create_apple_account_token(uid)   # identity item: same in observe and enforce
     except BillingStoreError:
         base["error"] = "billing_unavailable"

@@ -206,6 +206,15 @@ def _quota_release_job(job: dict, *, incurred_usd: float = 0.0) -> None:
             q.release_allowance(uid, scoped_op, gens=1, incurred_usd=incurred_usd)
         finally:
             q.release_slot(uid, job_id)
+        # Drop the now-terminal markers (user + global). A job the store later RE-OPENS for the same operation id (bounded
+        # recovery of a transient coverage failure, or a retry after a denied submit) must reserve its allowance and slot
+        # afresh; a lingering `released` marker would make it look already reserved. Spend totals are never modified.
+        try:
+            q.prune_terminal_markers(uid)
+            from user_quota import GLOBAL_PK as _GPK
+            q.prune_terminal_markers(_GPK)
+        except Exception:  # noqa: BLE001 — pruning is housekeeping; the release above is what matters
+            pass
     except Exception:  # noqa: BLE001
         pass
 
@@ -213,18 +222,13 @@ def _quota_release_job(job: dict, *, incurred_usd: float = 0.0) -> None:
 # Billing V1 — worker-side video-credit settlement. Independent of the operational quota above: it only acts when
 # STORY_BILLING_MODE is observe|enforce, only for jobs that hold a billing reservation (coverage jobs never do, so
 # the calls are harmless no-ops for them), and never raises into the worker.
-try:
-    from billing import BillingLedger as _BillingLedger, billing_mode as _billing_mode
-except Exception:  # noqa: BLE001
-    _BillingLedger = None
-
-    def _billing_mode() -> str:  # type: ignore[misc]
-        return "off"
+from billing import (BillingLedger as _BillingLedger, billing_mode as _billing_mode,
+                     validate_billing_config as _validate_billing_config)
 
 
 def _billing_ledger():
     mode = _billing_mode()
-    if _BillingLedger is None or mode == "off" or not _quota_usage_table():
+    if mode == "off" or not _quota_usage_table():
         return None
     return _BillingLedger(table=_quota_usage_table(), shadow=(mode == "observe"))
 
@@ -814,6 +818,9 @@ def _plan_to_dict(plan) -> dict:
 def handler(event, context):
     """SQS batch handler. Returns partial-batch failures so a single bad message doesn't re-drive the batch.
     Also handles the EventBridge reconcile sentinel {reconcile:true} (concern 6: lost-enqueue recovery)."""
+    # Billing V1: an invalid STORY_BILLING_MODE must fail LOUDLY (the SQS record retries / dead-letters) rather than let
+    # jobs run with the billing posture silently ignored. Unset means off.
+    _validate_billing_config()
     store = _jobs.JobStore()
     if isinstance(event, dict) and event.get("reconcile") is True:
         reenq = store.reconcile_lost_enqueue()

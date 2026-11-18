@@ -56,6 +56,15 @@ COVERAGE_NONRECOVERABLE_FAILURES = {
 }
 COVERAGE_MAX_RECOVERY_ATTEMPTS = 3
 
+# Authorization denials at SUBMIT time. A job row is created before the operational quota / billing hold is taken (the durable
+# job row is the dedup authority), so a denied submit must TERMINALISE its own row: otherwise it stays `queued`, is never
+# enqueued, and `reconcile_lost_enqueue` would later enqueue and RUN it with no authorization. These categories mark such rows.
+# A denied row is the only failed state that is safely re-attemptable by the SAME client operation id (no model ran, nothing was
+# spent), so a legitimate retry once capacity frees is reset to queued (and reserved again) instead of being stuck behind a
+# permanent failed row. The recovery count is capped so a hot loop of denied retries cannot rewrite the row forever.
+DENIED_FAILURE_CATEGORIES = {"quota_denied", "billing_denied"}
+MAX_DENIAL_RECOVERIES = 50
+
 
 class UnknownOperation(Exception):
     """A job item carries an operation_type the worker does not know how to run — fail safe, never guess."""
@@ -245,6 +254,9 @@ class JobStore:
                 if existing and existing.get("payload_fingerprint") not in (None, payload_fingerprint):
                     raise PayloadConflict(
                         f"operation_id already used with a different payload (job {jid})")
+                if existing and self._denial_is_recoverable(existing):
+                    if self._recover_failed_coverage(jid, payload_fingerprint):
+                        return jid, True   # a previously DENIED submit retried: treated as fresh, caller reserves again
                 return jid, False   # idempotent recovery of the existing job (same payload)
             raise
 
@@ -291,11 +303,30 @@ class JobStore:
                 # provider recovers. Reset it to queued (same job_id, same payload) under a recovery cap so a
                 # genuinely-deterministic failure cannot loop. queued/running/completed are NEVER reset here —
                 # they coalesce idempotently as before, so no duplicate concurrent job is ever created.
-                if existing and self._coverage_is_recoverable(existing):
+                if existing and (self._coverage_is_recoverable(existing) or self._denial_is_recoverable(existing)):
                     if self._recover_failed_coverage(jid, payload_fingerprint):
                         return jid, True   # treated as a fresh attempt -> caller enqueues
                 return jid, False
             raise
+
+    @staticmethod
+    def _denial_is_recoverable(existing: dict) -> bool:
+        """True iff the row is a terminal `failed` created by a submit-time authorization DENIAL (no model ran) and is still
+        under the recovery cap."""
+        if existing.get("status") != "failed" or (existing.get("failure_category") or "") not in DENIED_FAILURE_CATEGORIES:
+            return False
+        try:
+            return int(existing.get("recovery_count", 0) or 0) < MAX_DENIAL_RECOVERIES
+        except (TypeError, ValueError):
+            return False
+
+    def deny(self, job_id: str, category: str, detail: str = "") -> bool:
+        """Terminalise a job whose submit was DENIED (operational quota or billing). Only a still-`queued` job can be
+        denied, so a job a worker has already claimed is never failed from under it. Idempotent."""
+        if category not in DENIED_FAILURE_CATEGORIES:
+            raise ValueError(f"not a denial category: {category}")
+        return self._set_status(job_id, "failed", require=["queued"],
+                                extra={"failure_category": {"S": category}, "failure_detail": {"S": (detail or category)[:400]}})
 
     @staticmethod
     def _coverage_is_recoverable(existing: dict) -> bool:
@@ -323,9 +354,13 @@ class JobStore:
                 Key={"job_id": {"S": job_id}},
                 UpdateExpression=("SET #s = :queued, updated_at = :now, expires_at = :exp, "
                                   "attempt_count = :zero, lease_until = :zero, lease_token = :empty "
-                                  "ADD recovery_count :one REMOVE failure_category, failure_detail, #r, diagnostics"),
+                                  "ADD recovery_count :one REMOVE failure_category, failure_detail, #r, #d, "
+                                  "quota_released"),
                 ConditionExpression="#s = :failed AND payload_fingerprint = :fp",
-                ExpressionAttributeNames={"#s": "status", "#r": "result"},
+                # `diagnostics` is a DynamoDB RESERVED KEYWORD: it must be aliased or real DynamoDB rejects the whole update
+                # (ValidationException). The in-memory test double accepted it, so the coverage-recovery path had never run on
+                # a real table before the DynamoDB Local tests were added.
+                ExpressionAttributeNames={"#s": "status", "#r": "result", "#d": "diagnostics"},
                 ExpressionAttributeValues={
                     ":queued": {"S": "queued"}, ":failed": {"S": "failed"},
                     ":now": {"N": str(now)}, ":exp": {"N": str(now + JOB_TTL_SECONDS)},

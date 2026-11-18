@@ -57,7 +57,7 @@ def _snapshot(env: str) -> "gate.Snapshot":
         "STORY_REQUIRE_AUTH": pol["require_auth"], "STORY_QUOTA_MODE": pol["quota_mode"],
         "STORY_THROTTLE_MODE": pol["throttle_mode"], "STORY_QUOTA_USER_MONTHLY_USD": pol["user_monthly_usd"],
         "STORY_QUOTA_USER_DAILY_GENS": "500", "STORY_QUOTA_MAX_ACTIVE_JOBS": "2",
-        "STORY_QUOTA_GLOBAL_MONTHLY_USD": "60",
+        "STORY_QUOTA_GLOBAL_MONTHLY_USD": "60", "STORY_BILLING_MODE": pol["billing_mode"],
         "STORY_OPENAI_MODEL": "gpt-5.1", "STORY_GEMINI_MODEL": "gemini-3.8-flash",
         "STORY_EVIDENCE_PERSIST_ENABLED": pol["evidence_persist"],
         **MANIFEST["required_everywhere"],
@@ -67,7 +67,8 @@ def _snapshot(env: str) -> "gate.Snapshot":
         "PYTHONPATH": "/var/task:/var/task/packages", "STORY_ENVIRONMENT": env,
         "STORY_JOBS_TABLE": f"story-{env}-edit-plan-jobs", "STORY_JOBS_QUEUE_URL": None, "STORY_STAGING_BUCKET": None,
         "STORY_USER_USAGE_TABLE": f"story-{env}-user-usage", "STORY_WORKER_DEADLINE_S": "840",
-        "STORY_QUOTA_MODE": pol["quota_mode"], "STORY_OPENAI_MODEL": "gpt-5.1", "STORY_GEMINI_MODEL": "gemini-3.8-flash",
+        "STORY_QUOTA_MODE": pol["quota_mode"], "STORY_BILLING_MODE": pol["billing_mode"],
+        "STORY_OPENAI_MODEL": "gpt-5.1", "STORY_GEMINI_MODEL": "gemini-3.8-flash",
         **_pin(env),
     }
     return gate.Snapshot(env, list(svc.items()), wrk)
@@ -566,3 +567,50 @@ def test_runtime_emergency_rollback_selects_v52_and_strips_v53_evidence():
 def test_runtime_unknown_provider_fails_explicitly_instead_of_falling_back():
     out = _probe("from model_gateway.provider import provider_mode as m; m()", STORY_MODEL_PROVIDER="anthropic")
     assert "unsupported STORY_MODEL_PROVIDER" in out
+
+
+# ------------------------------------------------------------------------------------------------ Billing V1 posture
+def test_committed_manifest_keeps_billing_off_everywhere():
+    assert {e: p.get("billing_mode") for e, p in COMMITTED["environments"].items()} == {
+        "development": "off", "beta": "off", "gamma": "off", "production": "off"}
+
+
+@pytest.mark.parametrize("env", ["development", "beta"])
+def test_billing_mode_must_match_the_release_in_service_and_worker(env):
+    assert "billing_policy" in _codes(_with(_snapshot(env), svc={"STORY_BILLING_MODE": "observe"}))
+    assert "billing_policy" in _codes(_with(_snapshot(env), wrk={"STORY_BILLING_MODE": "enforce"}))
+
+
+@pytest.mark.parametrize("bad", ["enforced", "ON", "true", "1", ""])
+def test_an_invalid_billing_mode_is_a_violation_not_silently_off(bad):
+    assert "billing_policy" in _codes(_with(_snapshot("beta"), svc={"STORY_BILLING_MODE": bad}))
+    assert "billing_policy" in _codes(_with(_snapshot("beta"), wrk={"STORY_BILLING_MODE": bad}))
+
+
+def test_billing_mode_is_required_in_service_and_worker():
+    assert "missing_required" in _codes(_with(_snapshot("beta"), drop_svc=("STORY_BILLING_MODE",)))
+    assert "missing_required" in _codes(_with(_snapshot("beta"), drop_wrk=("STORY_BILLING_MODE",)))
+
+
+def test_a_second_configuration_source_for_allowances_is_rejected():
+    codes = _codes(_with(_snapshot("beta"), extra_svc=(("STORY_BILLING_PLANS_JSON", '{"plus":{"videos":999}}'),)))
+    assert "removed_setting" in codes
+    assert "removed_setting" in _codes(_with(_snapshot("beta"), wrk={"STORY_BILLING_PLANS_JSON": "{}"}))
+
+
+def test_enforce_in_the_manifest_requires_an_explicit_owner_approval():
+    def manifest(mode, approve):
+        m = {**MANIFEST, "environments": {**MANIFEST["environments"],
+                                         "beta": {**MANIFEST["environments"]["beta"], "billing_mode": mode}}}
+        if approve:
+            m = {**m, "approved_overrides": list(m["approved_overrides"]) + [
+                {"setting": "STORY_BILLING_MODE", "env": "beta", "value": "enforce", "approved_by": "owner",
+                 "approved_on": "2026-12-01", "expires": "2027-12-01", "reason": "test"}]}
+        return m
+    snap = _with(_snapshot("beta"), svc={"STORY_BILLING_MODE": "enforce"}, wrk={"STORY_BILLING_MODE": "enforce"})
+    assert "billing_enforce_unapproved" in _codes(snap, manifest("enforce", approve=False))
+    assert "billing_enforce_unapproved" not in _codes(snap, manifest("enforce", approve=True))
+    # observe never needs approval; an unapproved enforce cannot be smuggled in via the running config either
+    obs = _with(_snapshot("beta"), svc={"STORY_BILLING_MODE": "observe"}, wrk={"STORY_BILLING_MODE": "observe"})
+    assert _codes(obs, manifest("observe", approve=False)) == set()
+    assert "billing_policy" in _codes(snap, manifest("off", approve=False))

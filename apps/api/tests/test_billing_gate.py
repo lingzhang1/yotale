@@ -86,7 +86,7 @@ class JobStore:
     def enqueue(self, job_id):
         self.enqueued.append(job_id)
 
-    def fail(self, job_id, category, detail, lease_token=None, diagnostics=None):
+    def deny(self, job_id, category, detail=""):
         self.jobs[job_id].update(status="failed", failure_category=category)
         return True
 
@@ -286,7 +286,8 @@ def test_au_observe_and_off_never_block():
 
 def test_trial_expiry_is_a_typed_402_on_both_meters():
     r = _au_rig("enforce")
-    assert _au(r.c, _mid(1)).status_code == 200                              # starts the 14-day clock
+    r.live.reserve_video(uid, "seed")
+    r.live.settle_video(uid, "seed")                                         # the first video starts the 14-day clock
     r.t[0] += 15 * 86400
     a = _au(r.c, _mid(2))
     s = r.submit("a")
@@ -356,23 +357,63 @@ def test_entitlement_endpoint_contract_in_each_mode():
     assert r.c.get("/v1/billing/entitlement").status_code == 401             # authenticated only
 
 
-def test_refund_endpoint_only_for_a_completed_owned_job_and_only_once():
+def _completed(r, op):
+    import edit_plan_jobs as _jobs
+    scoped = f"{uid}\x1f{op}"
+    jid = _jobs.job_id_for(scoped)
+    r.store.jobs[jid].update(status="completed", plan={"segments": [{"asset_id": "a"}]})
+    r.live.settle_video(uid, scoped)
+    return jid, scoped
+
+
+def test_refund_endpoint_only_for_a_completed_owned_job_with_evidence_and_only_once():
     r = Rig("enforce")
     assert r.submit("opR").status_code == 202
-    import edit_plan_jobs as _jobs
-    scoped = f"{uid}\x1fopR"
-    jid = _jobs.job_id_for(scoped)
-    refund = lambda **b: r.c.post("/v1/billing/video-refund", headers=_auth(), json=b)  # noqa: E731
-    assert refund(operation_id="opR", reason="render_failed").status_code == 404        # job not completed yet
-    r.store.jobs[jid]["status"] = "completed"
-    r.live.settle_video(uid, scoped)
-    ok = refund(operation_id="opR", reason="render_failed")
+    refund = lambda sub="u1", **b: r.c.post("/v1/billing/video-refund", headers=_auth(sub), json=b)  # noqa: E731
+    claim = dict(operation_id="opR", reason="render_failed", render_attempts=2)
+    assert refund(**claim).status_code == 404                                             # job not completed yet
+    jid, scoped = _completed(r, "opR")
+    assert refund(operation_id="opR", reason="render_failed").status_code == 422          # no evidence of a re-render
+    assert refund(operation_id="opR", reason="looks_ugly", render_attempts=2).status_code == 422   # creative reasons do not exist
+    assert refund(operation_id="opR", reason="render_failed", render_attempts=1).json()["result"] == "not_eligible:insufficient_evidence"
+    ok = refund(**claim, client_build="1.0(7)")
     assert ok.status_code == 200 and ok.json()["result"] == "refunded"
     assert ok.json()["entitlement"]["videos"]["remaining"] == 2
-    assert refund(operation_id="opR", reason="render_failed").json()["result"] == "noop"
-    assert refund(operation_id="opR", reason="because").status_code == 422             # closed vocabulary
-    assert r.c.post("/v1/billing/video-refund", headers=_auth("someone-else"),
-                    json={"operation_id": "opR", "reason": "render_failed"}).status_code == 404   # not their job
+    assert refund(**claim).json()["result"] == "noop"
+    assert refund("someone-else", **claim).status_code == 404                              # another account never learns the job exists
+
+
+def test_a_refund_never_deletes_or_invalidates_the_output_and_resubmitting_costs_nothing():
+    r = Rig("enforce")
+    r.submit("opR")
+    jid, scoped = _completed(r, "opR")
+    before = dict(r.store.jobs[jid])
+    enq = len(r.store.enqueued)
+    res = r.c.post("/v1/billing/video-refund", headers=_auth(), json=dict(operation_id="opR", reason="export_failed", render_attempts=3))
+    assert res.json()["result"] == "refunded"
+    assert r.store.jobs[jid] == before                                                    # the generated plan and job are untouched
+    again = r.submit("opR")                                                               # the client re-renders / re-submits the SAME operation
+    assert again.status_code == 202 and again.json()["job_id"] == jid
+    assert len(r.store.enqueued) == enq                                                   # no new AI work was queued
+    e = r.live.get_entitlement(uid)
+    assert (e.v_used, e.v_resv, e.v_avail) == (0, 0, 2)                                   # and no second charge
+
+
+def test_refund_is_a_noop_when_the_operation_was_never_billed():
+    r = Rig("observe")                                                                     # shadow only: nothing live was charged
+    r.submit("opR")
+    import edit_plan_jobs as _jobs
+    r.store.jobs[_jobs.job_id_for(f"{uid}\x1fopR")].update(status="completed")
+    res = r.c.post("/v1/billing/video-refund", headers=_auth(), json=dict(operation_id="opR", reason="render_failed", render_attempts=2))
+    assert res.status_code == 200 and res.json()["result"].startswith("not_eligible:")     # shadow ledger: nothing settled
+    assert r.live.get_entitlement(uid) is None                                            # and nothing live exists to refund
+
+
+def test_refund_in_off_mode_does_nothing():
+    r = Rig("off")
+    r.submit("opR")
+    res = r.c.post("/v1/billing/video-refund", headers=_auth(), json=dict(operation_id="opR", reason="render_failed", render_attempts=2))
+    assert res.json() == {"result": "billing_off", "billing_mode": "off"}
 
 
 # ---- NO-BYPASS route coverage -----------------------------------------------------------------------------------
@@ -425,3 +466,60 @@ def test_worker_ledger_is_off_without_mode_or_table(monkeypatch):
     monkeypatch.setenv("STORY_BILLING_MODE", "enforce")
     monkeypatch.delenv("STORY_USER_USAGE_TABLE", raising=False)
     assert worker._billing_ledger() is None
+
+
+# ---- startup validation ----------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad", ["enforced", "ON", "true", ""])
+def test_application_startup_fails_on_an_invalid_billing_mode(monkeypatch, bad):
+    from billing import BillingConfigError
+    monkeypatch.setenv("STORY_BILLING_MODE", bad)
+    with pytest.raises(BillingConfigError):
+        create_app()
+
+
+def test_application_startup_accepts_unset_and_valid_modes_and_rejects_the_removed_override(monkeypatch):
+    from billing import BillingConfigError
+    for ok in (None, "off", "observe", "enforce"):
+        if ok is None:
+            monkeypatch.delenv("STORY_BILLING_MODE", raising=False)
+        else:
+            monkeypatch.setenv("STORY_BILLING_MODE", ok)
+        create_app()
+    monkeypatch.setenv("STORY_BILLING_PLANS_JSON", "{}")
+    with pytest.raises(BillingConfigError):
+        create_app()
+
+
+def test_worker_handler_fails_loudly_on_an_invalid_billing_mode(monkeypatch):
+    from billing import BillingConfigError
+    from app import worker
+    monkeypatch.setenv("STORY_BILLING_MODE", "enforced")
+    with pytest.raises(BillingConfigError):
+        worker.handler({"Records": []}, None)
+
+
+# ---- observe mode: provably shadow-only --------------------------------------------------------------------------
+
+def test_observe_mode_writes_only_shadow_items_plus_the_identity_token_and_never_blocks_a_customer():
+    r = Rig("observe")
+    for i in range(5):                                                       # well past the 2-video allowance
+        assert r.submit(f"op{i}").status_code == 202
+    assert r.c.get("/v1/billing/entitlement", headers=_auth()).status_code == 200
+    mine = sorted(sk for (pk, sk) in r.ddb.items if pk == uid)
+    live = [sk for sk in mine if sk.startswith("billing#")]
+    shadow = [sk for sk in mine if sk.startswith("billing-shadow#")]
+    assert live == ["billing#account"]                    # the ONLY live write: the stable Apple appAccountToken (identity, not usage)
+    assert "billing-shadow#entitlement" in shadow
+    assert len([sk for sk in shadow if sk.startswith("billing-shadow#v#")]) == 2    # 2 held; the 3 over-allowance submits would-deny
+    assert r.live.get_entitlement(uid) is None            # no live counters, no live trial clock, no live reservations
+    assert r.shadow.get_entitlement(uid).v_resv == 2      # the shadow ledger shows the hypothetical decision (2 held, 3 would-deny)
+
+
+def test_off_mode_performs_no_billing_reads_or_writes_at_all():
+    r = Rig("off")
+    for i in range(3):
+        assert r.submit(f"op{i}").status_code == 202
+    body = r.c.get("/v1/billing/entitlement", headers=_auth()).json()
+    assert body == {"contract_version": 1, "billing_mode": "off", "enforced": False}     # not even the token record is created
+    assert r.ddb.writes == 0 and not [k for k in r.ddb.items if k[0] == uid]

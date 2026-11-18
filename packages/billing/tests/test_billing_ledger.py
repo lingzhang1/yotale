@@ -7,11 +7,11 @@ import threading
 import pytest
 
 from billing import (
+    reservation_id,
     BillingConfig, BillingDenied, BillingLedger, BillingStoreError, PlanLimits, TransactionBoundElsewhere,
     MOMENT_ALLOWANCE_EXHAUSTED, SUBSCRIPTION_REQUIRED, TRIAL_EXPIRED, VIDEO_CREDITS_EXHAUSTED,
     ST_PLUS_ACTIVE, ST_PLUS_EXPIRED, ST_PLUS_GRACE,
 )
-from billing.fakes import FakeDDB
 
 T0 = 1_800_000_000
 DAY = 86400
@@ -28,14 +28,40 @@ class Clock:
         self.t += s
 
 
+class Env:
+    """(ddb, clock) pair, plus the table and backend kind. Indexable like the old tuple: env[0] = ddb, env[1] = clock."""
+    def __init__(self, ddb, table, kind):
+        self.ddb, self.table, self.kind, self.clock = ddb, table, kind, Clock()
+
+    def __getitem__(self, i):
+        return (self.ddb, self.clock)[i]
+
+
 @pytest.fixture()
-def env():
-    return FakeDDB(), Clock()
+def env(usage_backend):
+    """Every ledger test runs against the in-memory double AND real DynamoDB Local (skipped with a reason when unavailable)."""
+    return Env(*usage_backend)
 
 
 def mk(env, **kw):
-    ddb, clock = env
-    return BillingLedger(ddb=ddb, table="t", clock=clock, **kw)
+    return BillingLedger(ddb=env.ddb, table=env.table, clock=env.clock, **kw)
+
+
+def count_items(env, uid):
+    r = env.ddb.query(TableName=env.table, KeyConditionExpression="story_user_id = :pk AND begins_with(quota_period, :sk)",
+                      ExpressionAttributeValues={":pk": {"S": uid}, ":sk": {"S": "billing"}})
+    return len(r["Items"])
+
+
+class Wrapped:
+    """Delegating client wrapper: `hooks` maps a method name to a replacement(call_original, *a, **kw)."""
+    def __init__(self, inner, **hooks):
+        self._inner, self._hooks = inner, hooks
+
+    def __getattr__(self, name):
+        real = getattr(self._inner, name)
+        hook = self._hooks.get(name)
+        return (lambda *a, **kw: hook(real, *a, **kw)) if hook else real
 
 
 def invariant(ent, kind):
@@ -61,21 +87,58 @@ def test_free_starter_created_once_under_concurrency(env):
     assert (e.plan, e.status, e.v_total, e.m_total, e.trial_end) == ("free_starter", "free_starter", 2, 30, None)
 
 
-def test_trial_starts_at_first_successful_operation_not_at_reserve(env):
+def test_trial_clock_starts_at_the_first_successful_VIDEO_not_at_an_import_or_a_reservation(env):
     L = mk(env)
-    L.reserve_video("u1", "op1")
-    assert L.get_entitlement("u1").trial_end is None
-    L.release_video("u1", "op1")
-    assert L.get_entitlement("u1").trial_end is None
     L.reserve_moment("u1", "m1")
-    L.settle_moment("u1", "m1")
+    L.settle_moment("u1", "m1")                                # a successful analysis does NOT start the clock
+    assert L.get_entitlement("u1").trial_end is None
+    L.reserve_video("u1", "op1")
+    assert L.get_entitlement("u1").trial_end is None          # reserved only
+    L.release_video("u1", "op1")
+    assert L.get_entitlement("u1").trial_end is None          # a FAILED video never starts the clock
+    env[1].advance(3 * DAY)
+    L.reserve_video("u1", "op2")
+    L.settle_video("u1", "op2")
     e = L.get_entitlement("u1")
-    assert e.trial_start == T0 and e.trial_end == T0 + 14 * DAY
+    assert e.trial_start == T0 + 3 * DAY and e.trial_end == T0 + 17 * DAY
+
+
+def test_the_clock_starts_once_and_cannot_be_restarted_by_new_stories_retries_or_refunds(env):
+    L = mk(env)
+    L.reserve_video("u1", "story-A-op")
+    L.settle_video("u1", "story-A-op")
+    started = L.get_entitlement("u1").trial_end
+    env[1].advance(5 * DAY)
+    L.reserve_video("u1", "story-B-op")                         # a different Story
+    L.settle_video("u1", "story-B-op")
+    assert L.get_entitlement("u1").trial_end == started
+    assert L.refund_video("u1", "story-B-op", "render_failed", render_attempts=2) == "refunded"
+    assert L.get_entitlement("u1").trial_end == started        # a refund never resets or re-arms it
+    L.reserve_video("u1", "story-A-op-retry")
+    assert L.get_entitlement("u1").trial_end == started
+
+
+def test_bounded_pre_video_analysis_and_what_happens_when_all_30_are_used_before_the_first_video(env):
+    L = mk(env)
+    for i in range(30):
+        L.reserve_moment("u1", f"m{i}")
+        L.settle_moment("u1", f"m{i}")
+    e = L.get_entitlement("u1")
+    assert (e.m_avail, e.trial_end) == (0, None)               # no clock yet, nothing left to analyse
+    with pytest.raises(BillingDenied) as ei:
+        L.reserve_moment("u1", "m-new")
+    assert ei.value.code == MOMENT_ALLOWANCE_EXHAUSTED and ei.value.action == "subscribe"
+    assert ei.value.snapshot["upgrade"]["blocking"] is True
+    h = L.reserve_video("u1", "op1")                           # the 2 video credits are untouched: the user can still create
+    assert h.charged
+    L.settle_video("u1", "op1")
+    assert L.get_entitlement("u1").trial_end == T0 + 14 * DAY  # the clock starts now, at the first video
+    assert not L.reserve_moment("u1", "m3").charged            # already-analysed Moments stay usable and free
 
 
 def test_trial_state_survives_a_new_ledger_instance(env):
-    mk(env).reserve_moment("u1", "m1")
-    mk(env).settle_moment("u1", "m1")
+    mk(env).reserve_video("u1", "op1")
+    mk(env).settle_video("u1", "op1")
     assert mk(env).get_entitlement("u1").trial_end == T0 + 14 * DAY      # reinstall/relogin == same server state
 
 
@@ -192,23 +255,22 @@ def test_reconcile_after_worker_crash_between_result_and_settle(env):
 
 
 def test_reserve_is_all_or_nothing_when_the_credit_guard_fails(env):
-    ddb, _ = env
     L = mk(env)
     for i in range(2):
         L.reserve_video("u1", f"op{i}")
-    before = len([k for k in ddb.items if k[0] == "u1"])
+    before = count_items(env, "u1")
     with pytest.raises(BillingDenied):
         L.reserve_video("u1", "op-x")
-    assert len([k for k in ddb.items if k[0] == "u1"]) == before    # no orphan operation record was created
+    assert count_items(env, "u1") == before          # the cancelled transaction left no orphan operation record
 
 
 def test_store_failure_is_a_store_error_not_a_denial(env):
-    class Boom(FakeDDB):
-        def transact_write_items(self, TransactItems):
-            raise RuntimeError("ddb down")
+    def boom(real, *a, **kw):
+        raise RuntimeError("ddb down")
 
+    broken = Wrapped(env.ddb, transact_write_items=boom)
     with pytest.raises(BillingStoreError):
-        BillingLedger(ddb=Boom(), table="t", clock=env[1]).reserve_video("u1", "op1")
+        BillingLedger(ddb=broken, table=env.table, clock=env.clock).reserve_video("u1", "op1")
 
 
 # ---- trial expiry -----------------------------------------------------------------------------------------------
@@ -323,7 +385,7 @@ def test_bulk_import_cannot_exceed_the_allowance_concurrently(env):
 def test_stale_moment_reservation_is_reclaimed_without_a_second_charge(env):
     L = mk(env)
     L.reserve_moment("u1", "m1")                                  # request crashed here
-    env[1].advance(L.cfg.stale_reservation_s + 1)
+    env[1].advance(L.cfg.moment_stale_s + 1)
     h = L.reserve_moment("u1", "m1")
     assert h.charged and h.reason == "reclaimed"
     e = L.get_entitlement("u1")
@@ -335,7 +397,7 @@ def test_reclaim_sweep_releases_abandoned_reservations(env):
     L = mk(env)
     L.reserve_moment("u1", "m1")
     L.reserve_moment("u1", "m2")
-    env[1].advance(L.cfg.stale_reservation_s + 5)
+    env[1].advance(L.cfg.moment_stale_s + 5)
     L.reserve_moment("u1", "m3")                                  # fresh one must survive
     assert L.reclaim_stale_moments("u1") == 2
     e = L.get_entitlement("u1")
@@ -485,30 +547,30 @@ def test_admin_grant_sets_finite_allowances_and_expiry(env):
 
 # ---- controlled refund ------------------------------------------------------------------------------------------
 
-def test_refund_returns_one_credit_once_and_is_capped(env):
+def test_refund_returns_one_credit_once_and_is_capped_on_plus(env):
     L = mk(env)
     plus(L)
     for i in range(5):
         L.reserve_video("u1", f"op{i}")
         L.settle_video("u1", f"op{i}")
-    assert L.refund_video("u1", "op0", "render_failed") == "refunded"
-    assert L.refund_video("u1", "op0", "render_failed") == "noop"             # once per operation
+    assert L.refund_video("u1", "op0", "render_failed", render_attempts=2) == "refunded"
+    assert L.refund_video("u1", "op0", "render_failed", render_attempts=2) == "noop"             # once per operation
     e = L.get_entitlement("u1")
     assert (e.v_used, e.v_avail, e.refunds) == (4, 8, 1) and invariant(e, "video")
-    assert L.refund_video("u1", "op1", "x") == "refunded"
-    assert L.refund_video("u1", "op2", "x") == "refunded"
-    assert L.refund_video("u1", "op3", "x") == "not_eligible:refund_cap"       # 3 per period
+    assert L.refund_video("u1", "op1", "x", render_attempts=2) == "refunded"
+    assert L.refund_video("u1", "op2", "x", render_attempts=2) == "refunded"
+    assert L.refund_video("u1", "op3", "x", render_attempts=2) == "not_eligible:refund_cap"       # 3 per period
 
 
 def test_refund_requires_a_settled_recent_operation_in_the_same_period(env):
     L = mk(env)
     plus(L)
-    assert L.refund_video("u1", "nope", "x") == "not_eligible:unknown_operation"
+    assert L.refund_video("u1", "nope", "x", render_attempts=2) == "not_eligible:unknown_operation"
     L.reserve_video("u1", "op1")
-    assert L.refund_video("u1", "op1", "x") == "not_eligible:not_settled"
+    assert L.refund_video("u1", "op1", "x", render_attempts=2) == "not_eligible:not_settled"
     L.settle_video("u1", "op1")
     env[1].advance(L.cfg.refund_window_s + 1)
-    assert L.refund_video("u1", "op1", "x") == "not_eligible:window_elapsed"
+    assert L.refund_video("u1", "op1", "x", render_attempts=2) == "not_eligible:window_elapsed"
 
 
 def test_refund_is_blocked_after_the_period_rolls_over(env):
@@ -517,7 +579,7 @@ def test_refund_is_blocked_after_the_period_rolls_over(env):
     L.reserve_video("u1", "op1")
     L.settle_video("u1", "op1")
     renew(L)
-    assert L.refund_video("u1", "op1", "x") == "not_eligible:period_or_plan"
+    assert L.refund_video("u1", "op1", "x", render_attempts=2) == "not_eligible:period_or_plan"
 
 
 # ---- shadow (observe) isolation ---------------------------------------------------------------------------------
@@ -561,50 +623,73 @@ def test_allowances_are_configuration_not_code(env):
     assert (e.v_total, e.m_total) == (1, 3)
 
 
-def test_malformed_override_falls_back_to_defaults(monkeypatch):
-    monkeypatch.setenv("STORY_BILLING_PLANS_JSON", "{not json")
-    assert BillingConfig.from_env().plus == PlanLimits(videos=12, moments=100)
-    monkeypatch.setenv("STORY_BILLING_PLANS_JSON", '{"plus": {"videos": 20}}')
-    c = BillingConfig.from_env()
-    assert c.plus == PlanLimits(videos=20, moments=100) and c.free_starter.videos == 2
+def test_unset_mode_is_off_and_valid_modes_are_accepted(monkeypatch):
+    from billing import billing_mode
+    monkeypatch.delenv("STORY_BILLING_MODE", raising=False)
+    assert billing_mode() == "off"
+    for m in ("off", "observe", "enforce", " Enforce "):
+        monkeypatch.setenv("STORY_BILLING_MODE", m)
+        assert billing_mode() == m.strip().lower()
+
+
+@pytest.mark.parametrize("bad", ["", "enforced", "ON", "true", "1", "disabled", "observe,enforce"])
+def test_an_explicitly_invalid_mode_raises_instead_of_silently_disabling_billing(monkeypatch, bad):
+    from billing import BillingConfigError, billing_mode, validate_billing_config
+    monkeypatch.setenv("STORY_BILLING_MODE", bad)
+    with pytest.raises(BillingConfigError):
+        billing_mode()
+    with pytest.raises(BillingConfigError):
+        validate_billing_config()
+
+
+def test_the_removed_plans_override_is_rejected_at_startup(monkeypatch):
+    from billing import BillingConfigError, validate_billing_config
+    monkeypatch.delenv("STORY_BILLING_MODE", raising=False)
+    monkeypatch.setenv("STORY_BILLING_PLANS_JSON", '{"plus": {"videos": 999}}')
+    with pytest.raises(BillingConfigError):
+        validate_billing_config()
+    monkeypatch.delenv("STORY_BILLING_PLANS_JSON")
+    assert validate_billing_config() == "off"
+    assert BillingConfig().plus == PlanLimits(videos=12, moments=100)         # defaults: provisional values unchanged
+    assert BillingConfig().free_starter == PlanLimits(videos=2, moments=30)
 
 
 # ---- forced interleaving: the atomic guard, not luck or speed, prevents overspend -----------------------------
 
-class RacingDDB(FakeDDB):
-    """Holds the first N entitlement reads at a barrier so every thread decides from the SAME stale snapshot before any
-    of them writes: the worst-case check-then-write interleaving."""
-    def __init__(self, n):
-        super().__init__()
-        self.barrier, self.n, self.armed, self._hits = threading.Barrier(n), n, False, 0
-        self._gate = threading.Lock()
+def racing(env, n):
+    """Holds the first n entitlement reads at a barrier so every thread decides from the SAME stale snapshot before any of
+    them writes: the worst-case check-then-write interleaving. Works on both backends."""
+    state = {"hits": 0, "armed": False}
+    barrier, gate = threading.Barrier(n), threading.Lock()
 
-    def get_item(self, TableName, Key, ConsistentRead=False):
-        out = super().get_item(TableName, Key, ConsistentRead)
-        if self.armed and Key["quota_period"]["S"].endswith("entitlement"):
-            with self._gate:
-                self._hits += 1
-                mine = self._hits <= self.n
+    def get_item(real, TableName, Key, **kw):
+        out = real(TableName=TableName, Key=Key, **kw)
+        if state["armed"] and Key["quota_period"]["S"].endswith("entitlement"):
+            with gate:
+                state["hits"] += 1
+                mine = state["hits"] <= n
             if mine:
-                self.barrier.wait(timeout=5)
+                barrier.wait(timeout=10)
         return out
+
+    return Wrapped(env.ddb, get_item=get_item), state
 
 
 @pytest.mark.parametrize("kind", ["video", "moment"])
-def test_stale_snapshot_race_cannot_overspend(kind):
+def test_stale_snapshot_race_cannot_overspend(env, kind):
     n = 12
-    ddb, clock = RacingDDB(n), Clock()
-    L = BillingLedger(ddb=ddb, table="t", clock=clock, cfg=BillingConfig(free_starter=PlanLimits(videos=2, moments=3)))
+    ddb, state = racing(env, n)
+    L = BillingLedger(ddb=ddb, table=env.table, clock=env.clock, cfg=BillingConfig(free_starter=PlanLimits(videos=2, moments=3)))
     L.ensure_entitlement("u1")
-    ddb.armed = True
-    won, denied = [], []
+    state["armed"] = True
+    won = []
 
     def go(i):
         try:
             h = L.reserve_video("u1", f"op{i}") if kind == "video" else L.reserve_moment("u1", f"m{i}")
             won.append(h.charged)
         except BillingDenied:
-            denied.append(1)
+            pass
 
     run_threads(go, [(i,) for i in range(n)])
     cap = 2 if kind == "video" else 3
@@ -613,12 +698,12 @@ def test_stale_snapshot_race_cannot_overspend(kind):
     assert invariant(e, kind) and (e.v_avail if kind == "video" else e.m_avail) >= 0
 
 
-def test_stale_snapshot_race_on_the_last_credit_lets_exactly_one_through():
+def test_stale_snapshot_race_on_the_last_credit_lets_exactly_one_through(env):
     n = 6
-    ddb = RacingDDB(n)
-    L = BillingLedger(ddb=ddb, table="t", clock=Clock(), cfg=BillingConfig(free_starter=PlanLimits(videos=1, moments=1)))
+    ddb, state = racing(env, n)
+    L = BillingLedger(ddb=ddb, table=env.table, clock=env.clock, cfg=BillingConfig(free_starter=PlanLimits(videos=1, moments=1)))
     L.ensure_entitlement("u1")
-    ddb.armed = True
+    state["armed"] = True
     won = []
 
     def go(i):
@@ -631,27 +716,177 @@ def test_stale_snapshot_race_on_the_last_credit_lets_exactly_one_through():
     assert sum(won) == 1 and L.get_entitlement("u1").v_avail == 0
 
 
-# ---- grandfathering script (pure selection + idempotent apply) ----------------------------------------------------
+# ---- refund safety ---------------------------------------------------------------------------------------------------
 
-def test_grandfather_selection_and_idempotent_apply(env):
-    import importlib.util
-    from pathlib import Path
-    spec = importlib.util.spec_from_file_location(
-        "gf", Path(__file__).resolve().parents[3] / "scripts" / "yotale_billing_grandfather.py")
-    gf = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gf)
-    S = lambda v: {"S": v}  # noqa: E731
-    users = [
-        {"story_user_id": S("a"), "account_status": S("active"), "beta_access_status": S("invited")},
-        {"story_user_id": S("b"), "account_status": S("suspended"), "beta_access_status": S("invited")},
-        {"story_user_id": S("c"), "account_status": S("active"), "beta_access_status": S("revoked")},
-        {"story_user_id": S("d"), "account_status": S("active"), "beta_access_status": S("eligible")},
-        {"story_user_id": S("rehearsal"), "account_status": S("active"), "beta_access_status": S("invited")},
-    ]
-    assert gf.select_accounts(users, {"rehearsal"}) == ["a", "d"]
+def test_a_refund_needs_evidence_the_stored_plan_was_re_rendered(env):
     L = mk(env)
-    for _ in range(2):                                            # running it twice changes nothing
-        for u in ("a", "d"):
-            assert L.grandfather(u).plan == "beta_grandfathered"
-    assert L.get_entitlement("rehearsal") is None
-    assert L.ensure_entitlement("rehearsal").plan == "free_starter"
+    plus(L)
+    L.reserve_video("u1", "op1")
+    L.settle_video("u1", "op1")
+    assert L.refund_video("u1", "op1", "render_failed") == "not_eligible:insufficient_evidence"                   # no claim of retries
+    assert L.refund_video("u1", "op1", "render_failed", render_attempts=1) == "not_eligible:insufficient_evidence"
+    assert L.get_entitlement("u1").v_used == 1                                                                    # nothing moved
+    assert L.refund_video("u1", "op1", "render_failed", render_attempts=2, client_build="1.0(42)") == "refunded"
+    rec = env.ddb.get_item(TableName=env.table, Key={"story_user_id": {"S": "u1"},
+                                                     "quota_period": {"S": f"billing#v#{reservation_id('op1')}"}})["Item"]
+    assert rec["b_refund_attempts"]["N"] == "2" and rec["b_refund_build"]["S"] == "1.0(42)"   # audit evidence is kept
+
+
+def test_free_starter_gets_one_refund_not_a_loop_of_free_videos(env):
+    L = mk(env)
+    for op in ("a", "b"):
+        L.reserve_video("u1", op)
+        L.settle_video("u1", op)
+    assert L.refund_video("u1", "a", "render_failed", render_attempts=2) == "refunded"
+    assert L.refund_video("u1", "b", "render_failed", render_attempts=2) == "not_eligible:refund_cap"
+    assert L.entitlement_view("u1")["refunds"] == {"used": 1, "allowed": 1}
+
+
+def test_a_refund_for_another_accounts_or_an_unbilled_operation_is_impossible(env):
+    L = mk(env)
+    L.reserve_video("u1", "op1")
+    L.settle_video("u1", "op1")
+    assert L.refund_video("u2", "op1", "render_failed", render_attempts=2) == "not_eligible:unknown_operation"   # another account
+    assert L.refund_video("u1", "never-billed", "render_failed", render_attempts=2) == "not_eligible:unknown_operation"
+    L.grandfather("u3")
+    L.reserve_video("u3", "opx")                                                                                  # unlimited: nothing billed
+    assert L.refund_video("u3", "opx", "render_failed", render_attempts=2) == "not_eligible:unknown_operation"
+    assert L.get_entitlement("u1").v_used == 1
+
+
+def test_concurrent_refund_claims_for_one_operation_refund_once(env):
+    L = mk(env)
+    plus(L)
+    L.reserve_video("u1", "op1")
+    L.settle_video("u1", "op1")
+    out = []
+    run_threads(lambda: out.append(L.refund_video("u1", "op1", "render_failed", render_attempts=2)), [()] * 8)
+    assert out.count("refunded") == 1 and set(out) <= {"refunded", "noop"}
+    e = L.get_entitlement("u1")
+    assert (e.v_used, e.refunds) == (0, 1) and invariant(e, "video")
+
+
+# ---- grandfathering cohort and rollback ------------------------------------------------------------------------------
+
+def test_grandfathering_records_its_cohort_and_can_be_rolled_back_for_exactly_that_cohort(env):
+    L = mk(env)
+    L.grandfather("a", cutoff="2026-12-01")
+    L.grandfather("a", cutoff="2026-12-01")                                  # idempotent re-run
+    L.grandfather("b", cutoff="2026-11-01")
+    L.ensure_entitlement("c")                                                # a later signup: a normal Free starter
+    assert L.get_entitlement("a").plan == "beta_grandfathered" and L.get_entitlement("c").plan == "free_starter"
+    assert L.revoke_grandfather("a", "2099-01-01") == "noop"                 # wrong cohort: untouched
+    assert L.revoke_grandfather("c", "2026-12-01") == "noop"                 # never grandfathered
+    assert L.revoke_grandfather("a", "2026-12-01") == "reverted"
+    assert L.revoke_grandfather("a", "2026-12-01") == "noop"                 # idempotent
+    a = L.get_entitlement("a")
+    assert (a.plan, a.unlimited, a.v_avail, a.m_avail, a.trial_end) == ("free_starter", False, 2, 30, None)
+    assert L.get_entitlement("b").plan == "beta_grandfathered"               # the other cohort is unaffected
+    assert L.reserve_video("a", "op1").charged                               # and limits apply again
+
+
+def test_a_grandfathered_account_that_moved_to_a_paid_plan_is_never_rolled_back(env):
+    L = mk(env)
+    L.grandfather("a", cutoff="2026-12-01")
+    L.admin_grant("a", videos=5, moments=5, reason="support")
+    assert L.revoke_grandfather("a", "2026-12-01") == "noop"
+    assert L.get_entitlement("a").plan == "admin_granted"
+
+
+# ---- worker/recovery and period-attribution scenarios (run on DynamoDB Local too) ------------------------------------
+
+def test_a_cancelled_job_releases_its_reservation_through_reconciliation(env):
+    L = mk(env)
+    L.reserve_video("u1", "op1")
+    assert L.reconcile_video_job("u1", "op1", "cancelled") == "released"
+    assert L.reconcile_video_job("u1", "op1", "cancelled") == "noop"
+    e = L.get_entitlement("u1")
+    assert (e.v_avail, e.v_resv, e.v_used) == (2, 0, 0)
+    assert L.reserve_video("u1", "op1").charged                              # a re-opened operation can reserve again
+
+
+def test_a_reservation_keeps_the_period_it_was_charged_in_after_a_renewal(env):
+    L = mk(env)
+    plus(L)
+    L.reserve_video("u1", "slow")
+    renew(L)
+    L.settle_video("u1", "slow")
+    rec = env.ddb.get_item(TableName=env.table, Key={"story_user_id": {"S": "u1"},
+                                                     "quota_period": {"S": f"billing#v#{reservation_id('slow')}"}})["Item"]
+    assert rec["b_period"]["S"] == "p1" and rec["b_state"]["S"] == "settled"          # historical attribution preserved
+    e = L.get_entitlement("u1")
+    assert e.period_id == "p2" and (e.v_used, e.v_resv, e.v_avail) == (0, 0, 12)      # the new period was not charged for it
+
+
+def test_out_of_order_entitlement_events_converge_regardless_of_arrival_order(env):
+    import itertools
+    events = [dict(status=ST_PLUS_ACTIVE, period="p1", start=T0, end=T0 + 30 * DAY, ts=100),
+              dict(status=ST_PLUS_ACTIVE, period="p2", start=T0 + 30 * DAY, end=T0 + 60 * DAY, ts=200),
+              dict(status=ST_PLUS_EXPIRED, period="p2", start=T0 + 30 * DAY, end=T0 + 60 * DAY, ts=300)]
+    finals = set()
+    for n, order in enumerate(itertools.permutations(events)):
+        L = mk(env)
+        for e in order:
+            plus(L, f"perm{n}", period=e["period"], start=e["start"], end=e["end"], ts=e["ts"], status=e["status"])
+        got = L.get_entitlement(f"perm{n}")
+        finals.add((got.status, got.period_id))
+    assert finals == {(ST_PLUS_EXPIRED, "p2")}       # every one of the 6 arrival orders ends in the newest state
+
+
+def test_idempotent_replay_of_the_whole_lifecycle_changes_nothing(env):
+    L = mk(env)
+    for _ in range(3):
+        L.reserve_video("u1", "op1")
+        L.settle_video("u1", "op1")
+        L.reserve_moment("u1", "m1~fabc")
+        L.settle_moment("u1", "m1~fabc")
+    e = L.get_entitlement("u1")
+    assert (e.v_used, e.v_resv, e.m_used, e.m_resv) == (1, 0, 1, 0) and invariant(e, "video") and invariant(e, "moment")
+
+
+# ---- IAM surface: the billing hot path needs no permission beyond what the usage table already grants -----------------
+
+def test_the_whole_billing_lifecycle_uses_only_get_update_and_transact(env):
+    """The API and worker roles already hold dynamodb:GetItem, UpdateItem and TransactWriteItems on the usage table (quota module).
+    Reservations, settlement, release, refund, renewal, grandfathering, refresh and Apple binding must need nothing else (no Query,
+    no Scan, no PutItem). `reclaim_stale_moments` is the only Query user and is NOT on any request path or automatic sweep."""
+    used = set()
+
+    class Rec:
+        def __init__(self, inner):
+            self._i = inner
+
+        def __getattr__(self, name):
+            real = getattr(self._i, name)
+            if callable(real):
+                def call(*a, **kw):
+                    used.add(name)
+                    return real(*a, **kw)
+                return call
+            return real
+
+    L = BillingLedger(ddb=Rec(env.ddb), table=env.table, clock=env.clock)
+    L.reserve_video("u1", "op1"); L.settle_video("u1", "op1"); L.reserve_video("u1", "op2"); L.release_video("u1", "op2")
+    L.reserve_moment("u1", "m1~fabc", attrs={"b_fp": {"S": "abc"}}); L.settle_moment("u1", "m1~fabc", result="{}", version="v1")
+    L.read_moment("u1", "m1~fabc"); L.begin_refresh("u1", "m1~fabc", "c"); L.finish_refresh("u1", "m1~fabc", "{}", "v2")
+    L.refund_video("u1", "op1", "render_failed", render_attempts=2)
+    L.apply_subscription("u1", status=ST_PLUS_ACTIVE, period_id="p1", period_start=T0, period_end=T0 + 30 * DAY, event_ts=1)
+    L.bind_apple_transaction("otx", "u1"); L.get_or_create_apple_account_token("u1"); L.entitlement_view("u1")
+    L.grandfather("u2", cutoff="2026-12-01"); L.revoke_grandfather("u2", "2026-12-01")
+    assert used <= {"get_item", "update_item", "transact_write_items"}, used
+
+
+def test_stale_moment_sweep_works_when_query_is_permitted_and_is_a_silent_noop_when_it_is_not(env):
+    L = mk(env)
+    L.reserve_moment("u1", "m1~fa"); L.reserve_moment("u1", "m2~fb")
+    env[1].advance(L.cfg.moment_stale_s + 5)
+
+    def denied(real, *a, **kw):
+        raise RuntimeError("AccessDeniedException: not authorized to perform dynamodb:Query")
+
+    assert BillingLedger(ddb=Wrapped(env.ddb, query=denied), table=env.table, clock=env.clock).reclaim_stale_moments("u1") == 0
+    assert L.get_entitlement("u1").m_resv == 2                                # nothing released without Query...
+    assert L.reserve_moment("u1", "m1~fa").reason == "reclaimed"             # ...yet the SAME Moment is reclaimed on retry, uncharged
+    assert L.reclaim_stale_moments("u1") == 1                                 # and with Query the other one is swept
+    e = L.get_entitlement("u1")
+    assert (e.m_resv, e.m_avail) == (1, 29)

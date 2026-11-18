@@ -642,6 +642,10 @@ def _scene_video_client():
 def create_app() -> FastAPI:
     """Construct the FastAPI app. A factory so tests get a fresh instance
     (and a fresh in-memory store) per app."""
+    # Billing V1: an invalid STORY_BILLING_MODE (or the removed STORY_BILLING_PLANS_JSON) must stop the service from
+    # starting, so a deploy with a mistyped posture fails its health check instead of running with billing silently
+    # disabled or wrongly enabled. Unset means off.
+    billing_gate.validate_startup()
     # Docs endpoints (/docs, /redoc, /openapi.json) are PUBLIC only in development (or with an explicit
     # STORY_DOCS_PUBLIC=1 opt-in); in beta/gamma/prod they are disabled so the schema is not exposed
     # unauthenticated (req 4). Disabling at construction time means FastAPI never registers the routes.
@@ -720,13 +724,24 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/billing/video-refund", status_code=200)
     def billing_video_refund(request: Request, body: dict, principal: Principal = Depends(require_user)) -> dict:
-        """Ask for ONE settled video credit back after a device render failure. The server cannot observe on-device
-        rendering, so the claim is accepted once per operation, only for a COMPLETED job the caller owns, within the
-        refund window, in the same period, and up to a small per-period cap. Never a blanket refund."""
+        """Ask for ONE settled video credit back after a persistent on-device render/export failure. Safety model:
+        * authenticated; the job must be the caller's own COMPLETED job (404 otherwise: never confirms another account's job);
+        * the operation must hold a SETTLED credit in the caller's ledger (an unbilled/unlimited/foreign operation has none);
+        * evidence: `reason` from a closed vocabulary and `render_attempts` >= 2 (the stored plan was re-rendered before the
+          claim: a plan is re-renderable with NO new AI work, so a single failure is retried, not refunded); optional `client_build`;
+        * once per operation, within 24h of settlement, same period, capped (Free starter 1, Plus 3 per period);
+        * it only returns the credit. The generated plan/output is never deleted or invalidated, so the user keeps the video and can
+          re-render it (the bounded cost of a false claim is at most the cap). Creative quality is never a refund reason.
+        The server cannot observe on-device rendering; the claim is untrusted and only ever bounded."""
         op = str(body.get("operation_id", "")).strip()
         reason = str(body.get("reason", "")).strip()
-        if not op or reason not in billing_gate.REFUND_REASONS:
-            raise HTTPException(status_code=422, detail=f"operation_id and reason in {sorted(billing_gate.REFUND_REASONS)} required")
+        try:
+            attempts = int(body.get("render_attempts", 0))
+        except (TypeError, ValueError):
+            attempts = 0
+        if not op or reason not in billing_gate.REFUND_REASONS or attempts < 1:
+            raise HTTPException(status_code=422, detail=f"operation_id, reason in {sorted(billing_gate.REFUND_REASONS)} and "
+                                                        f"render_attempts (>=1) required")
         led = billing_gate._ledger(request)
         if led is None:
             return {"result": "billing_off", "billing_mode": billing_gate.billing_mode()}
@@ -735,10 +750,12 @@ def create_app() -> FastAPI:
         if not job or job.get("owner") != principal.story_user_id or job.get("status") != "completed":
             raise HTTPException(status_code=404, detail="no completed generation for that operation")
         try:
-            result = led.refund_video(principal.story_user_id, scoped, reason)
+            result = led.refund_video(principal.story_user_id, scoped, reason, render_attempts=attempts,
+                                      client_build=str(body.get("client_build", ""))[:40])
         except billing_gate.BillingStoreError:
             return billing_gate.store_unavailable_response()
-        log.info("billing_video_refund", extra={"result": result, "reason": reason, "story_user_id": principal.story_user_id})
+        log.info("billing_video_refund", extra={"result": result, "reason": reason, "render_attempts": attempts,
+                                                "story_user_id": principal.story_user_id})
         return {"result": result, "entitlement": led.entitlement_view(principal.story_user_id)}
 
     # ========================================================================================================
@@ -1381,16 +1398,7 @@ def create_app() -> FastAPI:
         req_meta = AURequestMeta(
             moment_id=moment_id, source_capture_id=source_capture_id, capture_context=capture_context
         )
-        # Billing V1: charge ONE analysis unit per UNIQUE new Moment (idempotent on moment_id: a cache hit, retry,
-        # duplicate upload or re-analysis of an already-analysed Moment spends nothing). Reserved before inference,
-        # settled on success, released on any failure so a failed analysis never costs the customer an allowance.
-        _bill_uid = billing_gate.principal_uid(request)
-        _bgate = None
-        if _bill_uid is not None:
-            _bgate, _bresp = billing_gate.reserve_moment(request, _bill_uid, str(moment_id))
-            if _bresp is not None:
-                return _bresp
-        try:
+        async def _analyze():
             # OFFLOAD the blocking Bedrock call off the event loop. This handler is `async def`, so calling the
             # synchronous engine.analyze() directly froze the single-worker event loop for the full ~10-14s model
             # latency — serializing EVERY request behind each AU call and timing out interactive ones (the P0
@@ -1398,9 +1406,24 @@ def create_app() -> FastAPI:
             # thread so the loop stays free for interactive requests (creative-intent et al.). The semaphore
             # bounds concurrent AU so it never occupies the whole threadpool (interactive handlers don't take it).
             async with _AU_ADMISSION:
-                au = await run_in_threadpool(engine.analyze, au_frames, req_meta)
+                return await run_in_threadpool(engine.analyze, au_frames, req_meta)
+
+        # Billing V1: server-authoritative source binding + inference idempotency (packages/billing/analysis.py). The charge
+        # and any reuse are decided from the frames the SERVER accepted (fingerprint) and the account's own cloud-verified
+        # media, never from the client-chosen moment id alone. off: this is a plain analysis. observe: shadow accounting only,
+        # always analyses. enforce: identical completed input is reused (no model call), identical in-flight input coalesces,
+        # a new source is charged once, a failed analysis releases its allowance.
+        _bill_uid = billing_gate.principal_uid(request)
+        try:
+            if _bill_uid is None:
+                au, _reused, _bresp = await _analyze(), None, None
+            else:
+                au, _reused, _bresp = await billing_gate.run_analysis(
+                    request, _bill_uid, str(moment_id), frames=[(f.t_ms, f.data) for f in au_frames],
+                    claim_sha=claimed_sha, version=f"{AU_PROMPT_VERSION}|{AU_SCHEMA_VERSION}|{AU_FRAME_POLICY}",
+                    analyze=_analyze, to_json=lambda a: a.understanding.model_dump_json(),
+                    from_json=MomentUnderstandingContract.model_validate_json)
         except AURetryableError as e:
-            billing_gate.release(_bgate)
             log.warning(
                 "asset_understanding_retryable_failure",
                 extra={**base_fields, "latency_ms": round((time.monotonic() - started) * 1000),
@@ -1410,22 +1433,26 @@ def create_app() -> FastAPI:
                 status_code=503,
                 detail="asset_understanding_unavailable: analysis failed after retry; job stays pending",
             )
-        except BaseException:
-            billing_gate.release(_bgate)
-            raise
-        billing_gate.settle(_bgate)
-        # Frames discarded here (not persisted) — ephemeral inference input.
-        log.info(
-            "asset_understanding_resolved",
-            extra={**base_fields, "latency_ms": round((time.monotonic() - started) * 1000),
-                   "success": True, "retried": au.retried, "attempts": au.attempts,
-                   "model": au.model, "input_tokens": au.usage_input_tokens,
-                   "output_tokens": au.usage_output_tokens,
-                   "requested_model": au.requested_model, "served_provider": au.served_provider,
-                   "used_fallback": au.used_fallback,
-                   "event_count": len(au.understanding.observed.events),
-                   "story_utility": au.understanding.story_context.story_utility.value},
-        )
+        if _bresp is not None:
+            return _bresp                       # 402 (entitlement) or 503 (billing store / identical analysis still running)
+        understanding = au.understanding if au is not None else _reused
+        if au is None:
+            log.info("asset_understanding_reused",
+                     extra={**base_fields, "latency_ms": round((time.monotonic() - started) * 1000), "success": True,
+                            "reused": True, "model_called": False})
+        else:
+            # Frames discarded here (not persisted) — ephemeral inference input.
+            log.info(
+                "asset_understanding_resolved",
+                extra={**base_fields, "latency_ms": round((time.monotonic() - started) * 1000),
+                       "success": True, "retried": au.retried, "attempts": au.attempts,
+                       "model": au.model, "input_tokens": au.usage_input_tokens,
+                       "output_tokens": au.usage_output_tokens,
+                       "requested_model": au.requested_model, "served_provider": au.served_provider,
+                       "used_fallback": au.used_fallback,
+                       "event_count": len(au.understanding.observed.events),
+                       "story_utility": au.understanding.story_context.story_utility.value},
+            )
 
         # P1-F (R1): best-effort PROVISIONAL evidence persistence from the EXACT accepted frames + timestamps.
         # Gated on: (0) a SERVER env flag STORY_EVIDENCE_PERSIST_ENABLED (DEFAULT OFF) — so NO durable personal-
@@ -1466,7 +1493,7 @@ def create_app() -> FastAPI:
                         "persist_enabled": _persist_enabled,
                         "sha_claim_present": claimed_sha is not None,
                         "authed": not getattr(principal, "is_legacy", True)})
-        return au.understanding
+        return understanding
 
     @app.post("/v1/story-coverage", response_model=StoryCoverageContract, status_code=200)
     def story_coverage(
@@ -2013,6 +2040,20 @@ def create_app() -> FastAPI:
         if job.get("owner") != principal.story_user_id:
             raise HTTPException(status_code=404, detail="job not found")
 
+    def _deny_job(store, job_id: str, staging_prefix: str, category: str, detail: str) -> None:
+        """A submit was DENIED (operational quota or billing) after its job row was created. Terminalise the row so it can
+        NEVER be enqueued by the lost-enqueue reconciler and run without authorization, and drop its staged inputs. Runs in
+        every billing mode (the quota denial path predates billing). A later retry of the SAME operation id is re-opened by the
+        store (bounded) and reserved again; nothing was spent by a denied job."""
+        try:
+            store.deny(job_id, category, detail)
+        finally:
+            if staging_prefix:
+                try:
+                    store.delete_staging(staging_prefix)
+                except Exception:  # noqa: BLE001 — staging TTL/lifecycle is the backstop
+                    pass
+
     @app.post("/v1/edit-plan-jobs", status_code=202)
     async def submit_edit_plan_job(
         request: Request,  # FastAPI injects; first param (no default) so it is excluded from the OpenAPI schema
@@ -2113,15 +2154,12 @@ def create_app() -> FastAPI:
         if _bill_uid is not None:
             _bgate, _bresp = billing_gate.submit_reserve_video(request, _bill_uid, scoped_op, created=created)
             if _bresp is not None:
-                store.fail(job_id, "billing_denied", "entitlement does not permit this video")
-                store.delete_staging(prefix)
+                _deny_job(store, job_id, prefix, "billing_denied", "entitlement does not permit this video")
                 return _bresp
         denied = quota_gate.submit_reserve(request, principal.story_user_id, scoped_op, job_id, created=created)
         if denied is not None:
-            if _bgate is not None:
-                billing_gate.release(_bgate)
-                store.fail(job_id, "quota_denied", "operational quota denied after billing hold")
-                store.delete_staging(prefix)
+            billing_gate.release(_bgate)
+            _deny_job(store, job_id, prefix, "quota_denied", "operational quota denied this submit")
             return denied
         if created:
             store.enqueue(job_id)
@@ -2218,6 +2256,7 @@ def create_app() -> FastAPI:
         # P0 Beta Security Phase 4: reserve AI allowance + active-job slot exactly once (same as edit-plan).
         denied = quota_gate.submit_reserve(request, principal.story_user_id, scoped_op, job_id, created=created)
         if denied is not None:
+            _deny_job(store, job_id, staging_prefix, "quota_denied", "operational quota denied this submit")
             return denied
         if created:
             store.enqueue(job_id)

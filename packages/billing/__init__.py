@@ -1,5 +1,7 @@
 """YoTale Billing V1: server-authoritative entitlements and allowance ledger. See ledger.py for the design."""
-from .config import MODE_ENFORCE, MODE_OBSERVE, MODE_OFF, BillingConfig, PlanLimits, billing_mode
+from .config import (
+    MODE_ENFORCE, MODE_OBSERVE, MODE_OFF, BillingConfig, BillingConfigError, PlanLimits, billing_mode, validate_billing_config,
+)
 from .ledger import BillingLedger, parse_entitlement, reservation_id
 from .model import (
     ACTION_CONTACT, ACTION_SUBSCRIBE, ACTION_WAIT_RENEWAL, CONTRACT_VERSION, DENIAL_CODES, BillingDenied,

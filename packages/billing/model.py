@@ -80,6 +80,7 @@ class Entitlement:
     m_used: int = 0
     refunds: int = 0
     orig_txn: Optional[str] = None
+    gf_cutoff: Optional[str] = None      # rollout cutoff of the grandfathering cohort (audit + cohort rollback)
     ver: int = 1
     cfg: str = ""
     created: int = 0

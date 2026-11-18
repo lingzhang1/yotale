@@ -610,6 +610,57 @@ describe("P1-G0 per-environment operational policy defaults (defined once, in CD
     expect(v.STORY_QUOTA_GLOBAL_MONTHLY_USD).toBe("60");
     expect(v.STORY_REQUIRE_AUTH).toBe("1");
   });
+  describe("Billing V1 posture (STORY_BILLING_MODE)", () => {
+    function workerEnv(environment: string, manifest?: any): Record<string, string> {
+      const app = new cdk.App({ context: { ...release } });
+      const t = Template.fromStack(new StoryApiStack(app, `story-${environment}-api`, {
+        environment, env: { account: "123456789012", region: "us-east-1" },
+        ...(manifest ? { releaseManifestForTest: manifest } : {}) }));
+      const fns = Object.values(t.findResources("AWS::Lambda::Function")) as any[];
+      const w = fns.find((f) => f.Properties?.Environment?.Variables?.STORY_JOBS_QUEUE_URL !== undefined);
+      return w.Properties.Environment.Variables;
+    }
+    const committed = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "..", "release", "release.json"), "utf8"));
+    const withMode = (env: string, mode: unknown) => ({
+      ...committed, environments: { ...committed.environments, [env]: { ...committed.environments[env], billing_mode: mode } } });
+
+    test("every environment is OFF in the committed manifest; API and worker carry exactly it", () => {
+      for (const e of ["development", "beta", "gamma", "production"]) {
+        expect(committed.environments[e].billing_mode).toBe("off");
+        expect(workerEnv(e).STORY_BILLING_MODE).toBe("off");
+      }
+      expect(serviceVars("beta").STORY_BILLING_MODE).toBe("off");
+      expect(serviceVars("development").STORY_BILLING_MODE).toBe("off");
+    });
+    test("the manifest is the only source: observe in the manifest reaches API and worker identically", () => {
+      const m = withMode("development", "observe");
+      expect(workerEnv("development", m).STORY_BILLING_MODE).toBe("observe");
+    });
+    test("an unset manifest value means off, an INVALID one fails the synth (never silently disabled)", () => {
+      const unset = { ...committed, environments: { ...committed.environments, development: { ...committed.environments.development } } };
+      delete unset.environments.development.billing_mode;
+      expect(workerEnv("development", unset).STORY_BILLING_MODE).toBe("off");
+      for (const bad of ["enforced", "ON", "true", "", 1]) {
+        expect(() => workerEnv("development", withMode("development", bad))).toThrow(/billing_mode.*invalid/);
+      }
+    });
+    test("no shell variable or CDK context can change the posture", () => {
+      process.env.STORY_BILLING_MODE = "enforce";
+      const app = new cdk.App({ context: { ...release, billingMode: "enforce", STORY_BILLING_MODE: "enforce" } });
+      const t = Template.fromStack(new StoryApiStack(app, "story-beta-api", {
+        environment: "beta", env: { account: "123456789012", region: "us-east-1" } }));
+      const svc = Object.values(t.findResources("AWS::AppRunner::Service")) as any[];
+      const vars = Object.fromEntries(svc[0].Properties.SourceConfiguration.ImageRepository.ImageConfiguration
+        .RuntimeEnvironmentVariables.map((e: any) => [e.Name, e.Value]));
+      expect(vars.STORY_BILLING_MODE).toBe("off");
+      delete process.env.STORY_BILLING_MODE;
+    });
+    test("no STORY_BILLING_PLANS_JSON is ever emitted", () => {
+      expect(serviceVars("beta").STORY_BILLING_PLANS_JSON).toBeUndefined();
+      expect(workerEnv("beta").STORY_BILLING_PLANS_JSON).toBeUndefined();
+    });
+  });
+
   test("development stays observe / auth optional / $8", () => {
     const v = serviceVars("development");
     expect(v.STORY_QUOTA_MODE).toBe("observe");
