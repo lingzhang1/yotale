@@ -126,12 +126,6 @@ struct StoryResultView: View {
     // R7-D — cloud-restore of the generated MP4 when the local file is absent but a verified backup exists.
     @State private var restoring = false
     @State private var restoreError: String?
-    #if DEBUG
-    // DEBUG-only "Delete this version" (controlled planner evaluations) — see DebugOutputDeletion.
-    @State private var debugVersionDeleted = false
-    @State private var showDebugDelete = false
-    @State private var debugDeleteMessage: String?
-    #endif
 
     private var playback: ResultPlayback {
         ResultPlayback.resolve(output: output) { RenderOutputStore.shared.exists(relative: $0) }
@@ -152,12 +146,7 @@ struct StoryResultView: View {
     }
 
     var body: some View {
-        #if DEBUG
-        // DEBUG-only: once this version is deleted the model object is gone; never evaluate anything that reads it.
-        if debugVersionDeleted { StoryTheme.ink.ignoresSafeArea() } else { resultBody }
-        #else
         resultBody
-        #endif
     }
 
     private var resultBody: some View {
@@ -548,10 +537,6 @@ struct StoryResultView: View {
             }
             .buttonStyle(.plain)
 
-            #if DEBUG
-            debugDeleteVersionButton
-            #endif
-
             if let outcome = saveOutcome { saveStatusLine(outcome) }
         }
         .padding(.horizontal, StoryTheme.screenPadding)
@@ -565,72 +550,6 @@ struct StoryResultView: View {
         }
     }
 
-    #if DEBUG
-    /// DEBUG-ONLY. Removes THIS version (row + local MP4 + its backup-queue rows) so Create starts a fresh Original on
-    /// the same Story. Compiled out of Release/TestFlight builds. English-only on purpose (not a product feature).
-    private var debugDeleteVersionButton: some View {
-        Button(role: .destructive) { showDebugDelete = true } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "trash").font(.system(size: 13, weight: .semibold))
-                Text(verbatim: "Delete this version (debug)").font(StoryTheme.body(13, .medium))
-                Spacer()
-            }
-            .foregroundStyle(Color.red.opacity(pendingInFlight ? 0.25 : 0.8))
-            .padding(.horizontal, 16).padding(.vertical, 11)
-            .frame(maxWidth: .infinity)
-            .overlay(RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.red.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [4])))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(pendingInFlight)
-        .confirmationDialog(Text(verbatim: "Delete this version?"), isPresented: $showDebugDelete,
-                            titleVisibility: .visible) {
-            Button(role: .destructive) { debugDeleteThisVersion() } label: {
-                Text(verbatim: "Delete version and video file")
-            }
-            Button(role: .cancel) {} label: { Text(verbatim: "Cancel") }
-        } message: {
-            Text(verbatim: "DEBUG ONLY. Removes this version and its video file from this device and from the synced "
-                + "Story so you can create a new Original on this Story. The Story, Moments, Guide, music plan and "
-                + "settings are kept. A cloud backup copy of the video is not deleted.")
-        }
-        .alert(Text(verbatim: "Can't delete this version"),
-               isPresented: Binding(get: { debugDeleteMessage != nil },
-                                    set: { if !$0 { debugDeleteMessage = nil } })) {
-            Button(role: .cancel) { debugDeleteMessage = nil } label: { Text(verbatim: "OK") }
-        } message: { Text(verbatim: debugDeleteMessage ?? "") }
-    }
-
-    private func debugDeleteThisVersion() {
-        let victim = output
-        let victimId = victim.id.uuidString.prefix(8)
-        // Refuse first, without touching any view or model state (in-flight operation / derived versions).
-        if let reason = DebugOutputDeletion.blockReason(for: victim, in: story, context: context) {
-            debugDeleteMessage = reason.explanation
-            return
-        }
-        // The view must stop reading the model BEFORE it is deleted (a deleted SwiftData object must not be read).
-        player?.pause(); player = nil; isPlaying = false
-        debugVersionDeleted = true
-        do {
-            let outcome = try DebugOutputDeletion.delete(victim, from: story, context: context)
-            // Mark the Story dirty: the next sync push writes the doc WITHOUT this version. A pull cannot re-add it
-            // (pulls apply only to clean records and the server revision is unchanged).
-            StorySyncCoordinator.shared.touch(storyId: story.id, context: context, activeOwner: story.ownerAccountId,
-                                              token: { await AuthStore.shared?.validAccessToken() })
-            MediaEngineV1.beacon("debug-delete-version: output=\(victimId) file=\(outcome.removedFile) "
-                + "backupJobs=\(outcome.backupJobsRemoved) path=\(outcome.relativePath ?? "-")")
-            goHome()
-        } catch let DebugOutputDeletion.Failure.blocked(reason) {
-            debugVersionDeleted = false
-            debugDeleteMessage = reason.explanation
-        } catch {
-            debugVersionDeleted = false
-            debugDeleteMessage = "Couldn't delete: \(error.localizedDescription)"
-        }
-    }
-    #endif
 
     /// A first-class editing tile (Revise / Music). Disabled (dimmed) when the output has no persisted plan.
     @ViewBuilder
