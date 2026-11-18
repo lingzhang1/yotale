@@ -163,6 +163,42 @@ def make_attempt(*, provider: str, model: str | None, n: int, max_tokens: int, l
     return rec
 
 
+def log_model_call(task: str, rec: dict) -> None:
+    """Emit ONE privacy-safe `model_call_usage` log line per BILLED provider attempt, for every capability
+    (the single place all engines funnel through). Cost = tokens x the live observability price table.
+
+    Why here: guide / coverage / creative-intent / interpret-revision / music-plan / duration / scene
+    understanding previously logged no tokens at all, so their spend was invisible. Every adapter attempt
+    already builds `rec` via make_attempt, so logging at that seam covers all of them, including repair,
+    truncation and no-tool-call attempts that still bill.
+
+    Billing note: OpenAI `completion_tokens` already INCLUDES reasoning tokens. Gemini `candidatesTokenCount`
+    EXCLUDES `thoughtsTokenCount`, but thinking tokens are billed at the output rate, so for Gemini the billed
+    output is output + reasoning (otherwise cost is a lower bound).
+
+    Only token COUNTS, model/provider ids and the task name are logged: never prompts, media or user ids.
+    Best-effort: observability must never break a model call."""
+    try:
+        in_tok = rec.get("input_tokens")
+        out_tok = rec.get("output_tokens")
+        if in_tok is None and out_tok is None:
+            return  # no usage reported (transport error etc.): nothing was billed that we can see
+        from observability import PRICING_VERSION, get_logger, price_lookup
+        reasoning = int(rec.get("reasoning_tokens") or 0)
+        billed_out = int(out_tok or 0) + (reasoning if rec.get("provider") == "gemini" else 0)
+        cost, priced = price_lookup(int(in_tok or 0), billed_out, str(rec.get("model") or ""))
+        get_logger("story.model_call").info("model_call_usage", extra={
+            "task": task, "provider": rec.get("provider"), "model_id": rec.get("model"),
+            "attempt": rec.get("n"), "outcome": rec.get("outcome"), "latency_ms": rec.get("latency_ms"),
+            "input_tokens": int(in_tok or 0), "output_tokens": int(out_tok or 0),
+            "reasoning_output_tokens": reasoning, "billed_output_tokens": billed_out,
+            "estimated_cost_usd": round(cost, 6), "pricing_known": priced,
+            "pricing_version": PRICING_VERSION,
+        })
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def classify_provider_error(exc: BaseException) -> str:
     if isinstance(exc, ProviderDeadlineError):
         return "deadline"
@@ -424,6 +460,7 @@ __all__ = [
     "OutputTruncatedError",
     "ProviderTimeoutError",
     "ProviderDeadlineError",
+    "log_model_call",
     "make_attempt",
     "sanitize_error",
     "classify_provider_error",
