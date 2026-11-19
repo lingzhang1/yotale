@@ -368,3 +368,32 @@ def test_reconcile_refuses_a_transaction_the_account_does_not_own(world):
     tok2 = world.token("u2")
     with pytest.raises(TransactionBound):
         world.svc.apply_status("u2", 1, txn(tok2, orig="1000"), None)
+
+
+# ---- token index at creation (found on the first real sandbox purchase: SUBSCRIBED beat the app's POST by 4 seconds) ----------
+def test_subscribed_arriving_before_the_app_posts_is_attributed_without_any_explicit_indexing(world):
+    tok = world.token("u1")                      # the app reads its entitlement (token creation) and then purchases
+    out = world.svc.handle_notification(world.note("SUBSCRIBED", txn(tok), subtype="INITIAL_BUY", signed=T0))
+    assert out["outcome"] == "applied_active"
+    assert world.ledger.entitlement_view("u1")["plan"] == "plus"
+
+
+def test_token_created_before_the_index_existed_is_indexed_on_next_read_and_only_once(world):
+    sk = "billing#account"
+    world.ledger._update("u9", sk, "SET b_apple_token = :t, b_created = :n",
+                         {":t": {"S": "11111111-2222-4333-8444-555555555555"}, ":n": {"N": "1"}})     # legacy record: no index, no flag
+    assert world.ledger.uid_for_apple_token("11111111-2222-4333-8444-555555555555") is None
+    assert world.ledger.get_or_create_apple_account_token("u9") == "11111111-2222-4333-8444-555555555555"
+    assert world.ledger.uid_for_apple_token("11111111-2222-4333-8444-555555555555") == "u9"
+    assert "b_tok_idx" in world.ledger._get("u9", sk)
+    assert world.ledger.get_or_create_apple_account_token("u9") == "11111111-2222-4333-8444-555555555555"   # idempotent
+
+
+def test_concurrent_first_token_requests_agree_and_index_the_winner(world):
+    import threading
+    got = []
+    ts = [threading.Thread(target=lambda: got.append(world.ledger.get_or_create_apple_account_token("u7"))) for _ in range(8)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert len(set(got)) == 1
+    assert world.ledger.uid_for_apple_token(got[0]) == "u7"
