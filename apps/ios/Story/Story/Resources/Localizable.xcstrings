@@ -10619,6 +10619,28 @@
           }
         }
       }
+    },
+    "Terms of Use" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用条款"
+          }
+        }
+      }
+    },
+    "Privacy Policy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐私政策"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
