@@ -10168,6 +10168,457 @@
           }
         }
       }
+    },
+    "%lld new Moments analyzed every month" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每月分析 %lld 个新瞬间"
+          }
+        }
+      }
+    },
+    "%lld video credits left" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还剩 %lld 个视频额度"
+          }
+        }
+      }
+    },
+    "%lld videos every month" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每月 %lld 个视频"
+          }
+        }
+      }
+    },
+    "1 video credit left" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还剩 1 个视频额度"
+          }
+        }
+      }
+    },
+    "Couldn't reach the App Store or YoTale. Your purchase is safe. Please try again in a moment." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法连接 App Store 或 YoTale。你的购买是安全的，请稍后再试。"
+          }
+        }
+      }
+    },
+    "Create, make another version, or revise: each uses one video" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "创建、制作另一个版本或修改：每次使用一个视频额度"
+          }
+        }
+      }
+    },
+    "Footage you already analyzed is free to reuse" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已分析过的素材可免费重复使用"
+          }
+        }
+      }
+    },
+    "Manage Subscription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "管理订阅"
+          }
+        }
+      }
+    },
+    "New Moments you can analyze" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还可分析的新瞬间"
+          }
+        }
+      }
+    },
+    "No purchase to restore for this Apple ID." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 Apple ID 下没有可恢复的购买。"
+          }
+        }
+      }
+    },
+    "Payment is charged to your Apple ID. The subscription renews every month until you cancel it at least 24 hours before the renewal date. Manage or cancel any time in your Apple ID settings." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "费用将从你的 Apple ID 扣除。订阅每月自动续订，除非你在续订日期前至少 24 小时取消。你可以随时在 Apple ID 设置中管理或取消订阅。"
+          }
+        }
+      }
+    },
+    "Payment issue. Update your payment method" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "付款出现问题，请更新你的付款方式"
+          }
+        }
+      }
+    },
+    "Renews or ends" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "续订或到期日"
+          }
+        }
+      }
+    },
+    "Restore Purchases" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "恢复购买"
+          }
+        }
+      }
+    },
+    "See YoTale Plus" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看 YoTale Plus 会员"
+          }
+        }
+      }
+    },
+    "Sign in to subscribe or to restore a purchase." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登录后才能订阅或恢复购买。"
+          }
+        }
+      }
+    },
+    "Sign in to your YoTale account to finish this." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请登录你的 YoTale 账号以完成操作。"
+          }
+        }
+      }
+    },
+    "Status" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "状态"
+          }
+        }
+      }
+    },
+    "Subscribe" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "订阅"
+          }
+        }
+      }
+    },
+    "The purchase couldn't be completed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法完成购买。"
+          }
+        }
+      }
+    },
+    "This needs a YoTale Plus subscription." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此功能需要订阅 YoTale Plus 会员。"
+          }
+        }
+      }
+    },
+    "Upgrade to keep creating." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "升级以继续创作。"
+          }
+        }
+      }
+    },
+    "Video credits left" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余视频额度"
+          }
+        }
+      }
+    },
+    "What you get" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你将获得"
+          }
+        }
+      }
+    },
+    "YoTale Plus" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "YoTale Plus 会员"
+          }
+        }
+      }
+    },
+    "You're subscribed to YoTale Plus. Thank you." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已订阅 YoTale Plus 会员，谢谢。"
+          }
+        }
+      }
+    },
+    "You've reached this period's limit." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已达到本周期的上限。"
+          }
+        }
+      }
+    },
+    "You've used all your video credits for this period. They renew with your next billing period." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已用完本周期的视频额度，下个计费周期开始时会重置。"
+          }
+        }
+      }
+    },
+    "You've used this period's new-Moment analysis. It renews with your next billing period. Your footage is still saved." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已用完本周期的新瞬间分析额度，下个计费周期开始时会重置。你的素材依然保存在手机中。"
+          }
+        }
+      }
+    },
+    "You've used your free Moment analysis. Your footage is still saved. Upgrade to YoTale Plus to analyze more." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已用完免费的瞬间分析额度。你的素材依然保存在手机中。升级到 YoTale Plus 会员可分析更多。"
+          }
+        }
+      }
+    },
+    "You've used your free video credits. Upgrade to YoTale Plus to create more." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已用完免费视频额度。升级到 YoTale Plus 会员可创作更多。"
+          }
+        }
+      }
+    },
+    "Your credits reset when your subscription renews." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "订阅续订时，你的额度会重置。"
+          }
+        }
+      }
+    },
+    "Your free starter" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的免费体验额度"
+          }
+        }
+      }
+    },
+    "Your free starter period has ended. Upgrade to YoTale Plus to keep creating videos." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的免费体验期已结束。升级到 YoTale Plus 会员即可继续创作视频。"
+          }
+        }
+      }
+    },
+    "Your purchase is waiting for approval. It will activate automatically." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的购买正在等待批准，批准后会自动生效。"
+          }
+        }
+      }
+    },
+    "Your purchase was restored." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已恢复你的购买。"
+          }
+        }
+      }
+    },
+    "Your videos stay yours if you cancel. Unused credits don't roll over." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消订阅后，你的视频依然属于你。未用完的额度不会累计到下个周期。"
+          }
+        }
+      }
+    },
+    "day" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "天"
+          }
+        }
+      }
+    },
+    "month" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "月"
+          }
+        }
+      }
+    },
+    "week" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "周"
+          }
+        }
+      }
+    },
+    "year" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "年"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

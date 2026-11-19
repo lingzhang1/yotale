@@ -363,6 +363,7 @@ struct CustomizeYourStoryView: View {
                     Text("Create Your Video").font(StoryTheme.display(26)).foregroundStyle(StoryTheme.cream)
                     Text("Choose how you want your moments to come together.")
                         .font(StoryTheme.body(14)).foregroundStyle(StoryTheme.textSecondary)
+                    VideoCreditsLine()   // Billing V1: server-reported credits (hidden unless limits are enforced)
                 }
 
                 // 2. VIDEO TYPE (PRIMARY, §4) — two cards, Highlights default.

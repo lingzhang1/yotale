@@ -80,6 +80,9 @@ enum StoryCreationError: Error, LocalizedError, Equatable {
     /// unavailable. NOT a technical failure and NOT material-infeasible — carries an honest, scope-specific
     /// message and never a plain Retry (retrying hits the same cap). The current version is kept unchanged.
     case quotaDenied(String)
+    /// Billing V1 (HTTP 402): the plan's allowance or trial does not permit this video. Carries the server's typed code and
+    /// action so the UI can open the right screen. Not a technical failure; never a plain Retry.
+    case entitlementDenied(BillingDenial)
 
     var errorDescription: String? {
         switch self {
@@ -125,6 +128,8 @@ enum StoryCreationError: Error, LocalizedError, Equatable {
         case .quotaDenied(let m):
             // Surface the honest, scope-specific quota message built by the networking layer; never a retry.
             return m
+        case .entitlementDenied(let d):
+            return d.message
         }
     }
 }
@@ -980,6 +985,10 @@ final class StoryCreationCoordinator {
             // Enforce-mode allowance cap (429). Honest, scope-specific message; NOT a retry.
             if cancelRequested { return finishCancelled() }
             return finishFailed(.quotaDenied(EditPlanJobError.quotaExceeded(scope: scope, retryAfter: nil).errorDescription ?? "You've reached a usage limit."))
+        } catch let EditPlanJobError.entitlementDenied(denial) {
+            // Billing V1 (402): allowance/trial/subscription. The UI opens the upgrade or allowance screen; never a retry.
+            if cancelRequested { return finishCancelled() }
+            return finishFailed(.entitlementDenied(denial))
         } catch EditPlanJobError.quotaStoreUnavailable {
             // Accounting-store outage (503). Transient — the user may try again shortly.
             if cancelRequested { return finishCancelled() }

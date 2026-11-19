@@ -247,6 +247,13 @@ struct AssetUnderstandingService: AUAnalyzing {
             throw AssetUnderstandingServiceError.badStatus(-1)
         }
         if http.statusCode == 503 { throw AssetUnderstandingServiceError.unavailableRetryable }
+        if http.statusCode == 402 {
+            // Billing V1: the plan's new-Moment analysis allowance (or the free starter) is spent. The footage is NOT lost: it is
+            // saved locally and this job is parked PENDING by the existing allowance path (no attempt burned) until the allowance
+            // changes. A 402 is never retried in a loop; the typed code names the cause.
+            let denial = BillingDenial.parse(data)
+            throw AssetUnderstandingServiceError.quotaExhausted(scope: "billing_\(denial.code.rawValue)")
+        }
         if http.statusCode == 429 {
             // Two distinct 429s share the status but mean opposite things for retry (see throttle.py /
             // quota_gate.py): error:"rate_limited" is a TEMPORARY per-user rate cap (retry after the window);

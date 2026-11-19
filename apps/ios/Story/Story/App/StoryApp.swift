@@ -11,6 +11,7 @@ struct StoryApp: App {
     // P0 Beta Auth Increment 4: the shared session layer. Restored on launch; adopts anonymous local content
     // on first sign-in. Views read it from the environment; the networking seam gets its token via AuthStore.
     @State private var auth = AuthStore()
+    @State private var billing = BillingStore()   // Billing V1 / B3: server-authoritative entitlement + StoreKit purchase flow
     // App language (English | 简体中文 | follow iPhone). One store, injected below; see AppLanguage.swift.
     @State private var languageStore = AppLanguageStore.shared
 
@@ -92,7 +93,9 @@ struct StoryApp: App {
                 .environment(\.locale, languageStore.locale)
                 .environment(languageStore)
                 .environment(auth)
+                .environment(billing)
                 .task {
+                    billing.start()   // StoreKit transaction listener + product load; no entitlement is decided on the device
                     // Gate paid Asset Understanding on an authenticated session (Phase 4): the AU queue drains
                     // only when this returns true. In dev optional-auth a restored/real session reports true;
                     // signed out, AU jobs stay PENDING and resume on sign-in (no model call meanwhile).
@@ -184,6 +187,7 @@ struct StoryApp: App {
                     // are still PENDING; the existing idempotent upsert + orphan recovery process each exactly
                     // once under the now-authenticated account — never a duplicate understanding row.
                     if newState == .signedIn {
+                        Task { await billing.refresh() }   // Billing V1 / B3: read the server's entitlement for this account
                         let q = AssetUnderstandingQueue(context: container.mainContext)
                         Task { await q.drain() }
                         // R1: edit-plan recovery is account-scoped and runs on sign-in — resumes ONLY the

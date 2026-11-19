@@ -1,0 +1,50 @@
+# Billing V1 / B3: iOS billing experience (increment 1)
+
+Branch `feat/billing-b3-ios` (cut from master `143543a`, main story checkout, no worktree). **Not device-verified.** The authoritative gate is the owner's Xcode build and run on the device.
+
+## What it adds
+| Area | Files |
+|---|---|
+| Wire models (decode only) | `Story/Data/Billing/BillingModels.swift` |
+| API client (`GET /v1/billing/entitlement`, `POST /v1/billing/transactions`) | `Story/Data/Billing/BillingService.swift` |
+| StoreKit 2 wrapper (product, purchase with `appAccountToken`, restore, `Transaction.updates`) | `Story/Data/Billing/PurchaseManager.swift` |
+| State | `Story/Features/Billing/BillingStore.swift` |
+| Paywall and subscription status | `Story/Features/Billing/PlusSubscriptionView.swift` |
+| Credits line on Create and Revise | `Story/Features/Billing/VideoCreditsLine.swift` |
+| Wiring | `StoryApp.swift` (store, listener, refresh on sign-in), `HomeView.swift` (account menu "YoTale Plus", clears on sign-out) |
+| 402 handling | `EditPlanJobClient.swift` (`entitlementDenied`), `StoryCreationCoordinator.swift`, `StoryCreatingView.swift` (upgrade screen), `AssetUnderstandingService.swift` (analysis 402) |
+| Strings | `Localizable.xcstrings` (41 keys, English and Simplified Chinese) |
+| Tests | `StoryTests/BillingModelsTests.swift` |
+
+Backend (additive): `entitlement.offer.plus` (allowances from the reviewed config, so the paywall never hard-codes them) and, in billing `off`, the `appAccountToken` plus a read-only view of an existing entitlement, so a sandbox purchase can be made and seen while enforcement stays off.
+
+## Behavior
+* **Server-authoritative.** The app decodes the entitlement and never computes plan, allowance or expiry. No SwiftData change and no migration; a reinstall or second device just asks the server.
+* **Purchase.** `Product.purchase(options: [.appAccountToken(<server token>)])`, then the signed transaction (JWS) is posted to `/v1/billing/transactions`. The StoreKit transaction is `finish()`ed ONLY after the server accepted it, so a purchase made offline or while the server is down is redelivered by StoreKit and not lost. A rejected transaction (foreign account, invalid) is not finished and not retried in a loop.
+* **Price and period** come from StoreKit (`displayPrice`, `subscriptionPeriod`), localized by Apple. The allowances come from the server (`offer`).
+* **Counters** (video credits left) appear only when `enforced` is true and the account has finite allowances, so they are invisible for grandfathered users and while billing is off.
+* **402** on a video submit opens an upgrade screen with the server's typed reason and, for a Free starter, a "See YoTale Plus" button. A Plus subscriber who ran out is told the credits renew, with no upsell. No plain retry. 429 handling is unchanged.
+* **402 on analysis (AU)** reuses the existing "allowance spent" path: the job is parked PENDING without burning an attempt, and the footage is already saved locally. It is never discarded.
+* **Restore Purchases** and **Manage Subscription** (`manageSubscriptionsSheet`) are on the status screen.
+
+## Not done in this increment
+* A dedicated "N clips are waiting for AI analysis" indicator on import (the existing AU queue status shows the parked state; wording for the billing cause is not added).
+* Resuming parked analysis immediately after a purchase. Today a parked job retries at the next UTC day boundary; a manual "retry parked" after upgrade is the follow-up.
+* Terms of Use and Privacy Policy links on the paywall: the URLs are not in the repo. Apple requires them for subscription apps. Owner input needed.
+* Account deletion and the trial abuse controls (B4).
+
+## Device acceptance gate (owner, on beta, with `STORY_BILLING_MODE` still `off`)
+1. Build `feat/billing-b3-ios` in Xcode with the Beta scheme (Pull first; confirm the branch in the main checkout).
+2. Sign in, open the account menu, tap **YoTale Plus**. The price must show (if not: the product is not yet "Ready to Submit", or the StoreKit file or sandbox account is missing).
+3. Tap Subscribe with a **sandbox** Apple ID. After the Apple sheet the screen must show Active with a renewal date.
+4. In App Store Connect the Sandbox Server URL must be set; renew and expiry notifications arrive (sandbox renews about every 5 minutes).
+5. Force-quit and relaunch: still Plus. Tap Restore Purchases: still Plus.
+6. Sign in as a second YoTale account on the same Apple ID and tap Restore: it must NOT become Plus (transaction bound to the first account).
+7. Switch the app language to Simplified Chinese and check the screen.
+Report any compile error text; I have not compiled this target.
+
+## What was verified without Xcode
+* `swiftc -parse` clean on every new and modified Swift file (parse only; this is not a build).
+* A type-check of the four non-view billing files against the iOS Simulator SDK with stubs for app types: no errors. The SwiftUI view could not be type-checked here because its `@State` macro needs a plugin the sandbox cannot run.
+* The exact server JSON (generated by the real ledger for a Free starter and a grandfathered account) decodes with `BillingModels.swift`, and the 402 parser handles the typed body (run as a standalone binary).
+* Backend: the full suite passes (see the PR).
