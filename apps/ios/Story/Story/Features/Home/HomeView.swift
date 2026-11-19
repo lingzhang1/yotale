@@ -9,6 +9,7 @@ import SwiftData
 struct HomeView: View {
     @Environment(\.modelContext) private var context
     @Environment(AuthStore.self) private var auth
+    @Environment(BillingStore.self) private var billing
     @Environment(AppLanguageStore.self) private var languageStore
     @Query private var stories: [StoryModel]
     @Query private var moments: [MomentModel]
@@ -17,6 +18,7 @@ struct HomeView: View {
     @State private var showStories = false
     @State private var confirmSignOut = false
     @State private var showSignIn = false   // Home-header direct sign-in sheet (no gated action required)
+    @State private var showPlus = false     // Billing V1 / B3: YoTale Plus subscription screen
 
     // R1 account isolation: the @Query is unscoped (SwiftData predicates can't close over runtime auth state),
     // so we filter in memory through the CENTRALIZED AccountScope rules. SwiftUI re-renders this view when
@@ -111,6 +113,7 @@ struct HomeView: View {
                     } else {
                         Text("Signed in")
                     }
+                    Button { showPlus = true } label: { Label("YoTale Plus", systemImage: "sparkles") }
                     Button("Sign Out", role: .destructive) { confirmSignOut = true }
                 } label: {
                     Image(systemName: "person.crop.circle")
@@ -128,11 +131,12 @@ struct HomeView: View {
         }
         .padding(.top, 32).padding(.bottom, 22)
         .confirmationDialog("Sign out of Story?", isPresented: $confirmSignOut, titleVisibility: .visible) {
-            Button("Sign Out", role: .destructive) { auth.signOut() }
+            Button("Sign Out", role: .destructive) { billing.reset(); auth.signOut() }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Your Moments and Stories stay on this device. You'll sign in again to use Story's AI.")
         }
+        .sheet(isPresented: $showPlus) { PlusSubscriptionView() }
         .sheet(isPresented: $showSignIn) {
             // Direct sign-in from Home: no pending action to resume — dismiss on success or cancel. On success,
             // AuthStore resolves the canonical story_user_id (R1.1) and the Home lists re-scope to the account.

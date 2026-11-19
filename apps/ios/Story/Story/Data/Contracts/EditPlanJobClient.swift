@@ -47,6 +47,7 @@ enum EditPlanJobError: Error, LocalizedError {
     case pollTimeout                    // bounded polling elapsed without a terminal state (job may still run)
     case quotaExceeded(scope: String, retryAfter: Int?)   // 429 quota_exceeded — user hit an allowance cap
     case quotaStoreUnavailable(retryAfter: Int?)          // 503 quota_store_unavailable — accounting outage
+    case entitlementDenied(BillingDenial)                 // 402 — the plan's allowance/trial does not permit this video (Billing V1)
 
     var errorDescription: String? {
         switch self {
@@ -71,6 +72,8 @@ enum EditPlanJobError: Error, LocalizedError {
             }
         case .quotaStoreUnavailable:
             return L10n.t("Story can't start a new video right now. Please try again in a moment.")
+        case .entitlementDenied(let denial):
+            return denial.message
         }
     }
 }
@@ -232,6 +235,9 @@ final class EditPlanJobClient: EditPlanJobClienting {
             do { return try JSONDecoder().decode(R.self, from: data).job_id }
             catch { throw EditPlanJobError.decoding(error) }
         case 409: throw EditPlanJobError.conflict
+        case 402:
+            // Billing V1 entitlement denial (distinct from the 429 operational quota below): typed code + the server's allowances.
+            throw EditPlanJobError.entitlementDenied(BillingDenial.parse(data))
         case 429:
             // Quota denial (enforce mode). Parse the scope + Retry-After for an honest, specific message.
             struct Q: Decodable { let error: String?; let scope: String?; let retry_after_seconds: Int? }

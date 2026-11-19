@@ -57,6 +57,7 @@ struct ReviseStorySheet: View {
                         .font(StoryTheme.body(13, .semibold)).foregroundStyle(StoryTheme.gold)
                     Text("Story keeps the existing edit unless you ask to change it.")
                         .font(StoryTheme.body(13)).foregroundStyle(StoryTheme.textSecondary)
+                    VideoCreditsLine()   // Billing V1: server-reported credits (hidden unless limits are enforced)
 
                     StoryTextField(placeholder: "Start with Moment 8, drop Moment 4, make it more cinematic…",
                                    text: $instruction, minHeight: 140)

@@ -340,7 +340,7 @@ def test_sync_planner_route_settles_on_success_and_releases_on_failure():
 
 def test_entitlement_endpoint_contract_in_each_mode():
     off = Rig("off").c.get("/v1/billing/entitlement", headers=_auth()).json()
-    assert off == {"contract_version": 1, "billing_mode": "off", "enforced": False}
+    assert {k: v for k, v in off.items() if k != "offer"} == {"contract_version": 1, "billing_mode": "off", "enforced": False}
 
     obs = Rig("observe").c.get("/v1/billing/entitlement", headers=_auth()).json()
     assert obs["billing_mode"] == "observe" and obs["enforced"] is False and obs["plan"] == "free_starter"
@@ -521,7 +521,7 @@ def test_off_mode_performs_no_billing_reads_or_writes_at_all():
     for i in range(3):
         assert r.submit(f"op{i}").status_code == 202
     body = r.c.get("/v1/billing/entitlement", headers=_auth()).json()
-    assert body == {"contract_version": 1, "billing_mode": "off", "enforced": False}     # not even the token record is created
+    assert {k: v for k, v in body.items() if k != "offer"} == {"contract_version": 1, "billing_mode": "off", "enforced": False}   # `offer` is static config, not a read     # not even the token record is created
     assert r.ddb.writes == 0 and not [k for k in r.ddb.items if k[0] == uid]
 
 

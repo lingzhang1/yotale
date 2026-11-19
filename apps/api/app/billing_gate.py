@@ -323,11 +323,33 @@ async def run_analysis(request: Request, uid: str, moment_id: str, *, frames, cl
 
 # ---- read model --------------------------------------------------------------------------------------------------
 
+def offer_payload() -> dict:
+    """What a Plus subscription grants, from the reviewed config (never hard-coded in the app). Present in EVERY mode so the
+    paywall can state the real allowances. The price is not here: Apple's StoreKit supplies the localized price."""
+    from billing.apple import PLUS_PRODUCT_ID
+    from billing import BillingConfig
+    c = BillingConfig()
+    return {"plus": {"product_id": PLUS_PRODUCT_ID, "videos": c.plus.videos, "moments": c.plus.moments}}
+
+
 def entitlement_payload(request: Request, uid: str) -> dict:
     mode = billing_mode()
-    base = {"contract_version": CONTRACT_VERSION, "billing_mode": mode, "enforced": mode == MODE_ENFORCE}
+    base = {"contract_version": CONTRACT_VERSION, "billing_mode": mode, "enforced": mode == MODE_ENFORCE,
+            "offer": offer_payload()}
     led = _ledger(request)
     if led is None:
+        # `off` (or unprovisioned). Meters are not read. When Apple purchases are possible (usage table configured) the app still
+        # needs its appAccountToken to buy, and a Plus purchase must be visible after buying: identity token + a READ-ONLY view
+        # of an entitlement that already exists (never created here).
+        svc = apple_service(request)
+        if svc is not None:
+            try:
+                base["apple_app_account_token"] = svc.ledger.get_or_create_apple_account_token(uid)
+                existing = svc.ledger.entitlement_view(uid, create=False)
+                if existing.get("plan"):
+                    base = {**base, **{k: v for k, v in existing.items() if k not in ("contract_version",)}}
+            except BillingStoreError:
+                base["error"] = "billing_unavailable"
         return base
     try:
         view = led.entitlement_view(uid)

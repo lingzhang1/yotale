@@ -70,6 +70,7 @@ enum FailureRecovery: Equatable {
         // A quota cap (daily/monthly/active-jobs/global) fails identically on an immediate retry — show the
         // honest message and send the user back, never a plain "Try again".
         if case .quotaDenied? = error { return .quotaReached }
+        if case .entitlementDenied? = error { return .quotaReached }   // rendered by `entitlementBody` (never a plain retry)
         return .technical
     }
 }
@@ -109,6 +110,7 @@ struct StoryCreatingView: View {
     var onAdjustInstructions: (() -> Void)? = nil
 
     @State private var coordinator: StoryCreationCoordinator?
+    @State private var showPlus = false               // Billing V1: YoTale Plus opened from an entitlement denial
     // R-d.2 keep-alive: creating a Story runs a long foreground pipeline (Opus planning + AVAssetExportSession),
     // both of which iOS SUSPENDS when the screen locks/darkens — killing the request (-1005) and the export
     // ("Operation Interrupted"). Disabling the idle timer stops auto-lock mid-create; a background task buys a
@@ -367,6 +369,9 @@ struct StoryCreatingView: View {
     private func failedBody(message: String) -> some View {
         // Branch on the STRUCTURED failure: insufficient material gets an actionable duration choice
         // (Create a shorter Story / Keep shooting), everything else keeps the honest Try again.
+        if case .entitlementDenied(let denial)? = coordinator?.lastFailure {
+            entitlementBody(denial)
+        } else {
         switch FailureRecovery.from(coordinator?.lastFailure) {
         case .shorterStory(let suggested):
             insufficientBody(message: message, suggestedSeconds: suggested)
@@ -379,6 +384,37 @@ struct StoryCreatingView: View {
         case .quotaReached:
             quotaReachedBody(message: message)
         }
+        }
+    }
+
+    /// Billing V1 (402). Explains which allowance ended and, when a subscription can fix it, opens YoTale Plus. The Story and its
+    /// current version are untouched. No plain "Try again": a retry cannot succeed until the allowance changes.
+    private func entitlementBody(_ denial: BillingDenial) -> some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Text(denial.canUpgrade ? "Upgrade to keep creating." : "You've reached this period's limit.")
+                .font(StoryTheme.display(22))
+                .foregroundStyle(StoryTheme.cream)
+                .multilineTextAlignment(.center)
+            Text(denial.message)
+                .font(StoryTheme.body(14))
+                .foregroundStyle(StoryTheme.cream.opacity(0.5))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            if denial.canUpgrade {
+                StoryPrimaryButton(title: "See YoTale Plus") { showPlus = true }
+            }
+            Button { dismiss() } label: {
+                Text("Back to Story")
+                    .font(StoryTheme.body(14))
+                    .foregroundStyle(StoryTheme.cream.opacity(0.4))
+                    .frame(maxWidth: .infinity).padding(.vertical, 10)
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 24)
+        }
+        .sheet(isPresented: $showPlus) { PlusSubscriptionView(denial: denial) }
     }
 
     /// Usage-limit denial (enforce mode 429/503). Honest, scope-specific message with NO plain "Try again"

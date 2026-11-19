@@ -142,3 +142,26 @@ def test_unprovisioned_environment_returns_503_not_a_grant(monkeypatch):
     c = TestClient(app)
     assert c.post("/v1/billing/transactions", headers=_auth("u1"), json={"signed_transaction": "x"}).status_code == 503
     assert c.post("/v1/billing/apple-notifications", json={"signedPayload": "x"}).status_code == 503
+
+
+def test_entitlement_exposes_the_plus_offer_in_every_mode(rig, monkeypatch):
+    for mode in (None, "off", "observe", "enforce"):
+        if mode is None:
+            monkeypatch.delenv("STORY_BILLING_MODE", raising=False)
+        else:
+            monkeypatch.setenv("STORY_BILLING_MODE", mode)
+        r = rig.c.get("/v1/billing/entitlement", headers=_auth("u1"))
+        assert r.status_code == 200
+        assert r.json()["offer"]["plus"] == {"product_id": "com.lingzhang.story.plus.monthly", "videos": 12, "moments": 100}
+
+
+def test_off_mode_entitlement_gives_the_purchase_token_and_shows_plus_after_buying(rig):
+    # billing OFF (mode unset): the app can still obtain its appAccountToken, buy, and see Plus; limits are not enforced
+    first = rig.c.get("/v1/billing/entitlement", headers=_auth("u1")).json()
+    assert first["billing_mode"] == "off" and first["enforced"] is False and "plan" not in first
+    token = first["apple_app_account_token"]
+    assert token == rig.token("u1")
+    assert post_txn(rig, "u1", rig.txn(token)).status_code == 200
+    after = rig.c.get("/v1/billing/entitlement", headers=_auth("u1")).json()
+    assert after["plan"] == "plus" and after["status"] == "plus_active" and after["enforced"] is False
+    assert after["billing_mode"] == "off"
