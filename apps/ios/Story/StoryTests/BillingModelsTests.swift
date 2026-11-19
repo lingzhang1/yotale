@@ -98,3 +98,16 @@ final class BillingModelsTests: XCTestCase {
         XCTAssertFalse(err.isRetryable)
     }
 }
+
+// Apple requires Terms of Use and Privacy Policy links next to a subscription purchase.
+final class LegalLinksTests: XCTestCase {
+    func testLinksAreHTTPSAndLanguageAware() {
+        for url in [LegalLinks.termsOfUse, LegalLinks.privacyPolicyEnglish, LegalLinks.privacyPolicyChinese] {
+            XCTAssertEqual(url.scheme, "https")
+            XCTAssertNotNil(url.host)
+        }
+        XCTAssertEqual(LegalLinks.privacyPolicy(for: .en), LegalLinks.privacyPolicyEnglish)
+        XCTAssertEqual(LegalLinks.privacyPolicy(for: .zhHans), LegalLinks.privacyPolicyChinese)
+        XCTAssertEqual(LegalLinks.termsOfUse.host, "www.apple.com")
+    }
+}

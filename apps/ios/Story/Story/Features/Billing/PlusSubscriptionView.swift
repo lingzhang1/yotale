@@ -28,6 +28,7 @@ struct PlusSubscriptionView: View {
                     offerSections
                 }
                 if auth.isSignedIn { restoreSection }
+                legalSection
                 noticeSection
             }
             .navigationTitle("YoTale Plus")
@@ -116,6 +117,15 @@ struct PlusSubscriptionView: View {
             }
             .disabled(billing.phase != .idle)
         }
+    }
+
+    /// Apple requires working Terms of Use and Privacy Policy links on a subscription screen.
+    private var legalSection: some View {
+        Section {
+            Link("Terms of Use", destination: LegalLinks.termsOfUse)
+            Link("Privacy Policy", destination: LegalLinks.privacyPolicy(for: L10n.current))
+        }
+        .foregroundStyle(StoryTheme.gold)
     }
 
     @ViewBuilder private var noticeSection: some View {
