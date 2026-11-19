@@ -105,6 +105,10 @@ ROUTE_CLASS: dict[tuple[str, str], str] = {
     ("GET", "/v1/me"): "read",
     ("GET", "/v1/billing/entitlement"): "read",       # Billing V1: authoritative entitlement read model
     ("POST", "/v1/billing/video-refund"): "writes",   # Billing V1: controlled one-credit refund claim (capped, audited)
+    ("POST", "/v1/billing/transactions"): "writes",   # Billing V1 B2: StoreKit transaction submit (verified server-side)
+    # Apple webhook: unauthenticated by design (signature-verified), so there is no principal to throttle per user; the
+    # classification only satisfies the route-coverage test. Abuse control is the WAF rate rule on this one path.
+    ("POST", "/v1/billing/apple-notifications"): "read",
     ("GET", "/v1/stories"): "read",
     ("GET", "/v1/stories/{story_id}"): "read",
     ("GET", "/v1/media"): "read",

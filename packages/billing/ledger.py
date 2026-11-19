@@ -45,6 +45,8 @@ _RES_NS = uuid.UUID("6f6c1b4e-0000-4000-8000-000000000005")
 MAX_CACHED_RESULT_BYTES = 300_000
 LIVE, SHADOW = "billing#", "billing-shadow#"
 APPLE_TXN_PK = "__apple_txn__"
+APPLE_TOKEN_PK = "__apple_token__"
+APPLE_EVT_PK = "__apple_evt__"
 _MAX_TRIES = 5
 
 _ATTRS = {"video": ("b_v_avail", "b_v_resv", "b_v_used"), "moment": ("b_m_avail", "b_m_resv", "b_m_used")}
@@ -596,8 +598,15 @@ class BillingLedger:
                 sets.update({"b_period_id": _s(period_id), "b_v_total": _n(lim.videos), "b_v_avail": _n(lim.videos),
                              "b_v_resv": _n(0), "b_v_used": _n(0), "b_m_total": _n(lim.moments),
                              "b_m_avail": _n(lim.moments), "b_m_resv": _n(0), "b_m_used": _n(0), "b_refunds": _n(0)})
-            ok = self._plan_update(uid, ent, sets, "(attribute_not_exists(b_evt_ts) OR b_evt_ts <= :ets)",
-                                   {":ets": _n(event_ts)})
+            # Event order (Apple's signed time) AND period order: a state for an OLDER billing period (a replayed old
+            # transaction, a refund of last month's charge) can never overwrite a newer period, even with a fresher
+            # signature time. Without the second guard a replay would reset the allowances.
+            guard = "(attribute_not_exists(b_evt_ts) OR b_evt_ts <= :ets)"
+            vals = {":ets": _n(event_ts)}
+            if ent.plan == PLAN_PLUS:
+                guard += " AND (attribute_not_exists(b_period_end) OR b_period_end <= :pend)"
+                vals[":pend"] = _n(period_end)
+            ok = self._plan_update(uid, ent, sets, guard, vals)
             if ok:
                 return self.get_entitlement(uid)  # type: ignore[return-value]
             cur = self.get_entitlement(uid)
@@ -616,6 +625,33 @@ class BillingLedger:
         owner = _str(self._get(APPLE_TXN_PK, sk), "b_uid")
         if owner != uid:
             raise TransactionBoundElsewhere(original_transaction_id)
+
+    # ---- Apple identity indexes + event journal (B2) ----------------------------------------------------------
+    def index_apple_token(self, uid: str, token: str) -> None:
+        """Reverse index appAccountToken -> account, so a server notification that arrives before the app has posted its
+        transaction can still find the account. Create-only; a token is never re-pointed at another account."""
+        sk = f"billing#token#{token}"
+        if self._update(APPLE_TOKEN_PK, sk, "SET b_uid = :u, b_created = :now",
+                        {":u": _s(uid), ":now": _n(self._now())}, "attribute_not_exists(b_uid)"):
+            return
+        if _str(self._get(APPLE_TOKEN_PK, sk), "b_uid") != uid:
+            raise TransactionBoundElsewhere(f"token:{token}")
+
+    def uid_for_apple_token(self, token: str) -> Optional[str]:
+        return _str(self._get(APPLE_TOKEN_PK, f"billing#token#{token}"), "b_uid") or None
+
+    def apple_txn_owner(self, original_transaction_id: str) -> Optional[str]:
+        return _str(self._get(APPLE_TXN_PK, f"billing#txn#{original_transaction_id}"), "b_uid") or None
+
+    def apple_event_seen(self, notification_uuid: str) -> bool:
+        return bool(self._get(APPLE_EVT_PK, f"billing#evt#{notification_uuid}"))
+
+    def record_apple_event(self, notification_uuid: str, *, ntype: str, outcome: str) -> bool:
+        """Journal a PROCESSED notification (create-only). False = already journalled (a duplicate delivery)."""
+        return self._update(APPLE_EVT_PK, f"billing#evt#{notification_uuid}",
+                            "SET b_type = :t, b_outcome = :o, b_created = :now",
+                            {":t": _s(ntype[:40]), ":o": _s(outcome[:40]), ":now": _n(self._now())},
+                            "attribute_not_exists(b_type)")
 
     # ---- read model -------------------------------------------------------------------------------------------
     def entitlement_view(self, uid: str, *, create: bool = True) -> dict:

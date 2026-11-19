@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.auth import CognitoConfig, CognitoJwtVerifier, IdentityStore, is_public_path
+from app.auth import CognitoConfig, CognitoJwtVerifier, IdentityStore, is_public_path, PUBLIC_ROUTES
 
 REGION = "us-east-1"
 POOL = "us-east-1_TESTPOOL"
@@ -120,10 +120,22 @@ def test_every_non_public_route_is_denied_without_a_token_in_beta():
             continue
         concrete = re.sub(r"\{[^}]+\}", "x", path) if "{" in path else path
         for method in (r.methods - {"HEAD", "OPTIONS"}):
+            if (method, path) in PUBLIC_ROUTES:
+                continue          # signature-authenticated webhook; asserted exactly by test_public_routes_are_exactly_the_apple_webhook
             resp = client.request(method, concrete, json={})
             if resp.status_code != 401:
                 offenders.append(f"{method} {path} -> {resp.status_code}")
     assert not offenders, f"non-public routes NOT denied unauthenticated in beta: {offenders}"
+
+
+def test_public_routes_are_exactly_the_apple_webhook():
+    assert PUBLIC_ROUTES == {("POST", "/v1/billing/apple-notifications")}
+    c = TestClient(_app(env="beta"))
+    # reaches the handler without a token (not a 401 from the boundary); an unsigned body is then rejected by the handler
+    assert c.post("/v1/billing/apple-notifications", json={}).status_code != 401
+    # GET on the same path and every sibling billing route stay protected
+    assert c.get("/v1/billing/apple-notifications").status_code in (401, 405)
+    assert c.post("/v1/billing/transactions", json={}).status_code == 401
 
 
 # --- req 5: the two previously-unauthenticated routes are now closed -------------------------------------

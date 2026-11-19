@@ -23,7 +23,8 @@ RUN pip install --prefix=/install/deps \
     "pydantic>=2" \
     "boto3" \
     "python-multipart" \
-    "pyjwt[crypto]>=2.8,<3"
+    "pyjwt[crypto]>=2.8,<3" \
+    "app-store-server-library==3.1.2"
 
 # ---- runtime ------------------------------------------------------------
 FROM public.ecr.aws/docker/library/python:3.12-slim AS runtime
