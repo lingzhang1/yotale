@@ -216,10 +216,20 @@ class BillingLedger:
         sk = "billing#account"
         it = self._get(uid, sk)
         if it and "b_apple_token" in it:
+            if "b_tok_idx" not in it:       # created before the reverse index existed: index once, then remember
+                self._index_account_token(uid, sk, it["b_apple_token"]["S"])
             return it["b_apple_token"]["S"]
         self._update(uid, sk, "SET b_apple_token = :t, b_created = :now",
                      {":t": _s(str(uuid.uuid4())), ":now": _n(self._now())}, "attribute_not_exists(b_apple_token)")
-        return self._get(uid, sk)["b_apple_token"]["S"]
+        token = self._get(uid, sk)["b_apple_token"]["S"]      # the winner of a concurrent create
+        self._index_account_token(uid, sk, token)
+        return token
+
+    def _index_account_token(self, uid: str, sk: str, token: str) -> None:
+        """Make the token resolvable to the account BEFORE any purchase. Apple can deliver SUBSCRIBED a few seconds before the
+        app posts its transaction; without this index that notification cannot be attributed. Idempotent, create-only."""
+        self.index_apple_token(uid, token)
+        self._update(uid, sk, "SET b_tok_idx = :one", {":one": _n(1)})
 
     # ---- decisions --------------------------------------------------------------------------------------------
     def _decide(self, ent: Entitlement, kind: str, now: int) -> None:
