@@ -30,6 +30,7 @@ from starlette.concurrency import run_in_threadpool
 from app.throttle import ROUTE_CLASS
 
 from billing.analysis import abandon as _abandon_analysis, complete as _complete_analysis, frames_fingerprint, normalize_claim, plan_analysis
+from billing.apple import AppleError
 from billing import (
     BillingConfigError, BillingDenied, BillingLedger, BillingStoreError, CONTRACT_VERSION, Hold, MODE_ENFORCE,
     MODE_OBSERVE, MODE_OFF, billing_mode, validate_billing_config,
@@ -335,3 +336,27 @@ def entitlement_payload(request: Request, uid: str) -> dict:
         base["error"] = "billing_unavailable"
         return base
     return {**base, **view, "apple_app_account_token": token}
+
+
+# ---- Apple (B2) --------------------------------------------------------------------------------------------------
+# The Apple endpoints are independent of STORY_BILLING_MODE on purpose: a real purchase must be recorded whatever the rollout
+# posture, and they always use the LIVE ledger (the shadow ledger is for hypothetical decisions only). They only change
+# PLAN state (plan, status, period, allowances at the Apple period boundary); meters are still gated by the mode.
+
+def apple_service(request: Request):
+    """Returns the AppleBilling service, or None when the environment has no usage table (unprovisioned)."""
+    ov = getattr(request.app.state, "_apple_billing_override", None)
+    if ov is not None:
+        return ov
+    if not os.environ.get("STORY_USER_USAGE_TABLE", ""):
+        return None
+    svc = getattr(request.app.state, "_apple_billing", None)
+    if svc is None:
+        from billing.apple import AppleBilling, AppStoreVerifier, allowed_environments
+        envs = allowed_environments(os.environ.get("STORY_ENVIRONMENT", "development"))
+        svc = request.app.state._apple_billing = AppleBilling(BillingLedger(shadow=False), AppStoreVerifier(envs), environments=envs)
+    return svc
+
+
+def apple_error_response(e) -> JSONResponse:
+    return JSONResponse(status_code=e.status, content={"error": e.code, "contract_version": CONTRACT_VERSION})

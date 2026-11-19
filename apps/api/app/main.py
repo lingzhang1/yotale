@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from contracts.schemas.ai_contracts import (
@@ -721,6 +722,43 @@ def create_app() -> FastAPI:
         """Authoritative plan, trial, period, allowances, remaining quantities and upgrade eligibility (contract v1).
         `billing_mode` tells the app whether limits are actually enforced yet."""
         return billing_gate.entitlement_payload(request, principal.story_user_id)
+
+    @app.post("/v1/billing/transactions", status_code=200)
+    def billing_transactions(request: Request, body: dict, principal: Principal = Depends(require_user)):
+        """The app posts the StoreKit 2 transaction JWS after a purchase / on restore. The server verifies Apple's signature,
+        bundle, environment and product, requires the transaction's appAccountToken to be THIS account's token, binds the
+        original transaction to this account only, and then grants Plus from Apple's signed dates. Plan names, prices,
+        credits and expiry sent by the client are ignored. 409 if another account already owns the transaction."""
+        signed = body.get("signed_transaction")
+        if not isinstance(signed, str) or not signed:
+            raise HTTPException(status_code=422, detail="signed_transaction required")
+        svc = billing_gate.apple_service(request)
+        if svc is None:
+            return JSONResponse(status_code=503, content={"error": "apple_not_configured"})
+        try:
+            return svc.submit_transaction(principal.story_user_id, signed)
+        except billing_gate.AppleError as e:
+            return billing_gate.apple_error_response(e)
+        except billing_gate.BillingStoreError:
+            return billing_gate.store_unavailable_response()
+
+    @app.post("/v1/billing/apple-notifications", status_code=200)
+    def billing_apple_notifications(request: Request, body: dict):
+        """App Store Server Notifications V2. PUBLIC at the auth boundary (Apple cannot hold a Cognito token): trust comes only
+        from Apple's cryptographic signature, verified against pinned Apple roots, bundle id and environment. Bad signature ->
+        4xx; a store failure -> 503 so Apple retries; duplicates are acknowledged and ignored."""
+        signed = body.get("signedPayload")
+        if not isinstance(signed, str) or not signed:
+            raise HTTPException(status_code=422, detail="signedPayload required")
+        svc = billing_gate.apple_service(request)
+        if svc is None:
+            return JSONResponse(status_code=503, content={"error": "apple_not_configured"})
+        try:
+            return svc.handle_notification(signed)
+        except billing_gate.AppleError as e:
+            return billing_gate.apple_error_response(e)
+        except billing_gate.BillingStoreError:
+            return billing_gate.store_unavailable_response()
 
     @app.post("/v1/billing/video-refund", status_code=200)
     def billing_video_refund(request: Request, body: dict, principal: Principal = Depends(require_user)) -> dict:

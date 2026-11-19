@@ -360,6 +360,11 @@ def _docs_public() -> bool:
     return os.environ.get("STORY_DOCS_PUBLIC", "0") == "1"
 
 
+# Public ONLY for the named method+path: server-to-server webhook whose authenticity is the cryptographic signature on the body
+# (verified in billing.apple against pinned Apple roots), not a bearer token. Everything else stays deny-by-default.
+PUBLIC_ROUTES = frozenset({("POST", "/v1/billing/apple-notifications")})
+
+
 def is_public_path(path: str) -> bool:
     if path in PUBLIC_PATHS_ALWAYS:
         return True
@@ -381,7 +386,7 @@ async def auth_boundary(request: Request, call_next):
     resolve the principal ONCE and stash it on request.state.principal; reject when auth is required and no
     valid principal can be established. Dependencies downstream reuse request.state.principal."""
     path = request.url.path
-    if is_public_path(path):
+    if is_public_path(path) or (request.method.upper(), path) in PUBLIC_ROUTES:
         return await call_next(request)
 
     try:
