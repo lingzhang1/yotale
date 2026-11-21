@@ -28,7 +28,7 @@
       "require_auth": "1",
       "quota_mode": "enforce",
       "throttle_mode": "enforce",
-      "billing_mode": "off",
+      "billing_mode": "observe",
       "user_monthly_usd": "50",
       "evidence_persist": "1",
       "xcconfig": "Beta"
