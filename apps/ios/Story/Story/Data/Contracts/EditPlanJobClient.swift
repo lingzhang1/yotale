@@ -26,6 +26,8 @@ enum EditPlanJobFailure: String {
     case providerError = "provider_error"
     case enqueueLost = "enqueue_lost"
     case internalError = "internal"
+    case billingDenied = "billing_denied"   // the submit was refused with a 402 (a resend adopts the refused job)
+    case quotaDenied = "quota_denied"       // the submit was refused by the operational usage cap (429)
     case unknown = ""
     static func from(_ raw: String?) -> EditPlanJobFailure { EditPlanJobFailure(rawValue: raw ?? "") ?? .unknown }
 }
