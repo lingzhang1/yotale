@@ -1,5 +1,7 @@
 # Billing V1 / B3: iOS billing experience (increment 1)
 
+> **Billing V2 (2026-11-20):** YoTale Plus is now UNLIMITED ordinary use while active or in grace; there is no 12-video / 100-Moment Plus allowance any more. The Free starter (2 videos, 30 new Moments, trial clock) is unchanged. Where this document describes finite Plus allowances, renewals that reset Plus counters, or Plus credit copy, it is superseded by [billing-v2-unlimited-plus](./billing-v2-unlimited-plus.md).
+
 Branch `feat/billing-b3-ios` (cut from master `143543a`, main story checkout, no worktree). **Not device-verified.** The authoritative gate is the owner's Xcode build and run on the device.
 
 ## What it adds

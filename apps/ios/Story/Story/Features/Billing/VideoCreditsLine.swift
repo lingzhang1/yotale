@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Billing V1 / B3: "N video credits left" at the creation entry points (Create, Revise). Shown ONLY when the server enforces
-/// limits and the account has finite allowances, so it stays invisible for grandfathered beta users and while billing is off.
+/// limits and the account has finite allowances (Free starter, admin grant), so it stays invisible for YoTale Plus (unlimited since
+/// Billing V2), grandfathered beta users and while billing is off.
 /// The number is the server's `remaining`; the app never counts credits itself. Tapping opens YoTale Plus.
 struct VideoCreditsLine: View {
     @Environment(BillingStore.self) private var billing

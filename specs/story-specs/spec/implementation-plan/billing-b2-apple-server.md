@@ -1,5 +1,7 @@
 # Billing V1 / B2: Apple server integration
 
+> **Billing V2 (2026-11-20):** YoTale Plus is now UNLIMITED ordinary use while active or in grace; there is no 12-video / 100-Moment Plus allowance any more. The Free starter (2 videos, 30 new Moments, trial clock) is unchanged. Where this document describes finite Plus allowances, renewals that reset Plus counters, or Plus credit copy, it is superseded by [billing-v2-unlimited-plus](./billing-v2-unlimited-plus.md).
+
 Status: implemented and tested offline on branch `feat/billing-b2-apple-server`. Not merged, not deployed. No App Store Connect or AWS change made.
 
 ## Identifiers (public, not secrets)

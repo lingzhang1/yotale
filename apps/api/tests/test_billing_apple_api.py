@@ -60,6 +60,16 @@ def test_purchase_grants_plus_even_while_billing_mode_is_off(rig):
     assert rig.ledger.get_entitlement("story-u1").plan == "plus"
 
 
+def test_purchase_response_has_the_full_entitlement_payload_shape(rig):
+    """Regression: the bare ledger view lacked billing_mode/enforced, so the app's decode of the purchase response failed."""
+    body = post_txn(rig, "u1", rig.txn(rig.token("u1"))).json()
+    get = rig.c.get("/v1/billing/entitlement", headers=_auth("u1")).json()
+    assert set(get) <= set(body["entitlement"])
+    for k in ("billing_mode", "enforced", "offer", "apple_app_account_token", "plan", "status"):
+        assert k in body["entitlement"]
+    assert body["entitlement"]["plan"] == "plus"
+
+
 @pytest.mark.parametrize("signed,status,code", [
     ("", 422, None),
     ("eyJhbGciOiJub25lIn0.e30.", 422, "invalid_signed_data"),
@@ -74,7 +84,7 @@ def test_garbage_transaction_is_rejected(rig, signed, status, code):
 def test_client_supplied_plan_price_or_expiry_is_ignored(rig):
     r = rig.c.post("/v1/billing/transactions", headers=_auth("u1"), json={
         "signed_transaction": rig.txn(rig.token("u1")), "plan": "pro", "videos": 9999, "expires_at": 4_000_000_000, "price": "0.00"})
-    assert r.status_code == 200 and r.json()["entitlement"]["videos"]["total"] == 12
+    assert r.status_code == 200 and r.json()["entitlement"]["plan"] == "plus" and r.json()["entitlement"]["videos"] is None
 
 
 def test_other_accounts_purchase_and_foreign_binding(rig):
@@ -152,7 +162,9 @@ def test_entitlement_exposes_the_plus_offer_in_every_mode(rig, monkeypatch):
             monkeypatch.setenv("STORY_BILLING_MODE", mode)
         r = rig.c.get("/v1/billing/entitlement", headers=_auth("u1"))
         assert r.status_code == 200
-        assert r.json()["offer"]["plus"] == {"product_id": "com.lingzhang.story.plus.monthly", "videos": 12, "moments": 100}
+        # `unlimited` is the V2 field; videos/moments stay ONLY so contract-1 builds still decode (B5), they are not a limit
+        assert r.json()["offer"]["plus"] == {"product_id": "com.lingzhang.story.plus.monthly", "unlimited": True,
+                                             "videos": 12, "moments": 100}
 
 
 def test_off_mode_entitlement_gives_the_purchase_token_and_shows_plus_after_buying(rig):

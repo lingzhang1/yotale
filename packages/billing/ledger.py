@@ -34,7 +34,8 @@ from typing import Any, Callable, Optional
 
 from .config import BillingConfig
 from .model import (
-    ACTION_CONTACT, ACTION_SUBSCRIBE, ACTION_WAIT_RENEWAL, BillingDenied, BillingStoreError, CONTRACT_VERSION, Entitlement,
+    ACTION_CONTACT, ACTION_SUBSCRIBE, ACTION_WAIT_RENEWAL, BillingDenied, BillingStoreError, CAP_METERED, CAP_UNLIMITED,
+    CAPABILITIES_VERSION, CONTRACT_VERSION, Entitlement,
     Hold, MOMENT_ALLOWANCE_EXHAUSTED, PLAN_ADMIN, PLAN_BETA, PLAN_FREE, PLAN_PLUS, RS_REFUNDED, RS_RELEASED, RS_RESERVED,
     RS_SETTLED, ST_ADMIN, ST_BETA, ST_FREE, ST_PLUS_ACTIVE, ST_PLUS_EXPIRED, ST_PLUS_GRACE, SUBSCRIPTION_REQUIRED,
     TRIAL_EXPIRED, TransactionBoundElsewhere, VIDEO_CREDITS_EXHAUSTED,
@@ -113,6 +114,8 @@ def parse_entitlement(uid: str, it: dict) -> Entitlement:
         m_total=_int(it, "b_m_total"), m_avail=_int(it, "b_m_avail"), m_resv=_int(it, "b_m_resv"), m_used=_int(it, "b_m_used"),
         refunds=_int(it, "b_refunds"), orig_txn=(_str(it, "b_orig_txn") or None), gf_cutoff=(_str(it, "b_gf_cutoff") or None), ver=_int(it, "b_ver", 1),
         cfg=_str(it, "b_cfg"), created=_int(it, "b_created"), updated=_int(it, "b_updated"),
+        sub_status=(_str(it, "b_sub_status") or None), sub_period_id=(_str(it, "b_sub_pid") or None),
+        sub_period_start=_opt(it, "b_sub_pstart"), sub_period_end=_opt(it, "b_sub_pend"), sub_grace_end=_opt(it, "b_sub_grace_end"),
     )
 
 
@@ -236,7 +239,7 @@ class BillingLedger:
         """Raise BillingDenied if this entitlement cannot start one more `kind` unit; return None otherwise."""
         eff = ent.effective_status(now)
         snap = lambda: self._view(ent, now)  # noqa: E731
-        if ent.unlimited or eff == ST_BETA:
+        if ent.unlimited_at(now):            # derived; checks expiry FIRST, so a lapsed Plus never reaches here (B4)
             return
         if eff == ST_PLUS_EXPIRED:
             raise BillingDenied(SUBSCRIPTION_REQUIRED, ACTION_SUBSCRIBE, snap())
@@ -326,6 +329,7 @@ class BillingLedger:
             st = _str(res, "b_state") or None
             if st in (RS_SETTLED, RS_REFUNDED):
                 return Hold(kind, key, RS_SETTLED, False, "already_analyzed" if kind == "moment" else "idempotent")
+            unmetered = "b_unmetered" in res
             if st == RS_RESERVED:
                 age = now - _int(res, "b_updated", now)
                 if kind == "moment" and age >= self.cfg.moment_stale_s:
@@ -334,12 +338,28 @@ class BillingLedger:
                     if self._update(uid, sk, "SET b_updated = :now",
                                     {":now": _n(now), ":rs": _s(RS_RESERVED), ":old": _n(_int(res, "b_updated"))},
                                     "b_state = :rs AND b_updated = :old"):
-                        return Hold(kind, key, RS_RESERVED, True, "reclaimed")
+                        return Hold(kind, key, RS_RESERVED, not unmetered, "reclaimed", owns=True)
                     continue
                 return Hold(kind, key, RS_RESERVED, False, "idempotent" if kind == "video" else "in_flight")
             self._decide(ent, kind, now)             # may raise BillingDenied (typed)
-            if ent.unlimited or ent.effective_status(now) == ST_BETA:
-                return Hold(kind, key, "unlimited", False, "unlimited")
+            if ent.unlimited_at(now):
+                # Billing V2 (B3): an unlimited account takes the SAME record transitions (create-only reservation, reserved ->
+                # settled | released, cached analysis result, coalescing, stale takeover, attribution) and skips ONLY the
+                # entitlement counter leg. `b_unmetered` on the RECORD says no counter was taken, so settle/release decide the
+                # counter leg from the record, never from the live entitlement (which may have changed since).
+                vals = {":rs": _s(RS_RESERVED), ":k": _s(kind), ":p": _s(ent.period_id), ":now": _n(now), ":one": _n(1)}
+                cond = "attribute_not_exists(b_state)"
+                if st == RS_RELEASED:
+                    cond = "b_state = :rel"
+                    vals[":rel"] = _s(RS_RELEASED)
+                extra = ""
+                for i, (an, av) in enumerate((attrs or {}).items()):
+                    vals[f":x{i}"] = av
+                    extra += f", {an} = :x{i}"
+                if self._update(uid, sk, "SET b_state = :rs, b_kind = :k, b_period = :p, b_unmetered = :one, "
+                                         "b_created = if_not_exists(b_created, :now), b_updated = :now" + extra, vals, cond):
+                    return Hold(kind, key, RS_RESERVED, False, "unlimited", owns=True)
+                continue                             # a concurrent identical request created it first: re-read and re-decide
 
             res_vals = {":rs": _s(RS_RESERVED), ":k": _s(kind), ":p": _s(ent.period_id), ":now": _n(now)}
             res_cond = "attribute_not_exists(b_state)"
@@ -357,14 +377,15 @@ class BillingLedger:
             ok = self._txn([
                 {"Key": self._key(uid, sk),
                  "UpdateExpression": "SET b_state = :rs, b_kind = :k, b_period = :p, "
-                                     "b_created = if_not_exists(b_created, :now), b_updated = :now" + extra_sets,
+                                     "b_created = if_not_exists(b_created, :now), b_updated = :now" + extra_sets
+                                     + " REMOVE b_unmetered",
                  "ConditionExpression": res_cond, "ExpressionAttributeValues": res_vals},
                 {"Key": self._ent_key(uid),
                  "UpdateExpression": f"SET b_updated = :now ADD {avail_a} :neg1, {resv_a} :one",
                  "ConditionExpression": ent_cond, "ExpressionAttributeValues": ent_vals},
             ])
             if ok:
-                return Hold(kind, key, RS_RESERVED, True)
+                return Hold(kind, key, RS_RESERVED, True, owns=True)
         raise BillingStoreError("reserve: contention not resolved")
 
     # ---- core: settle / release -------------------------------------------------------------------------------
@@ -395,7 +416,11 @@ class BillingLedger:
             legs = [{"Key": self._key(uid, sk), "UpdateExpression": res_ue,
                      "ConditionExpression": "b_state = :from", "ExpressionAttributeValues": res_vals}]
             ent = self.get_entitlement(uid)
-            if ent is not None and ent.period_id == _str(res, "b_period") and not ent.unlimited:
+            # The counter leg runs only for a record that TOOK a counter at reserve time (no `b_unmetered`), and only in the
+            # period it was taken in. Deciding from the record (not `ent` being unlimited now) keeps a pre-V2 reservation that is
+            # settled after V2 from leaving `b_*_resv` stuck, and never decrements a counter an unmetered record never took (B3).
+            metered = "b_unmetered" not in res
+            if metered and ent is not None and ent.period_id == _str(res, "b_period"):
                 ent_vals: dict = {":pid": _s(ent.period_id), ":now": _n(now), ":one": _n(1)}
                 ue = "SET b_updated = :now"
                 if settle and kind == "video" and ent.plan == PLAN_FREE:
@@ -452,7 +477,7 @@ class BillingLedger:
             if now - _int(res, "b_settled_at", 0) > self.cfg.refund_window_s:
                 return "not_eligible:window_elapsed"
             ent = self.get_entitlement(uid)
-            if ent is None or ent.period_id != _str(res, "b_period") or ent.unlimited:
+            if ent is None or ent.period_id != _str(res, "b_period") or ent.unlimited_at(now) or "b_unmetered" in res:
                 return "not_eligible:period_or_plan"
             cap = self.refund_cap(ent)
             if ent.refunds >= cap:
@@ -550,8 +575,24 @@ class BillingLedger:
             it = self._get(uid, f"{self.ns}entitlement")
             if _str(it, "b_gf_cutoff") != cutoff:
                 return "noop"
-            lim = self.cfg.free_starter
             now = self._now()
+            if ent.has_active_subscription(now):
+                # S8: the tester PAID for Plus while grandfathered. Rolling the cohort back must not drop that: the account becomes
+                # Plus with the recorded Apple period (unlimited is derived; no counters are written).
+                vals = {":plan": _s(PLAN_PLUS), ":st": _s(ent.sub_status or ST_PLUS_ACTIVE), ":no": {"BOOL": False},
+                        ":pid": _s(ent.sub_period_id or "plus"), ":ps": _n(ent.sub_period_start or now),
+                        ":pe": _n(ent.sub_period_end or now), ":nver": _n(ent.ver + 1), ":now": _n(now),
+                        ":cfg": _s(self.cfg.config_version), ":beta": _s(PLAN_BETA), ":cut": _s(cutoff), ":ver": _n(ent.ver)}
+                ue = ("SET b_plan = :plan, b_status = :st, b_unlimited = :no, b_period_id = :pid, b_period_start = :ps, "
+                      "b_period_end = :pe, b_ver = :nver, b_updated = :now, b_cfg = :cfg")
+                if ent.sub_grace_end is not None:
+                    ue += ", b_grace_end = :ge"
+                    vals[":ge"] = _n(ent.sub_grace_end)
+                ue += " REMOVE b_gf_cutoff, b_trial_start, b_trial_end, b_sub_status, b_sub_pid, b_sub_pstart, b_sub_pend, b_sub_grace_end"
+                if self._update(uid, f"{self.ns}entitlement", ue, vals, "b_plan = :beta AND b_gf_cutoff = :cut AND b_ver = :ver"):
+                    return "reverted"
+                continue
+            lim = self.cfg.free_starter
             ok = self._update(
                 uid, f"{self.ns}entitlement",
                 "SET b_plan = :plan, b_status = :st, b_unlimited = :no, b_period_id = :pid, b_ver = :nver, b_updated = :now, "
@@ -585,37 +626,45 @@ class BillingLedger:
                            event_ts: int, grace_end: Optional[int] = None, orig_txn: Optional[str] = None) -> Entitlement:
         """Apply a VERIFIED Apple subscription state (B2 calls this after signature verification; the client never does).
 
-        * Period boundaries come from Apple, not the calendar: a new `period_id` resets the Plus allowances.
+        * Period boundaries come from Apple, not the calendar. Billing V2: Plus is unlimited (derived at read time), so a new
+          `period_id` writes NO finite allowance totals; it only moves the period (and resets the refund counter).
         * `event_ts` (Apple's signed time) orders events: an older event than the one already applied is ignored, so a
           delayed webhook cannot resurrect an expired subscription or undo a renewal.
-        * Grandfathered and admin-granted accounts are never downgraded by a store event."""
+        * Grandfathered and admin-granted accounts are never downgraded by a store event. Billing V2 (S8): their Apple
+          subscription is recorded BESIDE the plan (`b_sub_*`), so the purchase shows as Active and a grandfather rollback turns
+          the account into Plus instead of losing a paid subscription."""
         if status not in (ST_PLUS_ACTIVE, ST_PLUS_GRACE, ST_PLUS_EXPIRED):
             raise ValueError(f"unsupported subscription status {status!r}")
         for _ in range(_MAX_TRIES):
             ent = self.ensure_entitlement(uid)
+            vals = {":ets": _n(event_ts), ":pend": _n(period_end)}
             if ent.plan in (PLAN_BETA, PLAN_ADMIN):
-                return ent
-            sets: dict[str, dict] = {"b_plan": _s(PLAN_PLUS), "b_status": _s(status), "b_evt_ts": _n(event_ts),
-                                     "b_period_end": _n(period_end), "b_period_start": _n(period_start)}
-            if orig_txn:
-                sets["b_orig_txn"] = _s(orig_txn)
-            if grace_end is not None:
-                sets["b_grace_end"] = _n(grace_end)
-            if status == ST_PLUS_EXPIRED:
-                sets["b_period_id"] = _s(period_id)       # converge on the newest known period without touching counters
-            if status != ST_PLUS_EXPIRED and (ent.plan != PLAN_PLUS or ent.period_id != period_id):
-                lim = self.cfg.plus
-                sets.update({"b_period_id": _s(period_id), "b_v_total": _n(lim.videos), "b_v_avail": _n(lim.videos),
-                             "b_v_resv": _n(0), "b_v_used": _n(0), "b_m_total": _n(lim.moments),
-                             "b_m_avail": _n(lim.moments), "b_m_resv": _n(0), "b_m_used": _n(0), "b_refunds": _n(0)})
-            # Event order (Apple's signed time) AND period order: a state for an OLDER billing period (a replayed old
-            # transaction, a refund of last month's charge) can never overwrite a newer period, even with a fresher
-            # signature time. Without the second guard a replay would reset the allowances.
-            guard = "(attribute_not_exists(b_evt_ts) OR b_evt_ts <= :ets)"
-            vals = {":ets": _n(event_ts)}
-            if ent.plan == PLAN_PLUS:
-                guard += " AND (attribute_not_exists(b_period_end) OR b_period_end <= :pend)"
-                vals[":pend"] = _n(period_end)
+                sets: dict[str, dict] = {"b_sub_status": _s(status), "b_sub_pid": _s(period_id), "b_sub_pstart": _n(period_start),
+                                         "b_sub_pend": _n(period_end), "b_evt_ts": _n(event_ts)}
+                if orig_txn:
+                    sets["b_orig_txn"] = _s(orig_txn)
+                if grace_end is not None:
+                    sets["b_sub_grace_end"] = _n(grace_end)
+                guard = "(attribute_not_exists(b_evt_ts) OR b_evt_ts <= :ets) AND (attribute_not_exists(b_sub_pend) OR b_sub_pend <= :pend)"
+            else:
+                sets = {"b_plan": _s(PLAN_PLUS), "b_status": _s(status), "b_evt_ts": _n(event_ts),
+                        "b_period_end": _n(period_end), "b_period_start": _n(period_start), "b_cfg": _s(self.cfg.config_version)}
+                if orig_txn:
+                    sets["b_orig_txn"] = _s(orig_txn)
+                if grace_end is not None:
+                    sets["b_grace_end"] = _n(grace_end)
+                if status == ST_PLUS_EXPIRED:
+                    sets["b_period_id"] = _s(period_id)       # converge on the newest known period without touching counters
+                if status != ST_PLUS_EXPIRED and (ent.plan != PLAN_PLUS or ent.period_id != period_id):
+                    sets.update({"b_period_id": _s(period_id), "b_refunds": _n(0)})
+                # Event order (Apple's signed time) AND period order: a state for an OLDER billing period (a replayed old
+                # transaction, a refund of last month's charge) can never overwrite a newer period, even with a fresher
+                # signature time.
+                guard = "(attribute_not_exists(b_evt_ts) OR b_evt_ts <= :ets)"
+                if ent.plan == PLAN_PLUS:
+                    guard += " AND (attribute_not_exists(b_period_end) OR b_period_end <= :pend)"
+                else:
+                    vals.pop(":pend")
             ok = self._plan_update(uid, ent, sets, guard, vals)
             if ok:
                 return self.get_entitlement(uid)  # type: ignore[return-value]
@@ -674,18 +723,38 @@ class BillingLedger:
         eff = ent.effective_status(now)
         trial = ent.trial_state(now)
         free = ent.plan == PLAN_FREE
+        unlimited = ent.unlimited_at(now)
+        # S1: counters belong only to accounts whose allowance is a real finite one. A lapsed Plus keeps stale starter counters in
+        # its item; showing them (as "0 left") next to a subscription_required denial would be wrong.
+        counters = (not unlimited) and ent.plan in (PLAN_FREE, PLAN_ADMIN)
         remaining_v, remaining_m = max(ent.v_avail, 0), max(ent.m_avail, 0)
+        sub = ent.subscription_status(now)
+        if ent.plan == PLAN_PLUS:
+            sub_end = ent.grace_end if sub == ST_PLUS_GRACE and ent.grace_end else ent.period_end
+        else:
+            sub_end = ent.sub_grace_end if sub == ST_PLUS_GRACE and ent.sub_grace_end else ent.sub_period_end
         return {
             "contract_version": CONTRACT_VERSION,
-            "plan": ent.plan, "status": eff, "unlimited": ent.unlimited,
+            "plan": ent.plan, "status": eff, "unlimited": unlimited,
             "trial": {"state": trial, "started_at": ent.trial_start, "ends_at": ent.trial_end,
                       "days": self.cfg.trial_days},
             "period": {"id": ent.period_id, "start": ent.period_start, "end": ent.period_end},
-            "videos": {"total": ent.v_total, "used": ent.v_used, "reserved": ent.v_resv, "remaining": remaining_v},
-            "moments": {"total": ent.m_total, "used": ent.m_used, "reserved": ent.m_resv, "remaining": remaining_m},
-            "refunds": {"used": ent.refunds, "allowed": self.refund_cap(ent)},
-            "upgrade": {"eligible": free or eff == ST_PLUS_EXPIRED,
+            # Billing V2: only Free starter and admin-granted accounts have an allowance to show. null (not 0) otherwise, so neither the
+            # contract-1 nor the V2 client prints a counter; legacy counters stored on a Plus record stay in the item, unread.
+            "videos": {"total": ent.v_total, "used": ent.v_used, "reserved": ent.v_resv, "remaining": remaining_v} if counters else None,
+            "moments": {"total": ent.m_total, "used": ent.m_used, "reserved": ent.m_resv, "remaining": remaining_m} if counters else None,
+            "refunds": {"used": ent.refunds, "allowed": 0 if unlimited else self.refund_cap(ent)},
+            "upgrade": {"eligible": (free or eff == ST_PLUS_EXPIRED) and not unlimited,
                         "suggest": free and ent.v_used >= 1,     # nudge after the first finished video, never a block
                         "blocking": free and (trial == "expired" or remaining_v < 1 or remaining_m < 1)},
+            "capabilities": {
+                "version": CAPABILITIES_VERSION,
+                "video_generation": CAP_UNLIMITED if unlimited else CAP_METERED,
+                "moment_analysis": CAP_UNLIMITED if unlimited else CAP_METERED,
+                # Apple-verified subscription state, independent of the plan label (a grandfathered tester who bought Plus is
+                # `active` here). `ends_at` is the server's verified period (or grace) end: the renewal or expiry date.
+                "subscription": {"status": {ST_PLUS_ACTIVE: "active", ST_PLUS_GRACE: "grace", ST_PLUS_EXPIRED: "expired"}.get(sub or "", "none"),
+                                 "ends_at": sub_end if sub else None},
+            },
             "entitlement_version": ent.ver, "apple_original_transaction_id": ent.orig_txn,
         }

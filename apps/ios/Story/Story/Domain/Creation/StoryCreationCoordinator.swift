@@ -83,6 +83,8 @@ enum StoryCreationError: Error, LocalizedError, Equatable {
     /// Billing V1 (HTTP 402): the plan's allowance or trial does not permit this video. Carries the server's typed code and
     /// action so the UI can open the right screen. Not a technical failure; never a plain Retry.
     case entitlementDenied(BillingDenial)
+    /// Billing V2: temporary capacity (429 `busy`) or a quota-store outage (503). Retryable: the UI offers the honest "Try again".
+    case capacityBusy
 
     var errorDescription: String? {
         switch self {
@@ -130,6 +132,8 @@ enum StoryCreationError: Error, LocalizedError, Equatable {
             return m
         case .entitlementDenied(let d):
             return d.message
+        case .capacityBusy:
+            return L10n.t("YoTale is busy right now. Please try again in a moment.")
         }
     }
 }
@@ -989,10 +993,14 @@ final class StoryCreationCoordinator {
             // Billing V1 (402): allowance/trial/subscription. The UI opens the upgrade or allowance screen; never a retry.
             if cancelRequested { return finishCancelled() }
             return finishFailed(.entitlementDenied(denial))
-        } catch EditPlanJobError.quotaStoreUnavailable {
-            // Accounting-store outage (503). Transient — the user may try again shortly.
+        } catch EditPlanJobError.busy {
+            // Billing V2: temporary capacity (active jobs / shared breaker / rate limit). Retryable, never "out of credits".
             if cancelRequested { return finishCancelled() }
-            return finishFailed(.quotaDenied(EditPlanJobError.quotaStoreUnavailable(retryAfter: nil).errorDescription ?? "Please try again in a moment."))
+            return finishFailed(.capacityBusy)
+        } catch EditPlanJobError.quotaStoreUnavailable {
+            // Accounting-store outage (503). Transient — the user may try again shortly (retryable, Billing V2).
+            if cancelRequested { return finishCancelled() }
+            return finishFailed(.capacityBusy)
         } catch EditPlanJobError.pollTimeout {
             if cancelRequested { return finishCancelled() }
             // The job may still be running server-side — do NOT lose it; the Story keeps its job_id for reopen.

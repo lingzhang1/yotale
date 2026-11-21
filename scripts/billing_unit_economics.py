@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provisional unit economics for the Free starter and Plus plans (stdlib only, no network).
+"""Provisional unit economics for the Free starter and the (unlimited, Billing V2) Plus plan (stdlib only, no network).
 
 Every input is either MEASURED (cited from specs/story-specs/spec/implementation-plan/billing-measured-cost-dev-beta.md)
 or an explicit ASSUMPTION flagged below. Re-run after `model_call_usage` has collected a week of data and replace the
@@ -61,14 +61,26 @@ def workloads() -> list[tuple[str, float, str]]:
     ]
 
 
-def plan_row(name, moments, videos, sheets_per_video, *, commission, retry=RETRY_FACTOR, unmeasured=UNMEASURED_PER_VIDEO,
-             revenue=PRICE):
-    au = au_cost(moments)
-    plans = videos * ((original(sheets_per_video) + explore(sheets_per_video)) / 2)
-    ai = (au + plans) * retry + videos * unmeasured
-    cost = ai + STORAGE_PER_USER_MONTH
+# --- Billing V2: YoTale Plus is UNLIMITED (owner decision 2026-11-20) ---------------------------------------------
+# There is no allotment to model. The Plus section is a SENSITIVITY over video operations per paying subscriber per month.
+# An "operation" is one Original, Explore (Create Another Version) or Revise. The mix and the import volumes are ASSUMPTIONS.
+OPS_PER_SUBSCRIBER = (10, 30, 60, 100, 300)
+OP_MIX = {"original": 0.5, "explore": 0.3, "revise": 0.2}      # ASSUMPTION: replace with the measured Original/Explore/Revise mix
+NEW_MOMENTS_PER_MONTH = (30, 150)                               # ASSUMPTION: light vs heavy import behaviour
+
+
+def op_cost(sheets: int) -> float:
+    """Expected model cost of one video operation (measured-token fit, list prices), before retries and the unmeasured buffer."""
+    return OP_MIX["original"] * original(sheets) + OP_MIX["explore"] * explore(sheets) + OP_MIX["revise"] * REVISE_COST
+
+
+def subscriber_month(ops: int, sheets: int, new_moments: int, *, commission: float, retry: float = RETRY_FACTOR,
+                     unmeasured: float = UNMEASURED_PER_VIDEO, infra: float | None = None, revenue: float = PRICE):
+    """(AI cost, total cost, net revenue, margin) for one Plus subscriber-month. SIMULATION built on the measured fits above."""
+    ai = (au_cost(new_moments) + ops * op_cost(sheets)) * retry + ops * unmeasured
+    cost = ai + (STORAGE_PER_USER_MONTH if infra is None else infra)
     net = revenue * (1 - commission)
-    return name, ai, cost, net, (net - cost) / net if net else float("nan")
+    return ai, cost, net, (net - cost) / net if net else float("nan")
 
 
 def main() -> None:
@@ -76,41 +88,45 @@ def main() -> None:
     for n, c, note in workloads():
         print(f"  {n:<74s} ${c:6.3f}   [{note}]")
 
-    print("\n== Free starter, full use: 30 Moments + 2 videos (no revenue)")
+    print("\n== Free starter, full use: 30 Moments + 2 videos (no revenue)   [model from MEASURED token fits]")
     for sheets in (10, 30, 90):
         c2 = au_cost(30) + 2 * original(sheets)
         print(f"  videos on {sheets:>2d}-sheet stories: ${c2:5.2f} measured-model, ${c2 * RETRY_FACTOR + 2 * UNMEASURED_PER_VIDEO:5.2f} "
               f"with retry {RETRY_FACTOR}x + ${UNMEASURED_PER_VIDEO:.2f}/video unmeasured buffer")
 
-    print(f"\n== Plus ${PRICE}/month, FULL allotment: 100 Moments + 12 videos (retry {RETRY_FACTOR}x, "
-          f"${UNMEASURED_PER_VIDEO:.2f}/video unmeasured buffer, ${STORAGE_PER_USER_MONTH:.2f} storage)")
-    print(f"  {'case':<34s}{'AI cost':>9s}{'total cost':>12s}   {'net @15%':>9s} {'margin':>7s}   {'net @30%':>9s} {'margin':>7s}")
-    for label, sheets in (("small stories (30 sheets/video)", 30), ("large stories (90 sheets/video)", 90)):
-        r15 = plan_row(label, 100, 12, sheets, commission=0.15)
-        r30 = plan_row(label, 100, 12, sheets, commission=0.30)
-        print(f"  {label:<34s}${r15[1]:8.2f}${r15[2]:11.2f}   ${r15[3]:8.2f} {r15[4]*100:6.0f}%   ${r30[3]:8.2f} {r30[4]*100:6.0f}%")
+    print(f"\n== Plus ${PRICE}/month, UNLIMITED: sensitivity by video operations per subscriber-month   [SIMULATION]")
+    print(f"   per-op cost = {OP_MIX} mix of measured-fit Original/Explore + measured revise (n=1); retry {RETRY_FACTOR}x;")
+    print(f"   ${UNMEASURED_PER_VIDEO:.2f}/op unmeasured buffer (ASSUMPTION); storage+egress ${STORAGE_PER_USER_MONTH:.2f}/user-month")
+    print(f"  {'ops':>4s} {'story':>9s} {'new Moments':>12s} {'AI cost':>9s} {'total':>8s}   {'margin @15%':>11s} {'margin @30%':>11s}")
+    for ops in OPS_PER_SUBSCRIBER:
+        for sheets in (30, 90):
+            for nm in NEW_MOMENTS_PER_MONTH:
+                ai, cost, _n15, m15 = subscriber_month(ops, sheets, nm, commission=0.15)
+                _ai, _c, _n30, m30 = subscriber_month(ops, sheets, nm, commission=0.30)
+                print(f"  {ops:>4d} {sheets:>3d} sheets {nm:>12d} ${ai:8.2f} ${cost:7.2f}   {m15*100:10.0f}% {m30*100:10.0f}%")
 
-    print("\n== Sensitivity: large stories, Plus full allotment, margin by assumption (net @15% / @30%)")
+    print("\n== Sensitivity: 60 ops/subscriber, 90-sheet stories, 150 new Moments, margin by assumption (@15% / @30%)   [SIMULATION]")
     for retry in (1.0, 1.25, 1.9):
         for unm in (0.0, 0.10, 0.30):
-            r15 = plan_row("", 100, 12, 90, commission=0.15, retry=retry, unmeasured=unm)
-            r30 = plan_row("", 100, 12, 90, commission=0.30, retry=retry, unmeasured=unm)
-            print(f"  retry {retry:>4.2f}x, unmeasured ${unm:.2f}/video: cost ${r15[2]:5.2f}  margin {r15[4]*100:4.0f}% / {r30[4]*100:4.0f}%")
+            _a, c15, _n, m15 = subscriber_month(60, 90, 150, commission=0.15, retry=retry, unmeasured=unm)
+            _a, _c, _n, m30 = subscriber_month(60, 90, 150, commission=0.30, retry=retry, unmeasured=unm)
+            print(f"  retry {retry:>4.2f}x, unmeasured ${unm:.2f}/op: cost ${c15:6.2f}  margin {m15*100:4.0f}% / {m30*100:4.0f}%")
 
-    print("\n== Sensitivity: storage + egress per user-month (large stories, retry 1.25x, unmeasured $0.10/video)")
+    print("\n== Sensitivity: storage + egress per user-month (60 ops, 90-sheet stories, 150 new Moments)   [SIMULATION]")
     for infra in (0.15, 0.30, 1.00, 3.00):
-        globals()["STORAGE_PER_USER_MONTH"] = infra
-        r15 = plan_row("", 100, 12, 90, commission=0.15)
-        r30 = plan_row("", 100, 12, 90, commission=0.30)
-        print(f"  storage+egress ${infra:4.2f}/user-month: cost ${r15[2]:5.2f}  margin {r15[4]*100:4.0f}% / {r30[4]*100:4.0f}%")
-    globals()["STORAGE_PER_USER_MONTH"] = STORAGE_GB_PER_USER * 0.023 + EGRESS_GB_PER_USER_MONTH * 0.09
+        _a, c15, _n, m15 = subscriber_month(60, 90, 150, commission=0.15, infra=infra)
+        _a, _c, _n, m30 = subscriber_month(60, 90, 150, commission=0.30, infra=infra)
+        print(f"  storage+egress ${infra:4.2f}/user-month: cost ${c15:6.2f}  margin {m15*100:4.0f}% / {m30*100:4.0f}%")
 
-    print("\n== Break-even videos (large stories) for Plus at 12-video price, margin 70% target @15% commission")
-    net = PRICE * 0.85
-    budget = net * 0.30 - STORAGE_PER_USER_MONTH
-    per_video = (au_cost(100) / 12 + (original(90) + explore(90)) / 2) * RETRY_FACTOR + UNMEASURED_PER_VIDEO
-    print(f"  AI budget for 70% margin: ${budget:.2f}; cost per video incl. its AU share: ${per_video:.3f}; "
-          f"=> about {budget / per_video:.1f} large-story videos")
+    print("\n== Break-even ops per subscriber-month (net revenue = cost), 150 new Moments   [SIMULATION]")
+    for commission in (0.15, 0.30):
+        for sheets in (30, 90):
+            net = PRICE * (1 - commission)
+            fixed = au_cost(150) * RETRY_FACTOR + STORAGE_PER_USER_MONTH
+            per_op = op_cost(sheets) * RETRY_FACTOR + UNMEASURED_PER_VIDEO
+            print(f"  commission {commission*100:2.0f}%, {sheets:>2d}-sheet stories: about {(net - fixed) / per_op:5.0f} ops "
+                  f"(${per_op:.3f}/op incl. retry + buffer)")
+    print("\n  These numbers are for monitoring and planning only. They are not a quota and do not authorize one (owner decision).")
 
 
 if __name__ == "__main__":

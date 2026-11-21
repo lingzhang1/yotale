@@ -145,7 +145,7 @@ async def quota_middleware(request: Request, call_next):
     # SYNC paid op: mint a per-request op id, reserve the estimate, run, settle actual or release.
     op_id = f"sync:{cls}:{uuid.uuid4()}"
     try:
-        q.reserve(uid, op_id, estimate_usd=estimate, gens=1)
+        q.reserve(uid, op_id, estimate_usd=estimate, gens=1, enforce_user_caps=_enforce_user_caps(request, uid, cls))
     except QuotaDenied as d:
         if enforce:
             _metric(request, "QuotaDenied", cls)
@@ -224,7 +224,7 @@ def submit_reserve(request: Request, uid: str, scoped_op_id: str, job_id: str,
         return None
     reserved = False
     try:
-        q.reserve(uid, scoped_op_id, estimate_usd=estimate, gens=1)
+        q.reserve(uid, scoped_op_id, estimate_usd=estimate, gens=1, enforce_user_caps=_enforce_user_caps(request, uid, cls))
         reserved = True
         # reserve a queued+running slot keyed by the deterministic job id (same identity the store uses)
         q.reserve_slot(uid, job_id)
@@ -323,10 +323,39 @@ def _env_table() -> str:
     return os.environ.get("STORY_USER_USAGE_TABLE", "")
 
 
+# Billing V2 (B2.5): capacity limits that clear on their own are a RETRYABLE "busy", never "you ran out". The response keeps the
+# contract-1 fields (`error`, `scope`, `retry_after_seconds`) so shipped clients parse it as before, and adds `busy: true` plus a
+# short, honest Retry-After that V2 clients use to retry. The per-user caps (`user_daily_gens`, `user_monthly_usd`) still apply to
+# accounts without an active subscription and keep their original shape.
+BUSY_RETRY_AFTER_S: dict[str, int] = {
+    "active_jobs": 30,            # another of the user's jobs finishes in about a minute
+    "global_monthly_usd": 300,    # the shared service breaker: retry in minutes; resizing it is an owner decision
+}
+
+
 def _denied(scope: str) -> JSONResponse:
     """Distinct quota denial, separable from a rate-limit 429 (which uses error:'rate_limited')."""
+    busy = BUSY_RETRY_AFTER_S.get(scope)
+    if busy is not None:
+        return JSONResponse(status_code=429, headers={"Retry-After": str(busy)},
+                            content={"error": "quota_exceeded", "scope": scope, "retry_after_seconds": busy,
+                                     "busy": True, "reason": "capacity"})
     return JSONResponse(status_code=429, headers={"Retry-After": "3600"},
                         content={"error": "quota_exceeded", "scope": scope, "retry_after_seconds": 3600})
+
+
+def _enforce_user_caps(request: Request, uid: str, cls: str) -> bool:
+    """False only for a VERIFIED active YoTale Plus subscriber (live ledger, every billing mode): Plus is unlimited ordinary use, so
+    the per-user monthly-USD and daily-generation caps must not stop it. Rate limits, active-job concurrency, the global breaker and
+    WAF still apply, and USD is still reserved and settled for attribution. A read failure answers True (normal caps)."""
+    try:
+        from app import billing_gate
+        if billing_gate.live_plus_active(request, uid):
+            _metric(request, "QuotaPlusExempt", cls)
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    return True
 
 
 def _matched_template(request: Request) -> Optional[str]:

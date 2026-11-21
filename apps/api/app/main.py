@@ -736,7 +736,11 @@ def create_app() -> FastAPI:
         if svc is None:
             return JSONResponse(status_code=503, content={"error": "apple_not_configured"})
         try:
-            return svc.submit_transaction(principal.story_user_id, signed)
+            result = svc.submit_transaction(principal.story_user_id, signed)
+            # The app decodes `entitlement` with the SAME model as GET /v1/billing/entitlement, so it must have the SAME shape
+            # (billing_mode, enforced, offer, apple_app_account_token...). The ledger's bare view lacks those, which made the
+            # shipped client's decode fail after a successful purchase.
+            return {**result, "entitlement": billing_gate.entitlement_payload(request, principal.story_user_id)}
         except billing_gate.AppleError as e:
             return billing_gate.apple_error_response(e)
         except billing_gate.BillingStoreError:

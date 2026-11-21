@@ -415,40 +415,74 @@ def renew(L, period="p2", ts=T0 + 30 * DAY):
     return plus(L, period=period, start=ts, end=ts + 30 * DAY, ts=ts)
 
 
-def test_plus_has_its_own_allowances_and_resets_at_the_apple_boundary(env):
+def test_plus_is_unlimited_while_active_and_writes_no_finite_totals(env):
+    """Billing V2: no monthly limit, no hidden ceiling. 13th, 30th, 61st video and >100 new Moments: never a billing denial."""
     L = mk(env)
     plus(L)
     e = L.get_entitlement("u1")
-    assert (e.plan, e.status, e.v_total, e.m_total) == ("plus", ST_PLUS_ACTIVE, 12, 100)
-    for i in range(12):
-        L.reserve_video("u1", f"op{i}")
-        L.settle_video("u1", f"op{i}")
-    with pytest.raises(BillingDenied) as ei:
-        L.reserve_video("u1", "op13")
-    assert ei.value.code == VIDEO_CREDITS_EXHAUSTED and ei.value.action == "wait_for_renewal"
+    assert (e.plan, e.status, e.v_total, e.m_total) == ("plus", ST_PLUS_ACTIVE, 2, 30)     # no Plus totals written (starter's stay)
+    assert e.unlimited is False and e.unlimited_at(env.clock()) is True                     # derived, never stored
+    for i in range(61):
+        h = L.reserve_video("u1", f"op{i}")
+        assert h.reason == "unlimited" and h.owns and not h.charged
+        assert L.settle_video("u1", f"op{i}") == "settled"
+    for i in range(120):
+        assert L.reserve_moment("u1", f"m{i}").owns
+        assert L.settle_moment("u1", f"m{i}", result="{}", version="v1") == "settled"
+    v = L.entitlement_view("u1")
+    assert v["unlimited"] is True and v["videos"] is None and v["moments"] is None
+    assert v["capabilities"]["video_generation"] == "unlimited" and v["capabilities"]["subscription"]["status"] == "active"
     renew(L)
-    e = L.get_entitlement("u1")
-    assert (e.v_used, e.v_avail, e.m_avail) == (0, 12, 100) and e.period_id == "p2"
+    assert L.get_entitlement("u1").period_id == "p2" and L.reserve_video("u1", "after-renewal").reason == "unlimited"
 
 
-def test_unused_plus_allowance_does_not_roll_over(env):
+def test_plus_keeps_operation_records_for_idempotency_and_attribution(env):
+    """B3: an unlimited Plus takes the SAME record transitions (one record per operation, idempotent, releasable)."""
     L = mk(env)
     plus(L)
-    L.reserve_video("u1", "op1")
-    L.settle_video("u1", "op1")
-    renew(L)
-    assert L.get_entitlement("u1").v_avail == 12
+    assert L.reserve_video("u1", "op1").owns
+    dup = L.reserve_video("u1", "op1")                            # duplicate submit / SQS redelivery
+    assert not dup.owns and dup.reason == "idempotent"
+    assert L.release_video("u1", "op1") == "released"
+    assert L.reserve_video("u1", "op1").owns                      # a retried operation re-opens the same record
+    assert L.settle_video("u1", "op1") == "settled" and L.settle_video("u1", "op1") == "noop"
+    rec = env.ddb.get_item(TableName=env.table, Key={"story_user_id": {"S": "u1"},
+                                                     "quota_period": {"S": f"billing#v#{reservation_id('op1')}"}})["Item"]
+    assert rec["b_state"]["S"] == "settled" and "b_unmetered" in rec
+    e = L.get_entitlement("u1")
+    assert (e.v_resv, e.v_used) == (0, 0)                         # no counter leg for an unmetered record
 
 
-def test_in_flight_reservation_from_the_old_period_never_touches_the_new_counters(env):
+def test_legacy_finite_plus_reservation_settled_after_v2_does_not_leave_a_stuck_reservation(env):
+    """B3: a reservation taken by a pre-V2 finite Plus (counter taken) and settled after V2 (derived unlimited) still runs its
+    counter leg, decided from the RECORD, so b_v_resv cannot stay stuck."""
     L = mk(env)
     plus(L)
-    L.reserve_video("u1", "slow")
-    renew(L)
-    assert L.settle_video("u1", "slow") == "settled"
+    # simulate a pre-V2 finite Plus entitlement with an open metered reservation
+    env.ddb.update_item(TableName=env.table, Key={"story_user_id": {"S": "u1"}, "quota_period": {"S": "billing#entitlement"}},
+                        UpdateExpression="SET b_v_total = :t, b_v_avail = :a, b_v_resv = :r, b_v_used = :z",
+                        ExpressionAttributeValues={":t": {"N": "12"}, ":a": {"N": "11"}, ":r": {"N": "1"}, ":z": {"N": "0"}})
+    env.ddb.update_item(TableName=env.table, Key={"story_user_id": {"S": "u1"},
+                                                  "quota_period": {"S": f"billing#v#{reservation_id('legacy')}"}},
+                        UpdateExpression="SET b_state = :rs, b_kind = :k, b_period = :p, b_updated = :now",
+                        ExpressionAttributeValues={":rs": {"S": "reserved"}, ":k": {"S": "video"}, ":p": {"S": "p1"},
+                                                   ":now": {"N": str(T0)}})
+    assert L.settle_video("u1", "legacy") == "settled"
     e = L.get_entitlement("u1")
-    assert (e.v_used, e.v_resv, e.v_avail) == (0, 0, 12)          # the new period is untouched
-    assert L.settle_video("u1", "slow") == "noop"
+    assert (e.v_resv, e.v_used) == (0, 1)
+    assert L.entitlement_view("u1")["videos"] is None              # legacy counters are not shown and not a limit
+    assert L.reserve_video("u1", "next").reason == "unlimited"
+
+
+def test_an_unmetered_record_never_decrements_a_counter_it_did_not_take(env):
+    """B3 reverse case: a record reserved while unlimited, finished after the account became finite (grandfather rollback)."""
+    L = mk(env)
+    L.grandfather("u1", cutoff="c1")
+    assert L.reserve_video("u1", "op1").owns
+    assert L.revoke_grandfather("u1", "c1") == "reverted"
+    assert L.release_video("u1", "op1") == "released"             # no TransactionCanceled loop, no BillingStoreError
+    e = L.get_entitlement("u1")
+    assert (e.v_avail, e.v_resv) == (2, 0) and invariant(e, "video")
 
 
 def test_delayed_older_webhook_cannot_undo_a_newer_state(env):
@@ -469,8 +503,38 @@ def test_expired_subscription_requires_resubscribing_and_keeps_delivered_work(en
     for fn, arg in ((L.reserve_video, "op2"), (L.reserve_moment, "m1")):
         with pytest.raises(BillingDenied) as ei:
             fn("u1", arg)
-        assert ei.value.code == SUBSCRIPTION_REQUIRED
-    assert L.get_entitlement("u1").v_used == 1
+        assert ei.value.code == SUBSCRIPTION_REQUIRED                 # never credits/allowance/trial wording for Plus
+    v = L.entitlement_view("u1")
+    assert v["unlimited"] is False and v["capabilities"]["subscription"]["status"] == "expired"
+    rec = env.ddb.get_item(TableName=env.table, Key={"story_user_id": {"S": "u1"},
+                                                     "quota_period": {"S": f"billing#v#{reservation_id('op1')}"}})["Item"]
+    assert rec["b_state"]["S"] == "settled"                           # delivered work untouched
+
+
+def test_a_lapsed_plus_account_is_shown_no_starter_counters_but_free_and_admin_are(env):
+    """S1: stale starter counters on an expired Plus record must not reach the client."""
+    L = mk(env)
+    plus(L)
+    plus(L, status=ST_PLUS_EXPIRED, ts=T0 + 31 * DAY)
+    v = L.entitlement_view("u1")
+    assert v["videos"] is None and v["moments"] is None and v["capabilities"]["subscription"]["status"] == "expired"
+    f = L.entitlement_view("free-user")
+    assert f["plan"] == "free_starter" and f["videos"]["remaining"] == 2 and f["moments"] is not None
+    L.admin_grant("u2", videos=5, moments=50, reason="support")
+    assert L.entitlement_view("u2")["videos"]["total"] == 5
+
+
+def test_unlimited_is_never_granted_at_or_after_the_period_end(env):
+    """B4: expiry is checked before any unlimited shortcut, at the exact instant."""
+    L = mk(env)
+    plus(L, end=T0 + 30 * DAY)
+    env[1].advance(30 * DAY)                                          # exactly period_end: still active
+    assert L.reserve_video("u1", "at-end").reason == "unlimited"
+    env[1].advance(1)
+    with pytest.raises(BillingDenied) as ei:
+        L.reserve_video("u1", "after-end")
+    assert ei.value.code == SUBSCRIPTION_REQUIRED
+    assert L.get_entitlement("u1").unlimited_at(env.clock()) is False
 
 
 def test_period_end_passing_without_a_webhook_is_enforced_from_the_clock(env):
@@ -487,30 +551,35 @@ def test_grace_period_keeps_access_until_grace_end(env):
     L = mk(env)
     plus(L, status=ST_PLUS_GRACE, grace_end=T0 + 33 * DAY)
     env[1].advance(31 * DAY)
-    assert L.reserve_video("u1", "op1").charged
+    assert L.reserve_video("u1", "op1").reason == "unlimited"
     env[1].advance(3 * DAY)
-    with pytest.raises(BillingDenied):
+    with pytest.raises(BillingDenied) as ei:
         L.reserve_video("u1", "op2")
+    assert ei.value.code == SUBSCRIPTION_REQUIRED
 
 
-def test_resubscribing_after_expiry_restores_allowances(env):
+def test_resubscribing_after_expiry_restores_unlimited(env):
     L = mk(env)
     plus(L)
     plus(L, status=ST_PLUS_EXPIRED, ts=T0 + 31 * DAY)
     plus(L, period="p9", start=T0 + 40 * DAY, end=T0 + 70 * DAY, ts=T0 + 40 * DAY)
     env[1].advance(41 * DAY)
-    assert L.reserve_video("u1", "op1").charged
+    assert L.reserve_video("u1", "op1").reason == "unlimited"
 
 
-def test_free_user_upgrading_gets_plus_counters_and_loses_the_trial_gate(env):
+def test_free_user_upgrading_becomes_unlimited_and_loses_the_trial_gate(env):
     L = mk(env)
     L.reserve_video("u1", "op1")
     L.settle_video("u1", "op1")
+    L.reserve_video("u1", "op2")
+    L.settle_video("u1", "op2")
+    with pytest.raises(BillingDenied):
+        L.reserve_video("u1", "op3")                                  # the Free starter is spent
     plus(L)
     e = L.get_entitlement("u1")
-    assert (e.plan, e.v_used, e.v_avail) == ("plus", 0, 12)
+    assert e.plan == "plus" and e.cfg == L.cfg.config_version == "billing-config/3"
     env[1].advance(20 * DAY)                                      # past the old trial end: irrelevant for Plus
-    assert L.reserve_video("u1", "op2").charged
+    assert L.reserve_video("u1", "op3").reason == "unlimited"
 
 
 # ---- grandfathered / admin --------------------------------------------------------------------------------------
@@ -547,9 +616,9 @@ def test_admin_grant_sets_finite_allowances_and_expiry(env):
 
 # ---- controlled refund ------------------------------------------------------------------------------------------
 
-def test_refund_returns_one_credit_once_and_is_capped_on_plus(env):
+def test_refund_returns_one_credit_once_and_is_capped_per_period(env):
     L = mk(env)
-    plus(L)
+    L.admin_grant("u1", videos=12, moments=10, reason="support")      # finite paid-style plan (Plus is unlimited in V2)
     for i in range(5):
         L.reserve_video("u1", f"op{i}")
         L.settle_video("u1", f"op{i}")
@@ -560,6 +629,14 @@ def test_refund_returns_one_credit_once_and_is_capped_on_plus(env):
     assert L.refund_video("u1", "op1", "x", render_attempts=2) == "refunded"
     assert L.refund_video("u1", "op2", "x", render_attempts=2) == "refunded"
     assert L.refund_video("u1", "op3", "x", render_attempts=2) == "not_eligible:refund_cap"       # 3 per period
+
+
+def test_an_unlimited_plus_video_has_nothing_to_refund(env):
+    L = mk(env)
+    plus(L)
+    L.reserve_video("u1", "op1")
+    L.settle_video("u1", "op1")
+    assert L.refund_video("u1", "op1", "render_failed", render_attempts=2) == "not_eligible:period_or_plan"
 
 
 def test_refund_requires_a_settled_recent_operation_in_the_same_period(env):
@@ -650,7 +727,7 @@ def test_the_removed_plans_override_is_rejected_at_startup(monkeypatch):
         validate_billing_config()
     monkeypatch.delenv("STORY_BILLING_PLANS_JSON")
     assert validate_billing_config() == "off"
-    assert BillingConfig().plus == PlanLimits(videos=12, moments=100)         # defaults: provisional values unchanged
+    assert not hasattr(BillingConfig(), "plus")                                # Billing V2: Plus has no finite allowance
     assert BillingConfig().free_starter == PlanLimits(videos=2, moments=30)
 
 
@@ -720,7 +797,7 @@ def test_stale_snapshot_race_on_the_last_credit_lets_exactly_one_through(env):
 
 def test_a_refund_needs_evidence_the_stored_plan_was_re_rendered(env):
     L = mk(env)
-    plus(L)
+    L.admin_grant("u1", videos=5, moments=5, reason="support")
     L.reserve_video("u1", "op1")
     L.settle_video("u1", "op1")
     assert L.refund_video("u1", "op1", "render_failed") == "not_eligible:insufficient_evidence"                   # no claim of retries
@@ -749,14 +826,15 @@ def test_a_refund_for_another_accounts_or_an_unbilled_operation_is_impossible(en
     assert L.refund_video("u2", "op1", "render_failed", render_attempts=2) == "not_eligible:unknown_operation"   # another account
     assert L.refund_video("u1", "never-billed", "render_failed", render_attempts=2) == "not_eligible:unknown_operation"
     L.grandfather("u3")
-    L.reserve_video("u3", "opx")                                                                                  # unlimited: nothing billed
-    assert L.refund_video("u3", "opx", "render_failed", render_attempts=2) == "not_eligible:unknown_operation"
+    L.reserve_video("u3", "opx")                                                                                  # unlimited: unmetered record
+    L.settle_video("u3", "opx")
+    assert L.refund_video("u3", "opx", "render_failed", render_attempts=2) == "not_eligible:period_or_plan"
     assert L.get_entitlement("u1").v_used == 1
 
 
 def test_concurrent_refund_claims_for_one_operation_refund_once(env):
     L = mk(env)
-    plus(L)
+    L.admin_grant("u1", videos=5, moments=5, reason="support")
     L.reserve_video("u1", "op1")
     L.settle_video("u1", "op1")
     out = []
@@ -814,8 +892,46 @@ def test_a_reservation_keeps_the_period_it_was_charged_in_after_a_renewal(env):
     rec = env.ddb.get_item(TableName=env.table, Key={"story_user_id": {"S": "u1"},
                                                      "quota_period": {"S": f"billing#v#{reservation_id('slow')}"}})["Item"]
     assert rec["b_period"]["S"] == "p1" and rec["b_state"]["S"] == "settled"          # historical attribution preserved
+    assert L.get_entitlement("u1").period_id == "p2"
+
+
+def test_a_plus_that_lapses_after_submit_still_runs_the_job_authorized_at_submit(env):
+    """Worker re-authorization finds the record reserved at submit and does not re-decide on the lapsed entitlement."""
+    L = mk(env)
+    plus(L)
+    assert L.reserve_video("u1", "queued").owns                    # API submit
+    plus(L, status=ST_PLUS_EXPIRED, ts=T0 + 1)                     # lapses while the job waits in the queue
+    h = L.reserve_video("u1", "queued")                            # worker _billing_authorize_job
+    assert h.reason == "idempotent"
+    assert L.reconcile_video_job("u1", "queued", "completed") == "settled"
+    with pytest.raises(BillingDenied):
+        L.reserve_video("u1", "new-after-lapse")                   # a NEW video needs the subscription
+
+
+def test_a_grandfathered_tester_who_buys_plus_shows_active_and_rollback_keeps_the_subscription(env):
+    """S8: the purchase is recorded beside the grandfathered plan; a cohort rollback converts the account to Plus."""
+    L = mk(env)
+    L.grandfather("u1", cutoff="c1")
+    plus(L, end=T0 + 30 * DAY)
     e = L.get_entitlement("u1")
-    assert e.period_id == "p2" and (e.v_used, e.v_resv, e.v_avail) == (0, 0, 12)      # the new period was not charged for it
+    assert e.plan == "beta_grandfathered" and e.sub_status == ST_PLUS_ACTIVE and e.orig_txn == "otx-1"
+    v = L.entitlement_view("u1")
+    assert v["capabilities"]["subscription"] == {"status": "active", "ends_at": T0 + 30 * DAY} and v["unlimited"] is True
+    assert L.revoke_grandfather("u1", "c1") == "reverted"
+    e = L.get_entitlement("u1")
+    assert (e.plan, e.status, e.period_id, e.period_end) == ("plus", ST_PLUS_ACTIVE, "p1", T0 + 30 * DAY)
+    assert L.reserve_video("u1", "op1").reason == "unlimited"
+    plus(L, status=ST_PLUS_EXPIRED, ts=T0 + 31 * DAY)               # Apple events keep applying to the converted account
+    assert L.get_entitlement("u1").status == ST_PLUS_EXPIRED
+
+
+def test_a_grandfathered_rollback_without_an_active_subscription_is_unchanged(env):
+    L = mk(env)
+    L.grandfather("u1", cutoff="c1")
+    plus(L, end=T0 + DAY)
+    env[1].advance(2 * DAY)                                         # the side subscription has lapsed
+    assert L.revoke_grandfather("u1", "c1") == "reverted"
+    assert L.get_entitlement("u1").plan == "free_starter"
 
 
 def test_out_of_order_entitlement_events_converge_regardless_of_arrival_order(env):

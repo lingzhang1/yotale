@@ -193,6 +193,28 @@
         }
       }
     },
+    "Access until" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可用至"
+          }
+        }
+      }
+    },
+    "AI shooting guidance" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 拍摄指导"
+          }
+        }
+      }
+    },
     "Arrange Moments (sheet title)" : {
       "comment" : "Title of the Moment-sequence sheet. English matches \"Arrange Moments\"; Chinese uses the short in-context form.",
       "extractionState" : "manual",
@@ -211,6 +233,72 @@
         }
       }
     },
+    "Beautiful Highlights and Full Stories" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "精美的精彩集锦和完整故事"
+          }
+        }
+      }
+    },
+    "Check again" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "再次检查"
+          }
+        }
+      }
+    },
+    "Confirming your subscription…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在确认你的订阅…"
+          }
+        }
+      }
+    },
+    "Couldn't load your subscription. Check your connection and try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载你的订阅。请检查网络后重试。"
+          }
+        }
+      }
+    },
+    "Create without overthinking." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "放心去创作。"
+          }
+        }
+      }
+    },
+    "Different versions from the same footage" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同一素材，创作不同版本"
+          }
+        }
+      }
+    },
     "Importing your videos" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -218,6 +306,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在导入你的视频"
+          }
+        }
+      }
+    },
+    "Loading your subscription…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载你的订阅…"
           }
         }
       }
@@ -240,6 +339,28 @@
         }
       }
     },
+    "Natural-language video revisions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用自然语言调整影片"
+          }
+        }
+      }
+    },
+    "Plan" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "方案"
+          }
+        }
+      }
+    },
     "Removing those Moments leaves only %lld to build from. Keep at least 2." : {
       "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",
@@ -258,6 +379,17 @@
         }
       }
     },
+    "Renews" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "续订日期"
+          }
+        }
+      }
+    },
     "Several Moments can't all come right after %@." : {
       "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",
@@ -272,6 +404,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "多个瞬间不能都紧跟在%@之后。"
+          }
+        }
+      }
+    },
+    "Subscription details" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "订阅详情"
           }
         }
       }
@@ -308,6 +451,105 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "这个要求有冲突，请调整后再试。（%@）"
+          }
+        }
+      }
+    },
+    "Unlimited AI video creation and editing with Plus" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plus 会员无限次 AI 视频创作与编辑"
+          }
+        }
+      }
+    },
+    "Unlimited means ordinary video creation and editing (Create, Create Another Version and Revise) while your subscription is active. Your videos stay yours if you cancel." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“无限”指订阅有效期间的常规视频创作与编辑（故事创作、再创作一个版本和调整影片）。取消订阅后，你的视频仍归你所有。"
+          }
+        }
+      }
+    },
+    "Unlimited video creation and editing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无限次视频创作与编辑"
+          }
+        }
+      }
+    },
+    "YoTale is busy right now. Please try again in a moment." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "YoTale 现在有点忙，请稍后再试。"
+          }
+        }
+      }
+    },
+    "YoTale Plus — %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "YoTale Plus 会员 — %@"
+          }
+        }
+      }
+    },
+    "You've used the Moment analysis included in your grant. Your footage is still saved. Contact support to extend it." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已用完赠送的瞬间分析额度。你的素材仍已保存。如需延长，请联系客服。"
+          }
+        }
+      }
+    },
+    "You've used the videos included in your grant. Contact support to extend it." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已用完赠送的视频额度。如需延长，请联系客服。"
+          }
+        }
+      }
+    },
+    "Your AI director for capturing, creating, and refining beautiful video stories." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的 AI 导演，帮你拍摄、创作并打磨精美的视频故事。"
+          }
+        }
+      }
+    },
+    "Your purchase is safe. YoTale is confirming it with the App Store." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的购买很安全。YoTale 正在与 App Store 确认。"
           }
         }
       }
@@ -10169,17 +10411,6 @@
         }
       }
     },
-    "%lld new Moments analyzed every month" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "每月分析 %lld 个新瞬间"
-          }
-        }
-      }
-    },
     "%lld video credits left" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -10187,17 +10418,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "还剩 %lld 个视频额度"
-          }
-        }
-      }
-    },
-    "%lld videos every month" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "每月 %lld 个视频"
           }
         }
       }
@@ -10224,28 +10444,6 @@
         }
       }
     },
-    "Create, make another version, or revise: each uses one video" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "创建、制作另一个版本或修改：每次使用一个视频额度"
-          }
-        }
-      }
-    },
-    "Footage you already analyzed is free to reuse" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已分析过的素材可免费重复使用"
-          }
-        }
-      }
-    },
     "Manage Subscription" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -10264,6 +10462,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "还可分析的新瞬间"
+          }
+        }
+      }
+    },
+    "Your purchase was received, but your subscription is not active yet. If you were charged, tap Restore Purchases or try again in a moment." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已收到你的购买，但订阅尚未生效。如果已扣款，请点击“恢复购买”，或稍后再试。"
           }
         }
       }
@@ -10466,28 +10675,6 @@
         }
       }
     },
-    "You've used all your video credits for this period. They renew with your next billing period." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "你已用完本周期的视频额度，下个计费周期开始时会重置。"
-          }
-        }
-      }
-    },
-    "You've used this period's new-Moment analysis. It renews with your next billing period. Your footage is still saved." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "你已用完本周期的新瞬间分析额度，下个计费周期开始时会重置。你的素材依然保存在手机中。"
-          }
-        }
-      }
-    },
     "You've used your free Moment analysis. Your footage is still saved. Upgrade to YoTale Plus to analyze more." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -10506,17 +10693,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "你已用完免费视频额度。升级到 YoTale Plus 会员可创作更多。"
-          }
-        }
-      }
-    },
-    "Your credits reset when your subscription renews." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "订阅续订时，你的额度会重置。"
           }
         }
       }
@@ -10561,17 +10737,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已恢复你的购买。"
-          }
-        }
-      }
-    },
-    "Your videos stay yours if you cancel. Unused credits don't roll over." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "取消订阅后，你的视频依然属于你。未用完的额度不会累计到下个周期。"
           }
         }
       }

@@ -55,7 +55,10 @@ final class AuthStore: NSObject {
         guard let data = KeychainStore.load(),
               var t = try? JSONDecoder().decode(AuthTokens.self, from: data) else { return }
         if t.isExpired {
-            do { t = try await refreshed(from: t) } catch { signOutLocal(); return }
+            do { t = try await refreshed(from: t) }
+            catch CognitoAuthError.transport {}        // S4: auth server unreachable/unavailable: stay signed in; the next
+            catch is URLError {}                       // fetchAccessToken refreshes (or reports .offline). Never sign out for it.
+            catch { signOutLocal(); return }
         }
         // R1.1 — a token blob persisted by a PRE-R1.1 build carries the Cognito `sub` (not the canonical
         // story_user_id) and `canonicalResolved == false`. We MUST NOT restore a session keyed on the sub, so
@@ -146,12 +149,22 @@ final class AuthStore: NSObject {
     /// request. On refresh failure the session is cleared (the user must re-auth) — never falls back to an
     /// unauthenticated identity.
     func validAccessToken() async -> String? {
-        guard var t = tokens else { return nil }
-        if t.isExpired {
+        if case .token(let t) = await fetchAccessToken() { return t }
+        return nil
+    }
+
+    /// Billing V2: like `validAccessToken` but tells "no session" apart from "could not reach the auth server". Only a refresh the
+    /// auth server REJECTED clears the session; a network failure keeps it (airplane mode must not sign the user out).
+    /// `forceRefresh` is for the one retry after a 401 (the server rejected a token the device still thought was valid).
+    func fetchAccessToken(forceRefresh: Bool = false) async -> AccessTokenFetch {
+        guard var t = tokens else { return .signedOut }
+        if t.isExpired || forceRefresh {
             do { t = try await refreshed(from: t); tokens = t; persist(t) }
-            catch { signOutLocal(); return nil }
+            catch CognitoAuthError.transport { return .offline }
+            catch is URLError { return .offline }
+            catch { signOutLocal(); return .signedOut }
         }
-        return t.accessToken
+        return .token(t.accessToken)
     }
 
     private func refreshed(from t: AuthTokens) async throws -> AuthTokens {
@@ -221,4 +234,10 @@ extension AuthStore: ASWebAuthenticationPresentationContextProviding {
         return ASPresentationAnchor()
         #endif
     }
+}
+
+enum AccessTokenFetch: Equatable {
+    case token(String)
+    case signedOut
+    case offline
 }

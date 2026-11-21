@@ -280,7 +280,8 @@ async def throttle_middleware(request: Request, call_next):
             return JSONResponse(status_code=429,
                                 headers={"Retry-After": str(decision.retry_after)},
                                 content={"error": "rate_limited", "class": cls,
-                                         "retry_after_seconds": decision.retry_after})
+                                         "retry_after_seconds": decision.retry_after,
+                                         "busy": True, "reason": "rate_limited"})   # Billing V2: retryable busy
         # Observe mode: record what WOULD have been blocked, but let it through.
         _metric(request, "WouldThrottle", cls)
         return await call_next(request)

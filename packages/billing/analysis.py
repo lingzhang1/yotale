@@ -18,6 +18,7 @@ Decision (`plan_analysis`), evaluated against records that already exist, in thi
   3. a RESERVED record (someone else is analysing right now)               -> IN_FLIGHT (coalesce: wait for it, never a second call)
      (a reservation older than `moment_stale_s` is presumed dead and is taken over, still one charge)
   4. nothing                                                                -> ANALYZE under a NEW charge (BillingDenied when exhausted)
+     (an UNLIMITED account takes the same record path without a counter, so its results are cached and coalesced too)
 Same moment id with materially different frames and no verified common source has a different source id, so it falls to (4): it is a
 new analysis and is charged. Cross-Story reuse is unaffected (the source id does not include the Story). Cross-account is isolated by the
 partition key. Failed attempts release the reservation (no allowance consumed); their provider cost stays in `model_call_usage` and the
@@ -63,7 +64,8 @@ class AnalysisPlan:
     result: Optional[str] = None        # cached analysis JSON (action == reuse)
     hold: Optional[Hold] = None         # present for analyze
     bind: str = "frames"                # frames | cloud_verified
-    owns_charge: bool = False
+    owns_charge: bool = False           # this request took an allowance unit (metered accounts)
+    owns: bool = False                  # this request owns the analysis RECORD (metered or unlimited): it must settle or release it
 
 
 def source_keys(moment_id: str, fp: str, claim_sha: Optional[str], verified: bool) -> list[str]:
@@ -93,8 +95,8 @@ def plan_analysis(L: BillingLedger, uid: str, moment_id: str, *, fp: str, versio
     for k in keys:                                                      # 3: someone is analysing right now (or died)
         if views[k].get("state") == "reserved":
             hold = L.reserve_moment(uid, k)                             # a stale reservation is taken over, still one charge
-            if hold.charged:
-                return AnalysisPlan("analyze", k, "reclaimed_stale", hold=hold, owns_charge=True)
+            if hold.owns:
+                return AnalysisPlan("analyze", k, "reclaimed_stale", hold=hold, owns_charge=hold.charged, owns=True)
             return AnalysisPlan("in_flight", k, "identical_in_flight")
 
     primary = keys[0]                                                   # 4: a new, charged analysis
@@ -105,15 +107,15 @@ def plan_analysis(L: BillingLedger, uid: str, moment_id: str, *, fp: str, versio
         attrs["b_claim"] = {"S": claim}                                 # recorded as a CLAIM; never used as identity by itself
     hold = L.reserve_moment(uid, primary, attrs=attrs)                  # may raise BillingDenied (typed)
     if hold.charged:
-        return AnalysisPlan("analyze", primary, "new_source", hold=hold, bind=bind, owns_charge=True)
-    if hold.reason == "unlimited":
-        return AnalysisPlan("analyze", primary, "unlimited", hold=hold, bind=bind)
+        return AnalysisPlan("analyze", primary, "new_source", hold=hold, bind=bind, owns_charge=True, owns=True)
+    if hold.owns:                                                       # unlimited: same record, no counter (Billing V2, B3)
+        return AnalysisPlan("analyze", primary, "unlimited", hold=hold, bind=bind, owns=True)
     return AnalysisPlan("in_flight", primary, "raced")                  # settled or reserved by a concurrent identical request
 
 
 def complete(L: BillingLedger, uid: str, plan: AnalysisPlan, result_json: str, version: str) -> None:
     """Persist a SUCCESSFUL analysis: settle the charge (analyze) or finish the refresh, and cache the result."""
-    if plan.action == "analyze" and plan.owns_charge:
+    if plan.action == "analyze" and plan.owns:
         L.settle_moment(uid, plan.key, result=result_json, version=version)
     elif plan.action == "refresh":
         L.finish_refresh(uid, plan.key, result_json, version)
@@ -121,7 +123,7 @@ def complete(L: BillingLedger, uid: str, plan: AnalysisPlan, result_json: str, v
 
 def abandon(L: BillingLedger, uid: str, plan: AnalysisPlan) -> None:
     """A FAILED analysis: give the allowance back (analyze) or release the refresh claim. Only the owner of the charge releases."""
-    if plan.action == "analyze" and plan.owns_charge:
+    if plan.action == "analyze" and plan.owns:
         L.release_moment(uid, plan.key)
     elif plan.action == "refresh":
         L.abort_refresh(uid, plan.key)

@@ -1,5 +1,7 @@
 # Quota Ledger — Phantom-429 Fix & Beta Cleanup Runbook
 
+> **Billing V2 (2026-11-20):** a verified active YoTale Plus subscriber is exempt from `user_monthly_usd` and `user_daily_gens` (read from the live billing ledger in every billing mode; on a read failure the normal caps apply). USD is still reserved and settled for Plus, so this runbook's ledger and global-breaker behaviour is unchanged. `active_jobs`, `global_monthly_usd` and the throttle 429 now also carry `busy: true` with a short Retry-After. See `specs/story-specs/spec/implementation-plan/billing-v2-unlimited-plus.md`.
+
 Status: **CLOSED — ACCEPTED (2026-11-03).** Merged `ac4ab8a` (PR #82), deployed to dev and beta, beta-verified
 end-to-end. No manual ledger cleanup was needed or performed.
 

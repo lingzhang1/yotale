@@ -94,7 +94,7 @@ def test_valid_purchase_grants_plus_from_apple_dates(world):
     e = out["entitlement"]
     assert out["result"] == "applied" and e["plan"] == "plus" and e["status"] == "plus_active"
     assert e["period"]["start"] == T0 and e["period"]["end"] == T0 + MONTH      # Apple's dates, not a calendar month
-    assert e["videos"]["total"] == 12 and e["moments"]["total"] == 100
+    assert e["videos"] is None and e["moments"] is None and e["unlimited"] is True      # Billing V2: unlimited, no totals
     assert e["apple_original_transaction_id"] == "1000"
 
 
@@ -112,7 +112,8 @@ def test_repeated_submission_is_idempotent_and_never_resets_usage(world):
     world.ledger.reserve_video("u1", "op1")
     world.ledger.settle_video("u1", "op1")
     out = world.svc.submit_transaction("u1", s)             # restore purchases / reinstall posts the same transaction again
-    assert out["entitlement"]["videos"]["used"] == 1 and out["entitlement"]["videos"]["remaining"] == 11
+    assert out["result"] == "applied" and out["entitlement"]["plan"] == "plus"
+    assert world.ledger.settle_video("u1", "op1") == "noop"                 # the settled operation is untouched
 
 
 def test_wrong_account_token_is_rejected(world):
@@ -181,7 +182,7 @@ def test_old_period_replay_cannot_reset_allowances(world):
     world.clock.t = T0 + MONTH + 100
     world.svc.submit_transaction("u1", world.sign(txn(tok, tid="1", start=T0, end=T0 + MONTH + 200, signed=T0 + MONTH + 100)))
     e = world.ledger.entitlement_view("u1")
-    assert e["period"]["id"].endswith(":2") and e["videos"]["used"] == 1
+    assert e["period"]["id"].endswith(":2") and e["period"]["start"] == T0 + MONTH
 
 
 # ---- notifications -------------------------------------------------------------------------------------------------
@@ -200,7 +201,7 @@ def test_renewal_notification_starts_new_period_and_resets_allowances(world):
     out = world.svc.handle_notification(world.note("DID_RENEW", renewed, signed=T0 + MONTH))
     assert out["outcome"] == "applied_active"
     e = world.ledger.entitlement_view("u1")
-    assert e["period"]["start"] == T0 + MONTH and e["videos"]["used"] == 0 and e["videos"]["remaining"] == 12
+    assert e["period"]["start"] == T0 + MONTH and e["unlimited"] is True and e["status"] == "plus_active"
 
 
 def test_duplicate_notification_is_acknowledged_once(world):
@@ -211,7 +212,8 @@ def test_duplicate_notification_is_acknowledged_once(world):
     world.ledger.reserve_video("u1", "op2")
     world.ledger.settle_video("u1", "op2")
     assert world.svc.handle_notification(key)["outcome"] == "duplicate"        # redelivery must not reset the new period
-    assert world.ledger.entitlement_view("u1")["videos"]["used"] == 1
+    e = world.ledger.entitlement_view("u1")
+    assert e["period"]["start"] == T0 + MONTH and world.ledger.settle_video("u1", "op2") == "noop"
 
 
 def test_delayed_older_event_cannot_undo_a_newer_one(world):
@@ -339,7 +341,7 @@ def test_concurrent_notifications_converge(world):
     [t.join() for t in ts]
     assert not errs
     e = world.ledger.entitlement_view("u1")
-    assert e["period"]["start"] == T0 + MONTH and e["videos"]["remaining"] == 12 and e["status"] == "plus_active"
+    assert e["period"]["start"] == T0 + MONTH and e["unlimited"] is True and e["status"] == "plus_active"
 
 
 # ---- reconciliation (apply_status) ---------------------------------------------------------------------------------

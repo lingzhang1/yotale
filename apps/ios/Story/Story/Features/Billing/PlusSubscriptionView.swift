@@ -1,9 +1,10 @@
 import SwiftUI
 import StoreKit
 
-/// Billing V1 / B3: the one billing screen. It is the paywall for a Free starter and the subscription status screen for a Plus
-/// subscriber. Everything shown comes from the server (allowances, status, renewal date) or from StoreKit (the localized price);
-/// no price or number is hard-coded here.
+/// Billing V1 / B3 (V2 redesign): the one billing screen. It is the paywall for a Free starter and the subscription status screen
+/// for a Plus subscriber. Everything shown comes from the server (plan, status, verified renewal/expiry date, the Free starter's
+/// remaining allowance) or from StoreKit (the localized price, whether auto-renew is on); no price or number is hard-coded here.
+/// Opening it never triggers an AI call: it only reads the billing endpoints and StoreKit.
 struct PlusSubscriptionView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AuthStore.self) private var auth
@@ -17,20 +18,30 @@ struct PlusSubscriptionView: View {
     var body: some View {
         NavigationStack {
             Form {
-                if let denial {
+                if let denial, !billing.isPlus {
                     Section { Text(denial.message).font(StoryTheme.body(15)) }
                 }
                 if !auth.isSignedIn {
+                    heroSection
                     Section { Text("Sign in to subscribe or to restore a purchase.") }
                 } else if billing.isPlus {
                     activeSections
+                } else if billing.verifying {
+                    verifyingSection
+                } else if !billing.canOfferSubscribe {
+                    // B1/R1: never Subscribe from unknown or stale state; Subscribe needs the LAST server read to have succeeded and said "not Plus".
+                    heroSection
+                    entitlementUnavailableSection
                 } else {
+                    heroSection
                     offerSections
                 }
                 if auth.isSignedIn { restoreSection }
                 legalSection
                 noticeSection
             }
+            .scrollContentBackground(.hidden)
+            .background(StoryTheme.ink)
             .navigationTitle("YoTale Plus")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
@@ -42,19 +53,33 @@ struct PlusSubscriptionView: View {
         }
     }
 
-    // MARK: Free starter -> offer
+    // MARK: Free starter -> paywall
+    private var heroSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Create without overthinking.")
+                    .font(StoryTheme.display(28))
+                    .foregroundStyle(StoryTheme.cream)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Your AI director for capturing, creating, and refining beautiful video stories.")
+                    .font(StoryTheme.body(15))
+                    .foregroundStyle(StoryTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 6)
+            .listRowBackground(Color.clear)
+        }
+    }
+
     @ViewBuilder private var offerSections: some View {
         Section {
-            if let plus = billing.offer {
-                benefitRow("film.stack", L10n.t("\(plus.videos) videos every month"))
-                benefitRow("sparkles", L10n.t("\(plus.moments) new Moments analyzed every month"))
-                benefitRow("arrow.triangle.2.circlepath", L10n.t("Create, make another version, or revise: each uses one video"))
-                benefitRow("photo.on.rectangle", L10n.t("Footage you already analyzed is free to reuse"))
-            }
-        } header: {
-            Text("What you get")
+            benefitRow("camera.viewfinder", L10n.t("AI shooting guidance"))
+            benefitRow("film.stack", L10n.t("Beautiful Highlights and Full Stories"))
+            benefitRow("text.bubble", L10n.t("Natural-language video revisions"))
+            benefitRow("square.on.square", L10n.t("Different versions from the same footage"))
+            benefitRow("infinity", L10n.t("Unlimited AI video creation and editing with Plus"))
         } footer: {
-            Text("Your videos stay yours if you cancel. Unused credits don't roll over.")
+            Text("Unlimited means ordinary video creation and editing (Create, Create Another Version and Revise) while your subscription is active. Your videos stay yours if you cancel.")
         }
 
         if billing.entitlement?.showsAllowances == true, let v = billing.entitlement?.videos, let m = billing.entitlement?.moments {
@@ -65,6 +90,11 @@ struct PlusSubscriptionView: View {
         }
 
         Section {
+            if let price = billing.localizedPrice {
+                Text(L10n.t("YoTale Plus — \(priceLine(price))"))
+                    .font(StoryTheme.body(15, .medium))
+                    .foregroundStyle(StoryTheme.cream)
+            }
             Button {
                 Task { await billing.purchasePlus() }
             } label: {
@@ -72,7 +102,6 @@ struct PlusSubscriptionView: View {
                     Text("Subscribe").bold()
                     Spacer()
                     if billing.phase == .purchasing { ProgressView() }
-                    else if let price = billing.localizedPrice { Text(priceLine(price)) }
                 }
             }
             .disabled(billing.phase != .idle || billing.product == nil)
@@ -82,25 +111,72 @@ struct PlusSubscriptionView: View {
         }
     }
 
-    // MARK: Plus -> status
+    // MARK: Plus -> status (never a Subscribe button)
     @ViewBuilder private var activeSections: some View {
         Section {
-            LabeledContent("Status", value: billing.entitlement?.isGrace == true
-                           ? L10n.t("Payment issue. Update your payment method")
-                           : L10n.t("Active"))
-            if let end = billing.entitlement?.period?.end {
-                LabeledContent("Renews or ends", value: L10nFormat.shortDate(Date(timeIntervalSince1970: TimeInterval(end))))
+            VStack(alignment: .leading, spacing: 6) {
+                Text("YoTale Plus")
+                    .font(StoryTheme.display(24))
+                    .foregroundStyle(StoryTheme.cream)
+                Text(billing.entitlement?.isGrace == true ? L10n.t("Payment issue. Update your payment method") : L10n.t("Active"))
+                    .font(StoryTheme.body(15, .medium))
+                    .foregroundStyle(billing.entitlement?.isGrace == true ? StoryTheme.danger : StoryTheme.gold)
+                Text("Unlimited video creation and editing")
+                    .font(StoryTheme.body(15))
+                    .foregroundStyle(StoryTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if let v = billing.entitlement?.videos, let m = billing.entitlement?.moments {
-                LabeledContent("Video credits left", value: "\(v.remaining) / \(v.total)")
-                LabeledContent("New Moments you can analyze", value: "\(m.remaining) / \(m.total)")
-            }
-        } footer: {
-            Text("Your credits reset when your subscription renews.")
+            .padding(.vertical, 6)
         }
-        Section {
+        Section("Subscription details") {
+            if let end = billing.entitlement?.subscriptionEndsAt {
+                LabeledContent(dateLabel, value: L10nFormat.shortDate(end))
+            }
+            if let price = billing.localizedPrice {
+                LabeledContent("Plan", value: L10n.t("YoTale Plus — \(priceLine(price))"))
+            }
             Button("Manage Subscription") { showManage = true }
                 .foregroundStyle(StoryTheme.gold)
+        }
+    }
+
+    /// "Renews" while auto-renew is on, "Access until" once canceled (still active until the date), from StoreKit's renewal info;
+    /// the DATE itself is always the server-verified one.
+    private var dateLabel: String {
+        switch billing.willAutoRenew {
+        case .some(true): return L10n.t("Renews")
+        case .some(false): return L10n.t("Access until")
+        case .none: return L10n.t("Renews or ends")
+        }
+    }
+
+    /// A verified Apple purchase the server has not confirmed yet: never show Subscribe to someone who has paid.
+    private var verifyingSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text("Confirming your subscription…")
+            }
+            Button("Check again") { Task { await billing.recoverPendingTransactions() } }
+                .foregroundStyle(StoryTheme.gold)
+        } footer: {
+            Text("Your purchase is safe. YoTale is confirming it with the App Store.")
+        }
+    }
+
+    /// No server entitlement yet: loading, or the read failed (offline / server). Never offers Subscribe.
+    @ViewBuilder private var entitlementUnavailableSection: some View {
+        Section {
+            if billing.entitlementLoadFailed && billing.phase != .loading {
+                Text("Couldn't load your subscription. Check your connection and try again.")
+                Button("Try again") { Task { await billing.refresh() } }
+                    .foregroundStyle(StoryTheme.gold)
+            } else {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Loading your subscription…")
+                }
+            }
         }
     }
 
@@ -136,10 +212,12 @@ struct PlusSubscriptionView: View {
 
     // MARK: helpers
     private func benefitRow(_ symbol: String, _ text: String) -> some View {
-        Label { Text(text) } icon: { Image(systemName: symbol).foregroundStyle(StoryTheme.gold) }
+        Label { Text(text).fixedSize(horizontal: false, vertical: true) } icon: {
+            Image(systemName: symbol).foregroundStyle(StoryTheme.gold)
+        }
     }
 
-    /// "$9.99 / month", using StoreKit's localized price and the product's real period.
+    /// "$9.99/month", using StoreKit's localized price and the product's real period.
     private func priceLine(_ price: String) -> String {
         guard let p = billing.product?.subscription?.subscriptionPeriod else { return price }
         let unit: String
@@ -150,7 +228,7 @@ struct PlusSubscriptionView: View {
         case .year: unit = L10n.t("year")
         @unknown default: unit = ""
         }
-        return p.value == 1 ? "\(price) / \(unit)" : "\(price) / \(p.value) \(unit)"
+        return p.value == 1 ? "\(price)/\(unit)" : "\(price) / \(p.value) \(unit)"
     }
 
     private func message(for notice: BillingStore.Notice) -> String {
@@ -162,6 +240,7 @@ struct PlusSubscriptionView: View {
         case .needsSignIn: return L10n.t("Sign in to your YoTale account to finish this.")
         case .unavailable: return L10n.t("Couldn't reach the App Store or YoTale. Your purchase is safe. Please try again in a moment.")
         case .failed: return L10n.t("The purchase couldn't be completed.")
+        case .notActive: return L10n.t("Your purchase was received, but your subscription is not active yet. If you were charged, tap Restore Purchases or try again in a moment.")
         }
     }
 }

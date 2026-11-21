@@ -48,6 +48,8 @@ enum EditPlanJobError: Error, LocalizedError {
     case quotaExceeded(scope: String, retryAfter: Int?)   // 429 quota_exceeded — user hit an allowance cap
     case quotaStoreUnavailable(retryAfter: Int?)          // 503 quota_store_unavailable — accounting outage
     case entitlementDenied(BillingDenial)                 // 402 — the plan's allowance/trial does not permit this video (Billing V1)
+    case busy(retryAfter: Int?)                           // Billing V2: 429 `busy: true` — temporary capacity (active jobs, shared
+                                                          // breaker, rate limit). RETRYABLE; never "out of credits".
 
     var errorDescription: String? {
         switch self {
@@ -74,6 +76,8 @@ enum EditPlanJobError: Error, LocalizedError {
             return L10n.t("Story can't start a new video right now. Please try again in a moment.")
         case .entitlementDenied(let denial):
             return denial.message
+        case .busy:
+            return L10n.t("YoTale is busy right now. Please try again in a moment.")
         }
     }
 }
@@ -240,9 +244,10 @@ final class EditPlanJobClient: EditPlanJobClienting {
             throw EditPlanJobError.entitlementDenied(BillingDenial.parse(data))
         case 429:
             // Quota denial (enforce mode). Parse the scope + Retry-After for an honest, specific message.
-            struct Q: Decodable { let error: String?; let scope: String?; let retry_after_seconds: Int? }
+            struct Q: Decodable { let error: String?; let scope: String?; let retry_after_seconds: Int?; let busy: Bool? }
             let q = try? JSONDecoder().decode(Q.self, from: data)
             let ra = q?.retry_after_seconds ?? http.value(forHTTPHeaderField: "Retry-After").flatMap { Int($0) }
+            if q?.busy == true { throw EditPlanJobError.busy(retryAfter: ra) }   // temporary capacity: retryable
             // Distinguish a quota cap from a Phase-3 rate-limit (both are 429 but carry different `error`).
             throw EditPlanJobError.quotaExceeded(scope: q?.scope ?? q?.error ?? "", retryAfter: ra)
         case 503:
