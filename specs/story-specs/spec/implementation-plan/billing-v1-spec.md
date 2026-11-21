@@ -1,5 +1,7 @@
 # YoTale Billing V1: architecture, specification and phase report (B0 + B1)
 
+> **Billing V2 (2026-11-20):** YoTale Plus is now UNLIMITED ordinary use while active or in grace; there is no 12-video / 100-Moment Plus allowance any more. The Free starter (2 videos, 30 new Moments, trial clock) is unchanged. Where this document describes finite Plus allowances, renewals that reset Plus counters, or Plus credit copy, it is superseded by [billing-v2-unlimited-plus](./billing-v2-unlimited-plus.md).
+
 Status: **B1 IMPLEMENTED and offline-tested on `feat/billing-v1-backend` (stacked on the B0 branch). Not merged. Not deployed.
 `STORY_BILLING_MODE` is `off` in every environment (release manifest). No App Store Connect, AWS or live-data change.**
 Cost inputs: `billing-b0-cost-attribution-and-unit-economics.md`, `billing-measured-cost-dev-beta.md`.
