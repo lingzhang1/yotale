@@ -70,7 +70,8 @@ final class BillingModelsTests: XCTestCase {
     }
 
     func testEveryServerDenialCodeIsKnown() {
-        for code in ["trial_expired", "video_credits_exhausted", "moment_allowance_exhausted", "subscription_required"] {
+        for code in ["trial_expired", "video_credits_exhausted", "moment_allowance_exhausted", "subscription_required",
+                     "ai_idea_allowance_exhausted"] {
             XCTAssertNotEqual(BillingDenialCode(rawValue: code), .unknown, code)
         }
     }
@@ -151,6 +152,39 @@ final class BillingV2ContractTests: XCTestCase {
         XCTAssertFalse(e.isPlus)
         XCTAssertTrue(e.showsAllowances)
         XCTAssertEqual(e.videos?.remaining, 1)
+    }
+
+    // Billing V2 AI-idea meter (contract 3, additive).
+    func testContract3FreeStarterDecodesTheIdeaAllowance() throws {
+        let json = """
+        {"contract_version":3,"billing_mode":"enforce","enforced":true,"plan":"free_starter","status":"free_starter","unlimited":false,
+         "capabilities":{"video_generation":"metered","moment_analysis":"metered","ai_ideas":"metered","subscription":{"status":"none","ends_at":null}},
+         "videos":{"total":2,"used":0,"reserved":0,"remaining":2},"moments":{"total":30,"used":0,"reserved":0,"remaining":30},
+         "ideas":{"total":50,"used":3,"reserved":0,"remaining":47}}
+        """
+        let e = try decoder().decode(BillingEntitlement.self, from: Data(json.utf8))
+        XCTAssertTrue(e.showsIdeaAllowance)
+        XCTAssertEqual(e.ideas?.remaining, 47)
+        XCTAssertEqual(e.capabilities?.aiIdeas, "metered")
+    }
+
+    func testAContract2ServerStillDecodesWithNoIdeaCounter() throws {
+        let json = """
+        {"contract_version":2,"billing_mode":"enforce","enforced":true,"plan":"free_starter","status":"free_starter","unlimited":false,
+         "videos":{"total":2,"used":0,"reserved":0,"remaining":2},"moments":{"total":30,"used":0,"reserved":0,"remaining":30}}
+        """
+        let e = try decoder().decode(BillingEntitlement.self, from: Data(json.utf8))
+        XCTAssertNil(e.ideas)
+        XCTAssertFalse(e.showsIdeaAllowance)
+        XCTAssertTrue(e.showsAllowances)
+    }
+
+    func testIdeaDenialOffersPlusAndSaysRecordingStillWorks() {
+        let body = #"{"error":"ai_idea_allowance_exhausted","action":"subscribe","contract_version":3}"#
+        let d = BillingDenial.parse(Data(body.utf8))
+        XCTAssertEqual(d.code, .aiIdeaAllowanceExhausted)
+        XCTAssertTrue(d.canUpgrade)
+        XCTAssertFalse(d.message.isEmpty)
     }
 
     func testALapsedPlusAccountShowsNoStarterCountersEvenIfAnOlderServerSentThem() throws {

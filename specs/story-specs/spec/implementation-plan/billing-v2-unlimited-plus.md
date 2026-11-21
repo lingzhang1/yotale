@@ -15,7 +15,8 @@ Plus allowance (12 videos, 100 new Moments) described in `billing-v1-spec.md`, `
 - While the subscription is active or in Apple's grace period, Plus is **unlimited ordinary use**: Create, Highlights, Full Story,
   Create Another Version, natural-language and deterministic Revise, and Asset Understanding (AU) of new Moments.
 - No numeric monthly limit, no hidden ceiling, no per-subscriber USD or daily cap that stops ordinary use, no credit balance.
-- **Free starter unchanged**: 2 videos, 30 new Moments, 14-day trial clock that starts at the first settled video.
+- **Free starter**: 2 videos, 30 new Moments, 50 AI shooting ideas (added 2026-11-21, section 11), 14-day trial clock that starts
+  at the first settled video.
 - Temporary capacity limits are a retryable "busy", never "out of credits".
 - Unusual automated, abusive or compromised-account traffic is handled by the existing security and abuse policy, not by a disguised
   allowance.
@@ -148,6 +149,9 @@ Use the sandbox Apple ID and the beta or dev backend. Record the build SHA, acco
 | 15 | Plus: import more than 100 new Moments | Analysis continues; nothing parks for an allowance. |
 | 16 | Free starter: use 2 videos, then a third | The Free 402 upgrade screen. |
 | 17 | Billing service unreachable (bad network) while opening the screen | No sign-out; the last known state stays. |
+| 18 | Free starter: the third video is refused while you are on the Story screen (background attempt) | The "Creating..." banner clears, "Create Another Version" works again, and the card offers See YoTale Plus (PR #144). |
+| 19 | Free starter: use all 50 AI shooting ideas (camera AI ideas / Rescan), then scan again | The idea note offers See YoTale Plus, no Try again; recording still works; the Plus screen shows "AI shooting ideas left". |
+| 20 | Plus: request more than 50 AI shooting ideas | No idea limit message. |
 
 Note for beta: `STORY_BILLING_MODE` is `off` on beta, and beta quota is `enforce` with a $60 global breaker. Rows 14-15 burn real model
 spend and must be run within the owner's approved test budget, not as a stress test.
@@ -189,3 +193,28 @@ If all three are complete, treat it as the sandbox artifact.
 - **Denied-submit re-open bound** (`MAX_DENIAL_RECOVERIES = 50` per operation id in `packages/edit_plan_jobs`): a retry of the same
   operation id after a busy denial re-opens the denied job up to 50 times. 50 consecutive busy retries of one operation is not a
   realistic user path (each is a manual Try again after 30 s or more); no change made.
+
+## 11. AI-idea meter (owner decision 2026-11-21)
+
+- **What counts**: one unit per SUCCESSFUL in-camera AI idea call, `POST /v1/director/initialize` or `POST /v1/director/next`. The
+  app's camera calls `initialize` once per scan or Rescan (`ContinuousCaptureModel.runDirector`); one call returns a small set of
+  shot ideas and counts as one unit. `next` is metered too so the meter cannot be sidestepped. A failed call (503) is released and
+  never charged. The seeded guide idea shown when the camera opens is local (no network) and is never counted.
+- **Not counted**: scene understanding, Story Guide (v1/v2/refine), coverage, duration, music and reference photos (`/v1/scene-image`).
+  They stay in `BILLING_EXEMPT` and are protected only by the operational limits.
+- **Who**: the Free starter only, 50 ideas (`BillingConfig.free_starter.ideas`, `billing-config/4`). Plus, grandfathered and
+  admin-granted accounts are unmetered for ideas. A lapsed Plus account is refused with `subscription_required`, like videos.
+- **Trial**: an idea never starts the 14-day clock (only a settled video does). After the trial ends, ideas are refused with
+  `trial_expired`, like the other meters.
+- **Denial**: HTTP 402 `ai_idea_allowance_exhausted`, action `subscribe`. Running out of ideas never blocks recording, creating or
+  analysis (`upgrade.blocking` ignores ideas).
+- **Contract 3 (additive over 2)**: `ideas` allowance (`total/used/reserved/remaining`, null unless metered) and
+  `capabilities.ai_ideas` (`metered | unlimited`). A contract-2 client ignores both.
+- **Storage**: `b_i_total/b_i_avail/b_i_resv/b_i_used` on the entitlement item, records under `<ns>i#<reservation id>`. A Free starter
+  created before `billing-config/4` has no `b_i_*`; the first idea initializes them once (create-only on `b_i_total`), and the
+  read model shows the full starter allowance until then. A grandfather rollback writes fresh idea counters.
+- **Modes**: off = no accounting; observe = shadow counters and would-deny metrics only; enforce = the typed 402.
+- **iOS**: `StoryDirectorService` maps 402 to `entitlementDenied`; the camera's failure note shows See YoTale Plus instead of Try
+  again; the Plus screen shows "AI shooting ideas left" for a Free starter. Parse-checked only; the device Xcode build is the gate.
+- **Tests**: `apps/api/tests/test_billing_ai_idea_meter.py` (ledger on the in-memory double and DynamoDB Local; API wiring in off,
+  observe and enforce), `BillingModelsTests` (contract-3 decode, contract-2 compatibility, the new denial code).

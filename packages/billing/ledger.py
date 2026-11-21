@@ -34,7 +34,7 @@ from typing import Any, Callable, Optional
 
 from .config import BillingConfig
 from .model import (
-    ACTION_CONTACT, ACTION_SUBSCRIBE, ACTION_WAIT_RENEWAL, BillingDenied, BillingStoreError, CAP_METERED, CAP_UNLIMITED,
+    ACTION_CONTACT, ACTION_SUBSCRIBE, AI_IDEA_ALLOWANCE_EXHAUSTED, ACTION_WAIT_RENEWAL, BillingDenied, BillingStoreError, CAP_METERED, CAP_UNLIMITED,
     CAPABILITIES_VERSION, CONTRACT_VERSION, Entitlement,
     Hold, MOMENT_ALLOWANCE_EXHAUSTED, PLAN_ADMIN, PLAN_BETA, PLAN_FREE, PLAN_PLUS, RS_REFUNDED, RS_RELEASED, RS_RESERVED,
     RS_SETTLED, ST_ADMIN, ST_BETA, ST_FREE, ST_PLUS_ACTIVE, ST_PLUS_EXPIRED, ST_PLUS_GRACE, SUBSCRIPTION_REQUIRED,
@@ -50,7 +50,8 @@ APPLE_TOKEN_PK = "__apple_token__"
 APPLE_EVT_PK = "__apple_evt__"
 _MAX_TRIES = 5
 
-_ATTRS = {"video": ("b_v_avail", "b_v_resv", "b_v_used"), "moment": ("b_m_avail", "b_m_resv", "b_m_used")}
+_ATTRS = {"video": ("b_v_avail", "b_v_resv", "b_v_used"), "moment": ("b_m_avail", "b_m_resv", "b_m_used"),
+          "idea": ("b_i_avail", "b_i_resv", "b_i_used")}
 
 
 def reservation_id(operation_id: str) -> str:
@@ -112,6 +113,7 @@ def parse_entitlement(uid: str, it: dict) -> Entitlement:
         period_end=_opt(it, "b_period_end"), grace_end=_opt(it, "b_grace_end"),
         v_total=_int(it, "b_v_total"), v_avail=_int(it, "b_v_avail"), v_resv=_int(it, "b_v_resv"), v_used=_int(it, "b_v_used"),
         m_total=_int(it, "b_m_total"), m_avail=_int(it, "b_m_avail"), m_resv=_int(it, "b_m_resv"), m_used=_int(it, "b_m_used"),
+        i_total=_opt(it, "b_i_total"), i_avail=_int(it, "b_i_avail"), i_resv=_int(it, "b_i_resv"), i_used=_int(it, "b_i_used"),
         refunds=_int(it, "b_refunds"), orig_txn=(_str(it, "b_orig_txn") or None), gf_cutoff=(_str(it, "b_gf_cutoff") or None), ver=_int(it, "b_ver", 1),
         cfg=_str(it, "b_cfg"), created=_int(it, "b_created"), updated=_int(it, "b_updated"),
         sub_status=(_str(it, "b_sub_status") or None), sub_period_id=(_str(it, "b_sub_pid") or None),
@@ -200,12 +202,13 @@ class BillingLedger:
             return cur
         now, lim = self._now(), self.cfg.free_starter
         vals = {":plan": _s(PLAN_FREE), ":st": _s(ST_FREE), ":pid": _s("starter"), ":ver": _n(1),
-                ":vt": _n(lim.videos), ":mt": _n(lim.moments), ":zero": _n(0), ":cfg": _s(self.cfg.config_version),
-                ":now": _n(now)}
+                ":vt": _n(lim.videos), ":mt": _n(lim.moments), ":it": _n(lim.ideas), ":zero": _n(0),
+                ":cfg": _s(self.cfg.config_version), ":now": _n(now)}
         ue = ("SET b_plan = :plan, b_status = :st, b_period_id = :pid, b_ver = :ver, b_cfg = :cfg, "
               "b_created = :now, b_updated = :now, "
               "b_v_total = :vt, b_v_avail = :vt, b_v_resv = :zero, b_v_used = :zero, "
-              "b_m_total = :mt, b_m_avail = :mt, b_m_resv = :zero, b_m_used = :zero, b_refunds = :zero")
+              "b_m_total = :mt, b_m_avail = :mt, b_m_resv = :zero, b_m_used = :zero, "
+              "b_i_total = :it, b_i_avail = :it, b_i_resv = :zero, b_i_used = :zero, b_refunds = :zero")
         self._update(uid, f"{self.ns}entitlement", ue, vals, "attribute_not_exists(b_plan)")
         got = self.get_entitlement(uid)
         if got is None:
@@ -234,6 +237,18 @@ class BillingLedger:
         self.index_apple_token(uid, token)
         self._update(uid, sk, "SET b_tok_idx = :one", {":one": _n(1)})
 
+    def _ensure_idea_counters(self, uid: str, ent: Entitlement) -> Entitlement:
+        """A Free starter created before the AI-idea meter (billing-config/4) has no `b_i_*` counters. Write the starter
+        allowance ONCE (create-only on b_i_total, so concurrent first ideas initialize exactly once), then re-read."""
+        if ent.plan != PLAN_FREE or ent.i_total is not None:
+            return ent
+        lim = self.cfg.free_starter
+        self._update(uid, f"{self.ns}entitlement",
+                     "SET b_i_total = :it, b_i_avail = :it, b_i_resv = :z, b_i_used = :z, b_updated = :now",
+                     {":it": _n(lim.ideas), ":z": _n(0), ":now": _n(self._now()), ":free": _s(PLAN_FREE)},
+                     "attribute_not_exists(b_i_total) AND b_plan = :free")
+        return self.get_entitlement(uid) or ent
+
     # ---- decisions --------------------------------------------------------------------------------------------
     def _decide(self, ent: Entitlement, kind: str, now: int) -> None:
         """Raise BillingDenied if this entitlement cannot start one more `kind` unit; return None otherwise."""
@@ -243,11 +258,14 @@ class BillingLedger:
             return
         if eff == ST_PLUS_EXPIRED:
             raise BillingDenied(SUBSCRIPTION_REQUIRED, ACTION_SUBSCRIBE, snap())
-        avail = ent.v_avail if kind == "video" else ent.m_avail
+        if kind == "idea" and not ent.ideas_metered(now):
+            return                           # ideas are metered for the Free starter only
+        avail = {"video": ent.v_avail, "moment": ent.m_avail, "idea": ent.i_avail}[kind]
         if ent.plan == PLAN_FREE and ent.trial_end is not None and now > ent.trial_end:
             raise BillingDenied(TRIAL_EXPIRED, ACTION_SUBSCRIBE, snap())
         if avail < 1:
-            code = VIDEO_CREDITS_EXHAUSTED if kind == "video" else MOMENT_ALLOWANCE_EXHAUSTED
+            code = {"video": VIDEO_CREDITS_EXHAUSTED, "moment": MOMENT_ALLOWANCE_EXHAUSTED,
+                    "idea": AI_IDEA_ALLOWANCE_EXHAUSTED}[kind]
             action = (ACTION_SUBSCRIBE if ent.plan == PLAN_FREE
                       else ACTION_CONTACT if ent.plan == PLAN_ADMIN else ACTION_WAIT_RENEWAL)
             raise BillingDenied(code, action, snap())
@@ -262,6 +280,19 @@ class BillingLedger:
 
     def release_video(self, uid: str, operation_id: str) -> str:
         return self._finish(uid, "video", f"{self.ns}v#{reservation_id(operation_id)}", settle=False)
+
+    # ---- reserve / settle / release (AI idea while shooting) ------------------------------------------------------
+    # One unit per SUCCESSFUL idea call. `operation_id` is per request; a failed call is released (never charged), and the
+    # trial clock never starts on an idea (only a settled video starts it, see `_finish`).
+    def reserve_idea(self, uid: str, operation_id: str) -> Hold:
+        rid = reservation_id(operation_id)
+        return self._reserve(uid, "idea", f"{self.ns}i#{rid}", rid)
+
+    def settle_idea(self, uid: str, operation_id: str) -> str:
+        return self._finish(uid, "idea", f"{self.ns}i#{reservation_id(operation_id)}", settle=True)
+
+    def release_idea(self, uid: str, operation_id: str) -> str:
+        return self._finish(uid, "idea", f"{self.ns}i#{reservation_id(operation_id)}", settle=False)
 
     # ---- reserve / settle / release (new unique Moment analysis) --------------------------------------------------
     @staticmethod
@@ -325,6 +356,8 @@ class BillingLedger:
         for _ in range(_MAX_TRIES):
             now = self._now()
             ent = self.ensure_entitlement(uid)
+            if kind == "idea":
+                ent = self._ensure_idea_counters(uid, ent)
             res = self._get(uid, sk)
             st = _str(res, "b_state") or None
             if st in (RS_SETTLED, RS_REFUNDED):
@@ -342,7 +375,7 @@ class BillingLedger:
                     continue
                 return Hold(kind, key, RS_RESERVED, False, "idempotent" if kind == "video" else "in_flight")
             self._decide(ent, kind, now)             # may raise BillingDenied (typed)
-            if ent.unlimited_at(now):
+            if ent.unlimited_at(now) or (kind == "idea" and not ent.ideas_metered(now)):
                 # Billing V2 (B3): an unlimited account takes the SAME record transitions (create-only reservation, reserved ->
                 # settled | released, cached analysis result, coalescing, stale takeover, attribution) and skips ONLY the
                 # entitlement counter leg. `b_unmetered` on the RECORD says no counter was taken, so settle/release decide the
@@ -597,9 +630,11 @@ class BillingLedger:
                 uid, f"{self.ns}entitlement",
                 "SET b_plan = :plan, b_status = :st, b_unlimited = :no, b_period_id = :pid, b_ver = :nver, b_updated = :now, "
                 "b_v_total = :vt, b_v_avail = :vt, b_v_resv = :z, b_v_used = :z, b_m_total = :mt, b_m_avail = :mt, "
-                "b_m_resv = :z, b_m_used = :z, b_refunds = :z, b_cfg = :cfg REMOVE b_gf_cutoff, b_trial_start, b_trial_end",
+                "b_m_resv = :z, b_m_used = :z, b_i_total = :it, b_i_avail = :it, b_i_resv = :z, b_i_used = :z, "
+                "b_refunds = :z, b_cfg = :cfg REMOVE b_gf_cutoff, b_trial_start, b_trial_end",
                 {":plan": _s(PLAN_FREE), ":st": _s(ST_FREE), ":no": {"BOOL": False}, ":pid": _s("starter"), ":nver": _n(ent.ver + 1),
-                 ":now": _n(now), ":vt": _n(lim.videos), ":mt": _n(lim.moments), ":z": _n(0), ":cfg": _s(self.cfg.config_version),
+                 ":now": _n(now), ":vt": _n(lim.videos), ":mt": _n(lim.moments), ":it": _n(lim.ideas), ":z": _n(0),
+                 ":cfg": _s(self.cfg.config_version),
                  ":beta": _s(PLAN_BETA), ":cut": _s(cutoff), ":ver": _n(ent.ver)},
                 "b_plan = :beta AND b_gf_cutoff = :cut AND b_ver = :ver")
             if ok:
@@ -728,6 +763,10 @@ class BillingLedger:
         # its item; showing them (as "0 left") next to a subscription_required denial would be wrong.
         counters = (not unlimited) and ent.plan in (PLAN_FREE, PLAN_ADMIN)
         remaining_v, remaining_m = max(ent.v_avail, 0), max(ent.m_avail, 0)
+        ideas_metered = ent.ideas_metered(now)
+        # A pre-meter Free starter has no b_i_* yet: it shows the full starter allowance until its first idea initializes them.
+        i_total = ent.i_total if ent.i_total is not None else self.cfg.free_starter.ideas
+        i_avail = ent.i_avail if ent.i_total is not None else self.cfg.free_starter.ideas
         sub = ent.subscription_status(now)
         if ent.plan == PLAN_PLUS:
             sub_end = ent.grace_end if sub == ST_PLUS_GRACE and ent.grace_end else ent.period_end
@@ -743,6 +782,9 @@ class BillingLedger:
             # contract-1 nor the V2 client prints a counter; legacy counters stored on a Plus record stay in the item, unread.
             "videos": {"total": ent.v_total, "used": ent.v_used, "reserved": ent.v_resv, "remaining": remaining_v} if counters else None,
             "moments": {"total": ent.m_total, "used": ent.m_used, "reserved": ent.m_resv, "remaining": remaining_m} if counters else None,
+            # Contract 3: the AI-idea allowance, Free starter only (null for every unmetered account).
+            "ideas": ({"total": i_total, "used": ent.i_used, "reserved": ent.i_resv, "remaining": max(i_avail, 0)}
+                      if ideas_metered else None),
             "refunds": {"used": ent.refunds, "allowed": 0 if unlimited else self.refund_cap(ent)},
             "upgrade": {"eligible": (free or eff == ST_PLUS_EXPIRED) and not unlimited,
                         "suggest": free and ent.v_used >= 1,     # nudge after the first finished video, never a block
@@ -751,6 +793,7 @@ class BillingLedger:
                 "version": CAPABILITIES_VERSION,
                 "video_generation": CAP_UNLIMITED if unlimited else CAP_METERED,
                 "moment_analysis": CAP_UNLIMITED if unlimited else CAP_METERED,
+                "ai_ideas": CAP_METERED if ideas_metered else CAP_UNLIMITED,
                 # Apple-verified subscription state, independent of the plan label (a grandfathered tester who bought Plus is
                 # `active` here). `ends_at` is the server's verified period (or grace) end: the renewal or expiry date.
                 "subscription": {"status": {ST_PLUS_ACTIVE: "active", ST_PLUS_GRACE: "grace", ST_PLUS_EXPIRED: "expired"}.get(sub or "", "none"),

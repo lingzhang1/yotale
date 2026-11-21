@@ -6,9 +6,10 @@
            nothing is ever denied; would-deny outcomes are logged and counted.
   enforce  the LIVE ledger gates requests: HTTP 402 with a typed error, fail-closed 503 on a billing-store outage.
 
-Two meters (they are independent of `quota_gate`, which keeps protecting spend, rate and concurrency):
+Three meters (they are independent of `quota_gate`, which keeps protecting spend, rate and concurrency):
   video   one credit per SUCCESSFUL video generation (Create, Another Version, Revise are all edit-plan jobs)
   moment  one allowance unit per UNIQUE newly analysed Moment (asset understanding)
+  idea    one unit per SUCCESSFUL in-camera AI idea call (Story Director initialize / next). Free starter only.
 
 Paid-route coverage: every route the throttle classifies as an expensive (paid) class MUST appear in exactly one of
 BILLED_ROUTES or BILLING_EXEMPT below. A test enforces this, so a new paid endpoint cannot ship unclassified.
@@ -49,6 +50,10 @@ BILLED_ROUTES: dict[tuple[str, str], str] = {
     ("POST", "/v1/edit-plan-mm"): "video",       # sync planner (multimodal)
     ("POST", "/v1/edit-plan-jobs"): "video",     # async planner: the path the app uses for Create / Version / Revise
     ("POST", "/v1/asset-understanding"): "moment",
+    # AI ideas while shooting (owner decision 2026-11-21). The app's camera calls initialize once per scan; next is metered too
+    # so the meter cannot be sidestepped. Scene understanding, Story Guide, coverage and reference photos stay exempt.
+    ("POST", "/v1/director/initialize"): "idea",
+    ("POST", "/v1/director/next"): "idea",
 }
 
 # Paid-class routes that deliberately do NOT spend an allowance: Story Guide, AI Ideas and the supporting AI calls stay
@@ -57,13 +62,14 @@ BILLING_EXEMPT: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/v1/creative-intent"), ("POST", "/v1/interpret-revision"), ("POST", "/v1/scene-understanding"),
     ("POST", "/v1/story-coverage"), ("POST", "/v1/story-coverage/v2"), ("POST", "/v1/story-guide"),
     ("POST", "/v1/story-guide-v2"), ("POST", "/v1/story-guide-refine"), ("POST", "/v1/music-plan"),
-    ("POST", "/v1/duration-recommendation"), ("POST", "/v1/director/initialize"), ("POST", "/v1/director/next"),
+    ("POST", "/v1/duration-recommendation"),
     ("POST", "/v1/music/candidates"), ("POST", "/v1/music/search"), ("POST", "/v1/music/analysis"),
     ("POST", "/v1/music/soundtrack"), ("POST", "/v1/scene-image"), ("POST", "/v1/scene-video"),
     ("POST", "/v1/story-coverage/v2/jobs"),   # coverage is analysis support, not a video output
 })
 
 _SYNC_VIDEO = frozenset(k for k, v in BILLED_ROUTES.items() if v == "video" and k[1] != "/v1/edit-plan-jobs")
+_SYNC_IDEA = frozenset(k for k, v in BILLED_ROUTES.items() if v == "idea")
 
 REFUND_REASONS = frozenset({"render_failed", "export_failed", "playback_failed"})
 _STORE_RETRY_AFTER = 30
@@ -163,8 +169,8 @@ def store_unavailable_response() -> JSONResponse:
 class Gate:
     ledger: "BillingLedger"
     uid: str
-    kind: str            # video | moment
-    key: str             # scoped operation id (video) or moment id
+    kind: str            # video | moment | idea
+    key: str             # scoped operation id (video / idea) or moment id
     hold: "Hold"
 
     @property
@@ -185,7 +191,7 @@ def _reserve(request: Request, kind: str, uid: str, key: str):
         return None, None
     enforce = billing_mode() == MODE_ENFORCE
     try:
-        hold = led.reserve_video(uid, key)
+        hold = led.reserve_idea(uid, key) if kind == "idea" else led.reserve_video(uid, key)
     except BillingDenied as d:
         if enforce:
             _metric(request, "BillingDenied", kind)
@@ -211,13 +217,17 @@ def reserve_video(request: Request, uid: str, scoped_op_id: str):
     return _reserve(request, "video", uid, scoped_op_id)
 
 
+def reserve_idea(request: Request, uid: str, op_id: str):
+    return _reserve(request, "idea", uid, op_id)
+
+
 def settle(gate: Optional[Gate]) -> None:
-    """Spend the held video credit. Never raises into the response: an unsettled hold is reconciled by the job sweep, and an
+    """Spend the held video credit (or AI-idea unit). Never raises into the response: an unsettled hold is reconciled by the job sweep, and an
     under-charge is preferred to a failed customer response."""
     if gate is None:
         return
     try:
-        gate.ledger.settle_video(gate.uid, gate.key)
+        (gate.ledger.settle_idea if gate.kind == "idea" else gate.ledger.settle_video)(gate.uid, gate.key)
     except Exception as e:  # noqa: BLE001
         log.warning("billing_settle_error", extra={"kind": gate.kind, "error": str(e)[:160]})
 
@@ -228,7 +238,7 @@ def release(gate: Optional[Gate]) -> None:
     if gate is None or not gate.owns_operation:
         return
     try:
-        gate.ledger.release_video(gate.uid, gate.key)
+        (gate.ledger.release_idea if gate.kind == "idea" else gate.ledger.release_video)(gate.uid, gate.key)
     except Exception as e:  # noqa: BLE001
         log.warning("billing_release_error", extra={"kind": gate.kind, "error": str(e)[:160]})
 
@@ -236,15 +246,18 @@ def release(gate: Optional[Gate]) -> None:
 # ---- sync video routes (middleware) ------------------------------------------------------------------------------
 
 async def billing_middleware(request: Request, call_next):
-    """Gates the SYNCHRONOUS planner routes (the async job route and AU are gated in their handlers, where the
+    """Gates the SYNCHRONOUS planner routes and the in-camera AI idea routes (the async job route and AU are gated in their handlers, where the
     scoped operation id / moment id are known). Registered inside auth so request.state.principal exists."""
     key = (request.method, request.url.path)
-    if key not in _SYNC_VIDEO or billing_mode() == MODE_OFF:
+    if (key not in _SYNC_VIDEO and key not in _SYNC_IDEA) or billing_mode() == MODE_OFF:
         return await call_next(request)
     uid = principal_uid(request)
     if uid is None:
         return await call_next(request)
-    gate, resp = reserve_video(request, uid, f"sync:{uuid.uuid4()}")
+    if key in _SYNC_IDEA:
+        gate, resp = reserve_idea(request, uid, f"idea:{uuid.uuid4()}")
+    else:
+        gate, resp = reserve_video(request, uid, f"sync:{uuid.uuid4()}")
     if resp is not None:
         return resp
     try:
@@ -394,7 +407,7 @@ def _default_capabilities() -> dict:
     """Capabilities when no entitlement exists yet (nothing to read, or billing off): metered, never subscribed."""
     from billing.model import CAP_METERED, CAPABILITIES_VERSION
     return {"version": CAPABILITIES_VERSION, "video_generation": CAP_METERED, "moment_analysis": CAP_METERED,
-            "subscription": {"status": "none", "ends_at": None}}
+            "ai_ideas": CAP_METERED, "subscription": {"status": "none", "ends_at": None}}
 
 
 def entitlement_payload(request: Request, uid: str) -> dict:

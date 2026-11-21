@@ -145,7 +145,7 @@ def test_enforce_allows_the_free_allowance_then_returns_a_typed_402_and_terminal
     assert third.status_code == 402
     body = third.json()
     assert body["error"] == "video_credits_exhausted" and body["action"] == "subscribe"
-    assert body["contract_version"] == 2
+    assert body["contract_version"] == 3
     assert body["entitlement"]["videos"] == {"total": 2, "used": 0, "reserved": 2, "remaining": 0}
     assert len(r.store.enqueued) == 2                                       # the denied job was never enqueued
     denied_job = [j for j in r.store.jobs.values() if j["status"] == "failed"]
@@ -340,7 +340,7 @@ def test_sync_planner_route_settles_on_success_and_releases_on_failure():
 
 def test_entitlement_endpoint_contract_in_each_mode():
     off = Rig("off").c.get("/v1/billing/entitlement", headers=_auth()).json()
-    assert {k: v for k, v in off.items() if k not in ("offer", "capabilities")} == {"contract_version": 2, "billing_mode": "off", "enforced": False}
+    assert {k: v for k, v in off.items() if k not in ("offer", "capabilities")} == {"contract_version": 3, "billing_mode": "off", "enforced": False}
     assert off["capabilities"]["video_generation"] == "metered" and off["capabilities"]["subscription"]["status"] == "none"
 
     obs = Rig("observe").c.get("/v1/billing/entitlement", headers=_auth()).json()
@@ -522,7 +522,7 @@ def test_off_mode_performs_no_billing_reads_or_writes_at_all():
     for i in range(3):
         assert r.submit(f"op{i}").status_code == 202
     body = r.c.get("/v1/billing/entitlement", headers=_auth()).json()
-    assert {k: v for k, v in body.items() if k not in ("offer", "capabilities")} == {"contract_version": 2, "billing_mode": "off", "enforced": False}   # `offer`/`capabilities` are static, not a read     # not even the token record is created
+    assert {k: v for k, v in body.items() if k not in ("offer", "capabilities")} == {"contract_version": 3, "billing_mode": "off", "enforced": False}   # `offer`/`capabilities` are static, not a read     # not even the token record is created
     assert r.ddb.writes == 0 and not [k for k in r.ddb.items if k[0] == uid]
 
 

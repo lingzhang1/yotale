@@ -78,6 +78,7 @@ struct PlusSubscriptionView: View {
             benefitRow("text.bubble", L10n.t("Natural-language video revisions"))
             benefitRow("square.on.square", L10n.t("Different versions from the same footage"))
             benefitRow("infinity", L10n.t("Unlimited AI video creation and editing with Plus"))
+            benefitRow("sparkles", L10n.t("Unlimited AI shooting ideas while you film"))
         } footer: {
             Text("Unlimited means ordinary video creation and editing (Create, Create Another Version and Revise) while your subscription is active. Your videos stay yours if you cancel.")
         }
@@ -86,6 +87,9 @@ struct PlusSubscriptionView: View {
             Section("Your free starter") {
                 LabeledContent("Video credits left", value: "\(v.remaining)")
                 LabeledContent("New Moments you can analyze", value: "\(m.remaining)")
+                if billing.entitlement?.showsIdeaAllowance == true, let i = billing.entitlement?.ideas {
+                    LabeledContent("AI shooting ideas left", value: "\(i.remaining)")
+                }
             }
         }
 

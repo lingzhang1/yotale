@@ -314,7 +314,7 @@ def test_the_v2_payload_still_decodes_with_the_contract1_model(mode):
     subscribe(r.live)
     plus = r.c.get("/v1/billing/entitlement", headers=_auth()).json()
     _assert_contract1_decodes(plus)
-    assert plus["contract_version"] == 2 and plus["offer"]["plus"]["unlimited"] is True
+    assert plus["contract_version"] == 3 and plus["offer"]["plus"]["unlimited"] is True
     if mode != "off" or plus.get("plan"):
         assert plus["videos"] is None and plus["capabilities"]["subscription"]["status"] == "active"
 
