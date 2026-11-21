@@ -624,12 +624,17 @@ describe("P1-G0 per-environment operational policy defaults (defined once, in CD
     const withMode = (env: string, mode: unknown) => ({
       ...committed, environments: { ...committed.environments, [env]: { ...committed.environments[env], billing_mode: mode } } });
 
-    test("every environment is OFF in the committed manifest; API and worker carry exactly it", () => {
-      for (const e of ["development", "beta", "gamma", "production"]) {
-        expect(committed.environments[e].billing_mode).toBe("off");
-        expect(workerEnv(e).STORY_BILLING_MODE).toBe("off");
+    test("committed posture: beta observe, others off, none enforce without approval; API and worker carry exactly it", () => {
+      const want: Record<string, string> = { development: "off", beta: "observe", gamma: "off", production: "off" };
+      for (const e of Object.keys(want)) {
+        expect(committed.environments[e].billing_mode).toBe(want[e]);
+        expect(workerEnv(e).STORY_BILLING_MODE).toBe(want[e]);
+        if (committed.environments[e].billing_mode === "enforce") {
+          expect((committed.approved_overrides ?? []).some((o: any) =>
+            o.setting === "STORY_BILLING_MODE" && o.env === e && String(o.value) === "enforce")).toBe(true);
+        }
       }
-      expect(serviceVars("beta").STORY_BILLING_MODE).toBe("off");
+      expect(serviceVars("beta").STORY_BILLING_MODE).toBe("observe");
       expect(serviceVars("development").STORY_BILLING_MODE).toBe("off");
     });
     test("the manifest is the only source: observe in the manifest reaches API and worker identically", () => {
@@ -652,7 +657,7 @@ describe("P1-G0 per-environment operational policy defaults (defined once, in CD
       const svc = Object.values(t.findResources("AWS::AppRunner::Service")) as any[];
       const vars = Object.fromEntries(svc[0].Properties.SourceConfiguration.ImageRepository.ImageConfiguration
         .RuntimeEnvironmentVariables.map((e: any) => [e.Name, e.Value]));
-      expect(vars.STORY_BILLING_MODE).toBe("off");
+      expect(vars.STORY_BILLING_MODE).toBe("observe");
       delete process.env.STORY_BILLING_MODE;
     });
     test("no STORY_BILLING_PLANS_JSON is ever emitted", () => {

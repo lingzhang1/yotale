@@ -570,14 +570,20 @@ def test_runtime_unknown_provider_fails_explicitly_instead_of_falling_back():
 
 
 # ------------------------------------------------------------------------------------------------ Billing V1 posture
-def test_committed_manifest_keeps_billing_off_everywhere():
+def test_committed_manifest_billing_posture_beta_observe_others_off_never_unapproved_enforce():
     assert {e: p.get("billing_mode") for e, p in COMMITTED["environments"].items()} == {
-        "development": "off", "beta": "off", "gamma": "off", "production": "off"}
+        "development": "off", "beta": "observe", "gamma": "off", "production": "off"}
+    approved = {(o.get("setting"), o.get("env"), str(o.get("value"))) for o in COMMITTED.get("approved_overrides", [])}
+    for e, p in COMMITTED["environments"].items():
+        if p.get("billing_mode") == "enforce":
+            assert ("STORY_BILLING_MODE", e, "enforce") in approved
 
 
 @pytest.mark.parametrize("env", ["development", "beta"])
 def test_billing_mode_must_match_the_release_in_service_and_worker(env):
-    assert "billing_policy" in _codes(_with(_snapshot(env), svc={"STORY_BILLING_MODE": "observe"}))
+    # a service value that differs from the manifest (dev=off, beta=observe) and a worker value that always differs
+    drift = "observe" if env == "development" else "off"
+    assert "billing_policy" in _codes(_with(_snapshot(env), svc={"STORY_BILLING_MODE": drift}))
     assert "billing_policy" in _codes(_with(_snapshot(env), wrk={"STORY_BILLING_MODE": "enforce"}))
 
 
