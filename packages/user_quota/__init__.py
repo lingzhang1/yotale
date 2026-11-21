@@ -193,7 +193,8 @@ class UserQuota:
         return {"story_user_id": {"S": pk}, "quota_period": {"S": period}}
 
     # -- reserve -----------------------------------------------------------------------------------------
-    def reserve(self, story_user_id: str, operation_id: str, *, estimate_usd: float, gens: int = 1) -> Reservation:
+    def reserve(self, story_user_id: str, operation_id: str, *, estimate_usd: float, gens: int = 1,
+                enforce_user_caps: bool = True) -> Reservation:
         """Atomically reserve an allowance + estimated spend for this operation. Idempotent: a retry of the
         SAME operation_id returns the existing reservation WITHOUT double-counting (correction 1). Raises
         QuotaDenied in enforce mode when a per-user OR global cap would be exceeded; QuotaStoreError on a store
@@ -205,7 +206,11 @@ class UserQuota:
         applies if the new per-user totals stay within budget. A SEPARATE `__global__` item tracks month-to-date
         spend across all users (correction 5). When both the per-user and global deltas must apply atomically,
         a TransactWriteItems covers them in one transaction (correction 2/3); failing that it falls back to
-        per-user-first + a best-effort global add whose drift is reconcilable (design doc §2a)."""
+        per-user-first + a best-effort global add whose drift is reconcilable (design doc §2a).
+
+        Billing V2: `enforce_user_caps=False` (a verified active YoTale Plus subscriber) skips ONLY the two per-user caps
+        (`user_monthly_usd`, `user_daily_gens`). The reservation, the USD estimate/settlement (cost attribution) and the GLOBAL
+        breaker are unchanged, so spend is still recorded and the shared breaker still protects the service."""
         rid = reservation_id(operation_id)
         period = _period()
         enforce = quota_mode() == "enforce"
@@ -246,9 +251,9 @@ class UserQuota:
                 cur_res = float(cur.get("reserved_usd", {}).get("N", "0"))
                 cur_set = float(cur.get("settled_usd", {}).get("N", "0"))
                 cur_gens = float(cur.get(gens_attr, {}).get("N", "0"))  # TODAY's gens only
-                if cur_res + cur_set + estimate_usd > c.user_monthly_usd:
+                if enforce_user_caps and cur_res + cur_set + estimate_usd > c.user_monthly_usd:
                     raise QuotaDenied("user_monthly_usd")
-                if cur_gens + gens > c.user_daily_gens:
+                if enforce_user_caps and cur_gens + gens > c.user_daily_gens:
                     raise QuotaDenied("user_daily_gens")
             # Idempotency-only guard (both modes). Arithmetic budget enforcement is done above in app code.
             cond = "attribute_not_exists(#r)"
@@ -281,7 +286,7 @@ class UserQuota:
                 except Exception as e:  # noqa: BLE001
                     if _is_conditional_failure(e):
                         return self._reserve_conditional_recover(story_user_id, period, marker, rid,
-                                                                 estimate_usd, gens)
+                                                                 estimate_usd, gens, enforce_user_caps)
                     # TRANSIENT conflict on the shared __global__ item (concurrent reservers): retry the SAME
                     # idempotent transaction a few times before giving up. A conflict is NOT a quota denial.
                     if _is_transient_conflict(e):
@@ -299,7 +304,7 @@ class UserQuota:
                             except Exception as e2:  # noqa: BLE001
                                 if _is_conditional_failure(e2):
                                     return self._reserve_conditional_recover(story_user_id, period, marker,
-                                                                             rid, estimate_usd, gens)
+                                                                             rid, estimate_usd, gens, enforce_user_caps)
                                 if _is_transient_conflict(e2):
                                     time.sleep(0.05 * (_attempt + 1)); continue
                                 _log_quota_store_error("reserve.transact.retry", e2)
@@ -318,12 +323,12 @@ class UserQuota:
             raise
         except Exception as e:  # noqa: BLE001
             if _is_conditional_failure(e):
-                return self._reserve_conditional_recover(story_user_id, period, marker, rid, estimate_usd, gens)
+                return self._reserve_conditional_recover(story_user_id, period, marker, rid, estimate_usd, gens, enforce_user_caps)
             # A transient conflict or any other store error is a STORE failure, never a quota denial (owner §6).
             _log_quota_store_error("reserve.fallback", e)
             raise QuotaStoreError(str(e)[:200]) from e
 
-    def _reserve_conditional_recover(self, story_user_id, period, marker, rid, estimate_usd, gens):
+    def _reserve_conditional_recover(self, story_user_id, period, marker, rid, estimate_usd, gens, enforce_user_caps=True):
         again = self._c().get_item(
             TableName=self.usage_table, Key=self._key(story_user_id, period)).get("Item") or {}
         if marker in again:
@@ -335,9 +340,9 @@ class UserQuota:
         cur_gens = float(again.get(_day(), {}).get("N", "0"))  # TODAY's daily gens bucket
         cur_res = float(again.get("reserved_usd", {}).get("N", "0"))
         cur_set = float(again.get("settled_usd", {}).get("N", "0"))
-        if cur_gens + gens > c.user_daily_gens:
+        if enforce_user_caps and cur_gens + gens > c.user_daily_gens:
             raise QuotaDenied("user_daily_gens")
-        if cur_res + cur_set + estimate_usd > c.user_monthly_usd:
+        if enforce_user_caps and cur_res + cur_set + estimate_usd > c.user_monthly_usd:
             raise QuotaDenied("user_monthly_usd")
         # Neither per-user bound is breached. The ONLY remaining genuine conditional cause is the GLOBAL
         # breaker, and ONLY if the global spend actually exceeds the cap — confirm against the live __global__

@@ -27,7 +27,11 @@ DENIAL_CODES = (TRIAL_EXPIRED, VIDEO_CREDITS_EXHAUSTED, MOMENT_ALLOWANCE_EXHAUST
 
 ACTION_SUBSCRIBE, ACTION_WAIT_RENEWAL, ACTION_CONTACT = "subscribe", "wait_for_renewal", "contact_support"
 
-CONTRACT_VERSION = 1
+# 2 = Billing V2 (additive over 1): unlimited Plus, `capabilities`, null allowances for unlimited accounts. Every key the
+# contract-1 client requires is still present (see apps/api/tests/test_billing_v2_contract.py and the Swift compat test).
+CONTRACT_VERSION = 2
+CAPABILITIES_VERSION = 1
+CAP_UNLIMITED, CAP_METERED = "unlimited", "metered"
 
 
 class BillingDenied(Exception):
@@ -56,6 +60,9 @@ class Hold:
     state: str                     # reserved | settled | released | unlimited
     charged: bool
     reason: str = ""               # why not charged: idempotent | already_analyzed | in_flight | unlimited
+    # Billing V2: this call OWNS the operation record (it created or reclaimed the reservation), whether or not it took a counter.
+    # An unlimited (unmetered) hold owns its record without a charge; it must still settle or release it.
+    owns: bool = False
 
 
 @dataclass
@@ -81,6 +88,13 @@ class Entitlement:
     refunds: int = 0
     orig_txn: Optional[str] = None
     gf_cutoff: Optional[str] = None      # rollout cutoff of the grandfathering cohort (audit + cohort rollback)
+    # Billing V2 (S8): an Apple subscription bought by a beta_grandfathered / admin_granted account is recorded HERE, beside the
+    # plan, so the purchase is visible and a grandfather rollback converts the account to Plus instead of losing the subscription.
+    sub_status: Optional[str] = None
+    sub_period_id: Optional[str] = None
+    sub_period_start: Optional[int] = None
+    sub_period_end: Optional[int] = None
+    sub_grace_end: Optional[int] = None
     ver: int = 1
     cfg: str = ""
     created: int = 0
@@ -95,6 +109,31 @@ class Entitlement:
         if self.status == ST_ADMIN and self.period_end is not None and now > self.period_end:
             return ST_PLUS_EXPIRED
         return self.status
+
+    def subscription_status(self, now: int) -> Optional[str]:
+        """Effective Apple subscription status (plus_active | plus_grace | plus_expired) or None when the account never subscribed.
+        For a Plus account it is the plan status; for a grandfathered/admin account it is the side record (S8)."""
+        if self.plan == PLAN_PLUS:
+            return self.effective_status(now)
+        if not self.sub_status:
+            return None
+        if self.sub_status == ST_PLUS_ACTIVE and self.sub_period_end is not None and now > self.sub_period_end:
+            return ST_PLUS_EXPIRED
+        if self.sub_status == ST_PLUS_GRACE and self.sub_grace_end is not None and now > self.sub_grace_end:
+            return ST_PLUS_EXPIRED
+        return self.sub_status
+
+    def has_active_subscription(self, now: int) -> bool:
+        return self.subscription_status(now) in (ST_PLUS_ACTIVE, ST_PLUS_GRACE)
+
+    def unlimited_at(self, now: int) -> bool:
+        """Billing V2: unlimited is DERIVED at read time, never stored for Plus (B4). Expiry is checked FIRST, so a lapsed Plus
+        can never keep unlimited access. The stored `unlimited` flag is only ever set by grandfathering."""
+        if self.has_active_subscription(now):
+            return True
+        if self.effective_status(now) == ST_PLUS_EXPIRED:
+            return False
+        return self.unlimited or self.effective_status(now) == ST_BETA
 
     def trial_state(self, now: int) -> str:
         if self.plan != PLAN_FREE:

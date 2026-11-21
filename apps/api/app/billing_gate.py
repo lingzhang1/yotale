@@ -88,6 +88,42 @@ def _ledger(request: Request) -> Optional["BillingLedger"]:
     return cache[mode]
 
 
+def _live_ledger(request: Request) -> Optional["BillingLedger"]:
+    """The LIVE ledger, whatever STORY_BILLING_MODE is (Apple purchases are only ever written there). None when unprovisioned."""
+    if billing_mode() == MODE_ENFORCE:
+        led = _ledger(request)
+        if led is not None:
+            return led
+    ov = getattr(request.app.state, "_apple_billing_override", None)
+    if ov is not None:
+        return ov.ledger
+    ov = getattr(request.app.state, "_live_billing_ledger_override", None)
+    if ov is not None:
+        return ov
+    if not os.environ.get("STORY_USER_USAGE_TABLE", ""):
+        return None
+    led = getattr(request.app.state, "_live_billing_ledger", None)
+    if led is None:
+        led = request.app.state._live_billing_ledger = BillingLedger(shadow=False)
+    return led
+
+
+def live_plus_active(request: Request, uid: str) -> bool:
+    """Billing V2: does this account hold a VERIFIED, currently active (or grace) Apple subscription, read from the live ledger in
+    EVERY billing mode? Used to exempt a paying subscriber from the per-user quota caps (user_monthly_usd, user_daily_gens) and to
+    keep observe mode from logging would-deny for a paying customer (S2). Never raises; any read failure answers False, so the
+    caller falls back to the NORMAL caps (never uncapped). Read-only: never creates an entitlement."""
+    try:
+        led = _live_ledger(request)
+        if led is None:
+            return False
+        ent = led.get_entitlement(uid)
+        return bool(ent is not None and ent.has_active_subscription(led._now()))
+    except Exception as e:  # noqa: BLE001
+        log.warning("billing_live_plus_read_error", extra={"error": f"{type(e).__name__}"[:80]})
+        return False
+
+
 def principal_uid(request: Request) -> Optional[str]:
     p = getattr(request.state, "principal", None)
     if p is None or getattr(p, "is_legacy", False) or not getattr(p, "story_user_id", None):
@@ -131,6 +167,12 @@ class Gate:
     def owns_charge(self) -> bool:
         return bool(self.hold.charged)
 
+    @property
+    def owns_operation(self) -> bool:
+        """Billing V2: this call created (or reclaimed) the operation RECORD. An unlimited (unmetered) hold owns its record
+        without a charge, and must still release it when the operation fails."""
+        return bool(self.hold.owns)
+
 
 def _reserve(request: Request, kind: str, uid: str, key: str):
     """Returns (gate | None, response | None). `response` is set only in enforce mode and is the 402/503 to return."""
@@ -145,6 +187,10 @@ def _reserve(request: Request, kind: str, uid: str, key: str):
             _metric(request, "BillingDenied", kind)
             log.info("billing_denied", extra={"kind": kind, "code": d.code, "story_user_id": uid})
             return None, denial_response(d)
+        if led.shadow and live_plus_active(request, uid):
+            # S2: the shadow ledger models a paying subscriber as a Free starter. Not a would-deny: Plus is unlimited.
+            _metric(request, "BillingObservePlus", kind)
+            return None, None
         _metric(request, "BillingWouldDeny", kind)
         log.info("billing_would_deny", extra={"kind": kind, "code": d.code, "story_user_id": uid})
         return None, None
@@ -175,7 +221,7 @@ def settle(gate: Optional[Gate]) -> None:
 def release(gate: Optional[Gate]) -> None:
     """Return a held video credit after a failed operation. Only the call that OWNS the charge releases it, so a duplicate
     request failing cannot refund a charge that another request is still earning."""
-    if gate is None or not gate.owns_charge:
+    if gate is None or not gate.owns_operation:
         return
     try:
         gate.ledger.release_video(gate.uid, gate.key)
@@ -271,6 +317,9 @@ async def run_analysis(request: Request, uid: str, moment_id: str, *, frames, cl
                 _metric(request, "BillingDenied", "moment")
                 log.info("billing_denied", extra={"kind": "moment", "code": d.code, "story_user_id": uid})
                 return None, None, denial_response(d)
+            if led.shadow and await run_in_threadpool(live_plus_active, request, uid):
+                _metric(request, "BillingObservePlus", "moment")          # S2: a paying subscriber is never a would-deny
+                return await analyze(), None, None
             _metric(request, "BillingWouldDeny", "moment")
             log.info("billing_would_deny", extra={"kind": "moment", "code": d.code, "story_user_id": uid})
             return await analyze(), None, None
@@ -323,19 +372,31 @@ async def run_analysis(request: Request, uid: str, moment_id: str, *, frames, cl
 
 # ---- read model --------------------------------------------------------------------------------------------------
 
+# Contract-1 (B3) clients decode `offer.plus.videos` / `offer.plus.moments` as NON-optional Ints; dropping or nulling them makes the
+# whole entitlement fail to decode (B5). They are kept ONLY for that decode and are not a limit: Plus is unlimited and nothing reads
+# these numbers on the server. V2 clients read `offer.plus.unlimited`. shortcut: remove once no contract-1 build is in use.
+_LEGACY_OFFER_VIDEOS, _LEGACY_OFFER_MOMENTS = 12, 100
+
+
 def offer_payload() -> dict:
-    """What a Plus subscription grants, from the reviewed config (never hard-coded in the app). Present in EVERY mode so the
-    paywall can state the real allowances. The price is not here: Apple's StoreKit supplies the localized price."""
+    """What a Plus subscription grants. Present in EVERY mode so the paywall can state it. The price is not here: Apple's StoreKit
+    supplies the localized price."""
     from billing.apple import PLUS_PRODUCT_ID
-    from billing import BillingConfig
-    c = BillingConfig()
-    return {"plus": {"product_id": PLUS_PRODUCT_ID, "videos": c.plus.videos, "moments": c.plus.moments}}
+    return {"plus": {"product_id": PLUS_PRODUCT_ID, "unlimited": True,
+                     "videos": _LEGACY_OFFER_VIDEOS, "moments": _LEGACY_OFFER_MOMENTS}}
+
+
+def _default_capabilities() -> dict:
+    """Capabilities when no entitlement exists yet (nothing to read, or billing off): metered, never subscribed."""
+    from billing.model import CAP_METERED, CAPABILITIES_VERSION
+    return {"version": CAPABILITIES_VERSION, "video_generation": CAP_METERED, "moment_analysis": CAP_METERED,
+            "subscription": {"status": "none", "ends_at": None}}
 
 
 def entitlement_payload(request: Request, uid: str) -> dict:
     mode = billing_mode()
     base = {"contract_version": CONTRACT_VERSION, "billing_mode": mode, "enforced": mode == MODE_ENFORCE,
-            "offer": offer_payload()}
+            "offer": offer_payload(), "capabilities": _default_capabilities()}
     led = _ledger(request)
     if led is None:
         # `off` (or unprovisioned). Meters are not read. When Apple purchases are possible (usage table configured) the app still
@@ -353,6 +414,11 @@ def entitlement_payload(request: Request, uid: str) -> dict:
         return base
     try:
         view = led.entitlement_view(uid)
+        if led.shadow and live_plus_active(request, uid):
+            # observe: the shadow ledger is for hypothetical counters only; a paying subscriber must see the LIVE (Plus) view
+            live = _live_ledger(request)
+            if live is not None:
+                view = live.entitlement_view(uid, create=False)
         token = led.get_or_create_apple_account_token(uid)   # identity item: same in observe and enforce
     except BillingStoreError:
         base["error"] = "billing_unavailable"
