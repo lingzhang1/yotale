@@ -23,13 +23,16 @@ TRIAL_EXPIRED = "trial_expired"
 VIDEO_CREDITS_EXHAUSTED = "video_credits_exhausted"
 MOMENT_ALLOWANCE_EXHAUSTED = "moment_allowance_exhausted"
 SUBSCRIPTION_REQUIRED = "subscription_required"
-DENIAL_CODES = (TRIAL_EXPIRED, VIDEO_CREDITS_EXHAUSTED, MOMENT_ALLOWANCE_EXHAUSTED, SUBSCRIPTION_REQUIRED)
+AI_IDEA_ALLOWANCE_EXHAUSTED = "ai_idea_allowance_exhausted"
+DENIAL_CODES = (TRIAL_EXPIRED, VIDEO_CREDITS_EXHAUSTED, MOMENT_ALLOWANCE_EXHAUSTED, SUBSCRIPTION_REQUIRED, AI_IDEA_ALLOWANCE_EXHAUSTED)
 
 ACTION_SUBSCRIBE, ACTION_WAIT_RENEWAL, ACTION_CONTACT = "subscribe", "wait_for_renewal", "contact_support"
 
 # 2 = Billing V2 (additive over 1): unlimited Plus, `capabilities`, null allowances for unlimited accounts. Every key the
 # contract-1 client requires is still present (see apps/api/tests/test_billing_v2_unlimited_plus.py and the Swift compat test).
-CONTRACT_VERSION = 2
+# 3 = AI-idea meter (additive over 2): `ideas` allowance (null unless metered), capabilities.ai_ideas, denial code
+# ai_idea_allowance_exhausted. Every contract-2 key is unchanged.
+CONTRACT_VERSION = 3
 CAPABILITIES_VERSION = 1
 CAP_UNLIMITED, CAP_METERED = "unlimited", "metered"
 
@@ -55,7 +58,7 @@ class TransactionBoundElsewhere(Exception):
 class Hold:
     """Result of a reserve call. `charged` is False when the call consumed nothing (idempotent repeat,
     already-analyzed Moment, unlimited plan, in-flight duplicate)."""
-    kind: str                      # video | moment
+    kind: str                      # video | moment | idea
     key: str                       # reservation id (video) or moment id
     state: str                     # reserved | settled | released | unlimited
     charged: bool
@@ -85,6 +88,12 @@ class Entitlement:
     m_avail: int = 0
     m_resv: int = 0
     m_used: int = 0
+    # AI-idea meter. None = the counters were never written (an entitlement created before billing-config/4); the ledger
+    # initializes them lazily to the Free starter allowance on the first metered idea.
+    i_total: Optional[int] = None
+    i_avail: int = 0
+    i_resv: int = 0
+    i_used: int = 0
     refunds: int = 0
     orig_txn: Optional[str] = None
     gf_cutoff: Optional[str] = None      # rollout cutoff of the grandfathering cohort (audit + cohort rollback)
@@ -134,6 +143,11 @@ class Entitlement:
         if self.effective_status(now) == ST_PLUS_EXPIRED:
             return False
         return self.unlimited or self.effective_status(now) == ST_BETA
+
+    def ideas_metered(self, now: int) -> bool:
+        """The AI-idea meter applies ONLY to a Free starter. Plus, grandfathered and admin-granted accounts are unmetered for
+        ideas (a lapsed Plus is refused by the subscription check before this matters)."""
+        return self.plan == PLAN_FREE and not self.unlimited_at(now)
 
     def trial_state(self, now: int) -> str:
         if self.plan != PLAN_FREE:

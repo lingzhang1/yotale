@@ -36,6 +36,7 @@ struct ContinuousCaptureView: View {
     @State private var reticleToken = 0
     @State private var zoomDialActive = false
     @State private var showLocationExplainer = false
+    @State private var showPlusForIdeas = false   // Billing V2: the AI-idea allowance is spent
     @Environment(AuthStore.self) private var auth
     @State private var cloudGate = CloudAuthGateModel()
     // Once-ever (persisted): the benefit explainer is shown a single time, not on every camera open.
@@ -142,6 +143,7 @@ struct ContinuousCaptureView: View {
         .fullScreenCover(isPresented: $showLibrary) {
             NavigationStack { MomentsLibraryView(libraryContext: .recentBrowse) }
         }
+        .sheet(isPresented: $showPlusForIdeas) { PlusSubscriptionView(denial: model.ideaDenial) }
         .sheet(isPresented: $showFraming) {
             if let video = model.currentIdeaVideo {
                 ShotFramingVideoReferenceView(
@@ -594,8 +596,14 @@ struct ContinuousCaptureView: View {
         HStack(spacing: 10) {
             Text(msg).font(.system(size: 14)).foregroundStyle(ink.opacity(0.9))
             Spacer()
-            Button("Try again") { cloudGate.run { model.scanAgain() } }
-                .font(.system(size: 14, weight: .medium)).foregroundStyle(gold)
+            if let denial = model.ideaDenial, denial.canUpgrade {
+                // Billing V2: AI ideas are spent for the Free starter. No plain retry; recording keeps working.
+                Button("See YoTale Plus") { showPlusForIdeas = true }
+                    .font(.system(size: 14, weight: .medium)).foregroundStyle(gold)
+            } else if model.ideaDenial == nil {
+                Button("Try again") { cloudGate.run { model.scanAgain() } }
+                    .font(.system(size: 14, weight: .medium)).foregroundStyle(gold)
+            }
             Button { model.dismissIdeas() } label: {
                 Image(systemName: "xmark").font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(ink.opacity(0.6))

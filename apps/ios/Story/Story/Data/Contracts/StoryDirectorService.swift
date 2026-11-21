@@ -16,6 +16,7 @@ enum StoryDirectorServiceError: Error, LocalizedError {
     case badStatus(Int)
     case encoding(Error)
     case decoding(Error)
+    case entitlementDenied(BillingDenial)   // 402 — the Free starter's AI-idea allowance (or trial) is spent; recording still works
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +25,7 @@ enum StoryDirectorServiceError: Error, LocalizedError {
         case .badStatus(let c): return L10n.t("Unexpected response (\(c)). Please try again.")
         case .encoding: return L10n.t("Couldn't prepare the request. Please try again.")
         case .decoding: return L10n.t("Story returned something unexpected. Please try again.")
+        case .entitlementDenied(let d): return d.message
         }
     }
 }
@@ -98,6 +100,7 @@ struct StoryDirectorService {
             throw StoryDirectorServiceError.badStatus(-1)
         }
         if http.statusCode == 503 { throw StoryDirectorServiceError.unavailable }
+        if http.statusCode == 402 { throw StoryDirectorServiceError.entitlementDenied(BillingDenial.parse(data)) }
         guard http.statusCode == 200 else {
             throw StoryDirectorServiceError.badStatus(http.statusCode)
         }

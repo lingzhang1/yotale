@@ -261,6 +261,9 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     }
 
     private(set) var ideas: [DirectorDecisionDTO] = []
+    /// Billing V2 AI-idea meter: set when the server refused an idea (402). The camera keeps recording; the failure note
+    /// offers YoTale Plus instead of a plain "Try again" (a retry cannot succeed until the allowance changes).
+    @Published private(set) var ideaDenial: BillingDenial?
     private(set) var ideasOutput: DirectorOutputDTO?   // for concept/shot lookups
     private var recordingTimer: Timer?
     private var recordingStartedAt: Date?
@@ -527,6 +530,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         aiGeneration &+= 1
         let gen = aiGeneration
         ideas = []; ideasOutput = nil; ideaIndex = 0
+        ideaDenial = nil
         seededIdea = nil            // Rescan replaces the seeded guide idea with live, scene-specific ideas
         currentIdeaImage = nil      // drop any shown photo; new generation key means no stale reuse
         currentIdeaVideo = nil      // Phase 1B: drop any shown video too
@@ -590,6 +594,11 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
                 aiState = .ideas
                 loadReferenceMediaForCurrentIdea()   // async photo/video for idea 0; never blocks the card
             }
+        } catch StoryDirectorServiceError.entitlementDenied(let denial) {
+            // Billing V2: the Free starter's AI ideas are spent. Recording is untouched; offer the upgrade.
+            guard gen == aiGeneration else { return }
+            ideaDenial = denial
+            aiState = .failed(denial.message)
         } catch {
             // AI failure / quota exhaustion must NOT disable recording — just report, if still current.
             guard gen == aiGeneration else { return }

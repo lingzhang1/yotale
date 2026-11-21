@@ -48,6 +48,7 @@ struct BillingCapabilities: Decodable, Equatable {
     let version: Int?
     let videoGeneration: String?    // unlimited | metered
     let momentAnalysis: String?
+    let aiIdeas: String?            // contract 3: unlimited | metered (AI ideas while shooting)
     let subscription: Subscription?
 }
 
@@ -67,6 +68,7 @@ struct BillingEntitlement: Decodable, Equatable {
     let period: BillingPeriod?
     let videos: BillingAllowance?
     let moments: BillingAllowance?
+    let ideas: BillingAllowance?        // contract 3: AI ideas while shooting, Free starter only (null otherwise)
     let upgrade: BillingUpgrade?
     let appleAppAccountToken: String?   // the UUID the purchase must carry as `appAccountToken`
     let capabilities: BillingCapabilities?
@@ -90,6 +92,8 @@ struct BillingEntitlement: Decodable, Equatable {
     /// enforces it. Never for Plus or grandfathered accounts (S6).
     /// S1: also gated on plan, so a lapsed Plus account never shows leftover starter counters (the server omits them too).
     var showsAllowances: Bool { enforced && !isUnlimited && (plan == "free_starter" || plan == "admin_granted") && videos != nil }
+    /// The AI-idea counter shows only for an enforced Free starter that the server reports as metered for ideas.
+    var showsIdeaAllowance: Bool { enforced && !isUnlimited && plan == "free_starter" && ideas != nil }
 }
 
 /// A 402 body: `{"error": <code>, "action": <action>, "contract_version": 1, "entitlement": {...}}`.
@@ -98,6 +102,7 @@ enum BillingDenialCode: String {
     case videoCreditsExhausted = "video_credits_exhausted"
     case momentAllowanceExhausted = "moment_allowance_exhausted"
     case subscriptionRequired = "subscription_required"
+    case aiIdeaAllowanceExhausted = "ai_idea_allowance_exhausted"
     case unknown
 }
 
@@ -139,6 +144,9 @@ struct BillingDenial: Equatable {
             return action == "subscribe"
                 ? L10n.t("You've used your free Moment analysis. Your footage is still saved. Upgrade to YoTale Plus to analyze more.")
                 : L10n.t("You've used the Moment analysis included in your grant. Your footage is still saved. Contact support to extend it.")
+        case .aiIdeaAllowanceExhausted:
+            // Recording is never blocked: only the AI shooting ideas need an upgrade.
+            return L10n.t("You've used your free AI shooting ideas. You can keep recording. Upgrade to YoTale Plus for unlimited ideas.")
         case .subscriptionRequired, .unknown:
             return L10n.t("This needs a YoTale Plus subscription.")
         }

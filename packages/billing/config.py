@@ -50,11 +50,14 @@ def validate_billing_config() -> str:
 class PlanLimits:
     videos: int
     moments: int
+    # Billing V2 AI-idea meter (owner decision 2026-11-21): one unit per successful in-camera AI idea call
+    # (/v1/director/initialize or /v1/director/next). Metered for the Free starter only; every other plan is unmetered.
+    ideas: int = 50
 
 
 @dataclass(frozen=True)
 class BillingConfig:
-    free_starter: PlanLimits = PlanLimits(videos=2, moments=30)
+    free_starter: PlanLimits = PlanLimits(videos=2, moments=30, ideas=50)
     # Billing V2 (owner decision 2026-11-20): YoTale Plus is UNLIMITED ordinary creation and analysis while the subscription is active
     # or in grace. There is deliberately no Plus PlanLimits: unlimited is derived from plan + effective status at read time
     # (Entitlement.unlimited_at), never stored, and no finite Plus totals are written. Operational protection (rate limits, active-job
@@ -71,10 +74,10 @@ class BillingConfig:
     moment_stale_s: int = 300
     # How long an identical in-flight analysis request waits for the one that owns the work before answering "in progress".
     analysis_wait_s: float = 25.0
-    config_version: str = "billing-config/3"     # 3 = Billing V2: unlimited Plus, no finite Plus totals
+    config_version: str = "billing-config/4"     # 3 = Billing V2: unlimited Plus, no finite Plus totals; 4 = AI-idea meter
 
     def validate(self) -> None:
-        if self.free_starter.videos < 0 or self.free_starter.moments < 0:
+        if self.free_starter.videos < 0 or self.free_starter.moments < 0 or self.free_starter.ideas < 0:
             raise BillingConfigError("free_starter allowances must be non-negative")
         if self.trial_days < 1 or self.refunds_per_period < 0 or self.free_refunds < 0 or self.refund_window_s < 0 or self.moment_stale_s < 30:
             raise BillingConfigError("invalid trial/refund/stale configuration")
