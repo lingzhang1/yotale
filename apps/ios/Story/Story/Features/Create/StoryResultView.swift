@@ -122,6 +122,7 @@ struct StoryResultView: View {
     // the status card shows the actual stage, never a made-up % or ETA. nil when no op is in flight.
     @State private var generationPhase: String?
     @State private var generationFailed: String?        // failureCategory of a failed op (honest message)
+    @State private var showPlusFromRefusal = false       // Billing V2: a background attempt was refused with a 402
     @State private var showExport = false                // consolidated Save-or-Share sheet
     // R7-D — cloud-restore of the generated MP4 when the local file is absent but a verified backup exists.
     @State private var restoring = false
@@ -245,6 +246,7 @@ struct StoryResultView: View {
                 player = AVPlayer(url: RenderOutputStore.shared.absoluteURL(for: relativePath))
             }
             .task { await observePendingRecovery() }
+            .sheet(isPresented: $showPlusFromRefusal) { PlusSubscriptionView() }
 
             versionChipRow
             actionPanel
@@ -385,6 +387,10 @@ struct StoryResultView: View {
                 }
                 Text(failureMessage(failed)).font(StoryTheme.body(12))
                     .foregroundStyle(StoryTheme.cream.opacity(0.6))
+                if failed == StoryCreationCoordinator.refusedCategoryBilling {
+                    StoryPrimaryButton(title: "See YoTale Plus") { showPlusFromRefusal = true }
+                        .padding(.top, 6)
+                }
             }
             .padding(14)
             .background(StoryTheme.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 14))
@@ -416,6 +422,11 @@ struct StoryResultView: View {
     /// unsatisfiable directive set).
     private func failureMessage(_ category: String) -> String {
         switch category {
+        case StoryCreationCoordinator.refusedCategoryBilling:
+            // Billing V2: the server refused the attempt (402). The current version is untouched; no plain retry.
+            return L10n.t("Upgrade to keep creating. Your current version is saved.")
+        case StoryCreationCoordinator.refusedCategoryQuota:
+            return L10n.t("You've reached a usage limit. Your current version is saved.")
         case "invalid_after_repair":
             // This category alone does NOT tell us the instruction was at fault (it also covers mechanical
             // planner errors and requests with no directives). Don't blame the user's instruction or tell them
@@ -450,6 +461,15 @@ struct StoryResultView: View {
             let desc = FetchDescriptor<PendingOperationModel>(predicate: #Predicate { $0.storyId == sid })
             return (try? context.fetch(desc))?.first { $0.isRecoverable }
         }
+        // Refused-attempt rows touched since this screen started observing (an older refusal is not re-announced).
+        let observeStart = Date.now.addingTimeInterval(-120)
+        func refusedRow() -> PendingOperationModel? {
+            let desc = FetchDescriptor<PendingOperationModel>(predicate: #Predicate { $0.storyId == sid })
+            return ((try? context.fetch(desc)) ?? []).filter {
+                !$0.isRecoverable && ($0.failureCategory == StoryCreationCoordinator.refusedCategoryBilling
+                                      || $0.failureCategory == StoryCreationCoordinator.refusedCategoryQuota)
+            }.max { $0.updatedAt < $1.updatedAt }
+        }
         baselineOutputCount = freshOutputs().count
         let probe = StoryCreationCoordinator(planner: EditPlannerService(), context: context)
         for _ in 0..<150 {   // ~5 min at 2s
@@ -469,6 +489,11 @@ struct StoryResultView: View {
             // Done with nothing new: the op finished/failed/abandoned (pending row gone) and no extra output.
             if !hasPending && outs.count <= baselineOutputCount {
                 pendingInFlight = false; generationPhase = nil
+                // Billing V2: a refused attempt (402 / 429 cap) ends its row as abandoned, so the recoverable-row read
+                // above sees nothing. Surface the refusal instead of the banner silently vanishing.
+                if let refused = refusedRow(), refused.updatedAt >= observeStart {
+                    generationFailed = refused.failureCategory
+                }
                 return
             }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
