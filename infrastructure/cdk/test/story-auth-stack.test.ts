@@ -14,12 +14,7 @@ function synth(context: Record<string, unknown> = {}): Template {
 describe("StoryAuthStack (P0 Beta Auth, Increment 1)", () => {
   const template = synth();
   // A second synth WITH Apple creds present (simulates post-Apple-portal provisioning).
-  const withApple = synth({
-    applePrivateKey: "-----BEGIN PRIVATE KEY-----\nTESTKEY\n-----END PRIVATE KEY-----",
-    appleServicesId: "com.story.signin",
-    appleTeamId: "TEAM123456",
-    appleKeyId: "KEY1234567",
-  });
+  const withApple = synth({ appleSecretName: "YoTale-Apple-SignIn-Test" });
 
   test("provisions exactly one Cognito user pool", () => {
     template.resourceCountIs("AWS::Cognito::UserPool", 1);
@@ -80,11 +75,26 @@ describe("StoryAuthStack (P0 Beta Auth, Increment 1)", () => {
     expect(triggers.VerifyAuthChallengeResponse).toBeUndefined();
   });
 
-  test("Sign in with Apple IdP is configured WHEN Apple creds are supplied", () => {
+  test("Sign in with Apple IdP is configured WHEN an Apple secret name is supplied", () => {
     withApple.hasResourceProperties("AWS::Cognito::UserPoolIdentityProvider", {
       ProviderType: "SignInWithApple",
       ProviderName: "SignInWithApple",
+      ProviderDetails: Match.objectLike({ authorize_scopes: "email name" }),
     });
+  });
+
+  test("Apple credentials are Secrets Manager dynamic references, never literal key material", () => {
+    const idps = withApple.findResources("AWS::Cognito::UserPoolIdentityProvider");
+    const [logicalId] = Object.keys(idps);
+    expect(logicalId).toMatch(/^AppleIdp/); // stable logical id (no replacement on upgrade)
+    const details = idps[logicalId].Properties.ProviderDetails;
+    for (const [prop, field] of [
+      ["client_id", "services_id"], ["team_id", "team_id"], ["key_id", "key_id"], ["private_key", "private_key"],
+    ]) {
+      expect(details[prop]).toBe(`{{resolve:secretsmanager:YoTale-Apple-SignIn-Test:SecretString:${field}::}}`);
+    }
+    const whole = JSON.stringify(withApple.toJSON());
+    expect(whole).not.toContain("BEGIN PRIVATE KEY");
   });
 
   test("dev-provision reality: NO Apple IdP without creds; EMAIL_OTP still works (correction 9)", () => {
