@@ -215,6 +215,17 @@
         }
       }
     },
+    "AI shooting ideas left" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余 AI 拍摄建议"
+          }
+        }
+      }
+    },
     "Arrange Moments (sheet title)" : {
       "comment" : "Title of the Moment-sequence sheet. English matches \"Arrange Moments\"; Chinese uses the short in-context form.",
       "extractionState" : "manual",
@@ -455,6 +466,17 @@
         }
       }
     },
+    "Unlimited AI shooting ideas while you film" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拍摄时无限次获取 AI 拍摄建议"
+          }
+        }
+      }
+    },
     "Unlimited AI video creation and editing with Plus" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -561,6 +583,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "你已用完赠送的视频额度。如需延长，请联系客服。"
+          }
+        }
+      }
+    },
+    "You've used your free AI shooting ideas. You can keep recording. Upgrade to YoTale Plus for unlimited ideas." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已用完免费的 AI 拍摄建议。你仍可继续录制。升级到 YoTale Plus 即可无限使用。"
           }
         }
       }
