@@ -21,4 +21,4 @@ STORY_ENV_REDIRECT_URI = story:$(SLASH)$(SLASH)auth
 // Apple Sign In availability (baked into Info.plist as StoryAppleSignInAvailable). 0 until the
 // SignInWithApple identity provider exists on this environment's Cognito pool; scripts/release_config_gate.py
 // requires an explicit 0/1 and, for 1, verifies the IdP on the pool (post-deploy).
-STORY_APPLE_SIGNIN_AVAILABLE = 0
+STORY_APPLE_SIGNIN_AVAILABLE = 1
