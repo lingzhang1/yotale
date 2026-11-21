@@ -211,6 +211,28 @@
         }
       }
     },
+    "Check again" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "再次检查"
+          }
+        }
+      }
+    },
+    "Confirming your subscription…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在确认你的订阅…"
+          }
+        }
+      }
+    },
     "Importing your videos" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -308,6 +330,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "这个要求有冲突，请调整后再试。（%@）"
+          }
+        }
+      }
+    },
+    "Your purchase is safe. YoTale is confirming it with the App Store." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的购买很安全。YoTale 正在与 App Store 确认。"
           }
         }
       }

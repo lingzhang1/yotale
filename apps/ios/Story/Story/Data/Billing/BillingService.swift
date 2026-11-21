@@ -4,8 +4,8 @@ import Foundation
 /// fetches the entitlement and forwards Apple-signed transactions (a JWS the server verifies itself). No plan, price,
 /// credit count or expiry is ever sent.
 enum BillingServiceError: Error, Equatable {
-    case notSignedIn                    // 401: the app has no valid session
-    case transport                      // network: safe to retry
+    case notSignedIn                    // 401 after one refresh-and-retry, or no session at all
+    case transport                      // network (including "could not reach the auth server"): safe to retry, NOT signed out
     case unavailable                    // 503: billing store / Apple verification not configured; retry later
     case rejected(code: String)         // 4xx the server will not accept (invalid signature, token mismatch, bound elsewhere...)
     case badStatus(Int)
@@ -15,6 +15,11 @@ enum BillingServiceError: Error, Equatable {
 struct BillingService {
     var baseURL: URL = StoryBackend.baseURL
     var session: URLSession = .shared
+    /// Billing V2: a REFRESHING token source (the cached seam token can be expired). `forceRefresh` is used once after a 401.
+    /// `.offline` (auth server unreachable) is a transport error, never "signed out".
+    var token: @MainActor (_ forceRefresh: Bool) async -> AccessTokenFetch = { force in
+        await AuthStore.shared?.fetchAccessToken(forceRefresh: force) ?? .signedOut
+    }
 
     private static func decoder() -> JSONDecoder {
         let d = JSONDecoder()
@@ -23,27 +28,44 @@ struct BillingService {
     }
 
     func entitlement() async throws -> BillingEntitlement {
-        var req = URLRequest(url: baseURL.appendingPathComponent("v1/billing/entitlement"))
-        StoryBackend.authorize(&req)
-        req.httpMethod = "GET"
-        let (data, http) = try await send(req)
-        guard http.statusCode == 200 else { throw Self.map(http.statusCode, data) }
+        let data = try await call("v1/billing/entitlement", method: "GET", body: nil)
         do { return try Self.decoder().decode(BillingEntitlement.self, from: data) }
         catch { throw BillingServiceError.decoding }
     }
 
     /// Forward a StoreKit 2 transaction (`VerificationResult.jwsRepresentation`). The server verifies Apple's signature, the
-    /// bundle/environment/product, and that the transaction's appAccountToken is THIS account's. Returns the new entitlement.
-    func submit(signedTransaction jws: String) async throws -> BillingEntitlement? {
-        var req = URLRequest(url: baseURL.appendingPathComponent("v1/billing/transactions"))
-        StoryBackend.authorize(&req)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["signed_transaction": jws])
-        let (data, http) = try await send(req)
-        guard http.statusCode == 200 else { throw Self.map(http.statusCode, data) }
-        struct R: Decodable { let entitlement: BillingEntitlement? }
-        return (try? Self.decoder().decode(R.self, from: data))?.entitlement
+    /// bundle/environment/product, and that the transaction's appAccountToken is THIS account's. Returns the server's result
+    /// (`applied` | `not_active`). The caller re-reads `GET /v1/billing/entitlement` for what to display (server-authoritative),
+    /// so a purchase response this build cannot decode can never leave the app showing Subscribe to a paying user.
+    func submit(signedTransaction jws: String) async throws -> String {
+        let body = try? JSONSerialization.data(withJSONObject: ["signed_transaction": jws])
+        let data = try await call("v1/billing/transactions", method: "POST", body: body)
+        struct R: Decodable { let result: String? }
+        return (try? Self.decoder().decode(R.self, from: data))?.result ?? "applied"   // a 200 IS acceptance; `result` is informational
+    }
+
+    /// One authenticated request with ONE refresh-and-retry on 401 (never a loop).
+    private func call(_ path: String, method: String, body: Data?) async throws -> Data {
+        for attempt in 0..<2 {
+            var req = URLRequest(url: baseURL.appendingPathComponent(path))
+            req.httpMethod = method
+            if let body {
+                req.httpBody = body
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
+            switch await token(attempt > 0) {
+            case .token(let t): req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
+            case .offline: throw BillingServiceError.transport
+            case .signedOut:
+                if attempt > 0 { throw BillingServiceError.notSignedIn }
+                // dev optional-auth: send without a bearer; prod answers 401 -> notSignedIn below
+            }
+            let (data, http) = try await send(req)
+            if http.statusCode == 200 { return data }
+            if http.statusCode == 401 && attempt == 0 { continue }
+            throw Self.map(http.statusCode, data)
+        }
+        throw BillingServiceError.notSignedIn
     }
 
     private func send(_ req: URLRequest) async throws -> (Data, HTTPURLResponse) {

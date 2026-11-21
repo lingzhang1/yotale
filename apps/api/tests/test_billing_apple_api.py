@@ -60,6 +60,16 @@ def test_purchase_grants_plus_even_while_billing_mode_is_off(rig):
     assert rig.ledger.get_entitlement("story-u1").plan == "plus"
 
 
+def test_purchase_response_has_the_full_entitlement_payload_shape(rig):
+    """Regression: the bare ledger view lacked billing_mode/enforced, so the app's decode of the purchase response failed."""
+    body = post_txn(rig, "u1", rig.txn(rig.token("u1"))).json()
+    get = rig.c.get("/v1/billing/entitlement", headers=_auth("u1")).json()
+    assert set(get) <= set(body["entitlement"])
+    for k in ("billing_mode", "enforced", "offer", "apple_app_account_token", "plan", "status"):
+        assert k in body["entitlement"]
+    assert body["entitlement"]["plan"] == "plus"
+
+
 @pytest.mark.parametrize("signed,status,code", [
     ("", 422, None),
     ("eyJhbGciOiJub25lIn0.e30.", 422, "invalid_signed_data"),

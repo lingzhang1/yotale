@@ -24,6 +24,8 @@ struct PlusSubscriptionView: View {
                     Section { Text("Sign in to subscribe or to restore a purchase.") }
                 } else if billing.isPlus {
                     activeSections
+                } else if billing.verifying {
+                    verifyingSection
                 } else {
                     offerSections
                 }
@@ -101,6 +103,20 @@ struct PlusSubscriptionView: View {
         Section {
             Button("Manage Subscription") { showManage = true }
                 .foregroundStyle(StoryTheme.gold)
+        }
+    }
+
+    /// A verified Apple purchase the server has not confirmed yet: never show Subscribe to someone who has paid.
+    private var verifyingSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text("Confirming your subscription…")
+            }
+            Button("Check again") { Task { await billing.recoverPendingTransactions() } }
+                .foregroundStyle(StoryTheme.gold)
+        } footer: {
+            Text("Your purchase is safe. YoTale is confirming it with the App Store.")
         }
     }
 

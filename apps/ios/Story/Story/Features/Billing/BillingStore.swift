@@ -2,11 +2,14 @@ import Foundation
 import Observation
 import StoreKit
 
-/// Billing V1 / B3: the app's view of the server's entitlement plus the StoreKit purchase flow.
+/// Billing V1 / B3 (V2 fixes): the app's view of the server's entitlement plus the StoreKit purchase flow.
 ///
 /// Rules this type keeps:
-///  • Server-authoritative: `entitlement` is only ever a decoded server response. Nothing here derives plan, allowance or expiry.
+///  • Server-authoritative: `entitlement` is only ever a decoded `GET /v1/billing/entitlement` response. After the server accepts a
+///    transaction the app re-reads that endpoint; it never trusts (or depends on decoding) the purchase response.
 ///  • A purchase is sent to the server as Apple's signed JWS; the StoreKit transaction is `finish()`ed ONLY after the server accepted it.
+///  • A network failure is never "signed out": only a 401 that survives one token refresh is.
+///  • One submission per transaction at a time (the listener, the purchase call and recovery can all see the same transaction).
 ///  • No SwiftData: billing state is not persisted on the device (a reinstall or second device just asks the server).
 @MainActor
 @Observable
@@ -26,11 +29,17 @@ final class BillingStore {
     private(set) var entitlement: BillingEntitlement?
     private(set) var product: Product?
     private(set) var phase: Phase = .idle
+    /// True while a verified Apple purchase is waiting for the server (posted and in flight, or its post failed with a RETRYABLE
+    /// error: network, 503, session). The screen then shows "Confirming your subscription" instead of Subscribe, so a paying user is
+    /// never asked to buy again. Cleared when the server confirms Plus or REJECTS the transaction (e.g. another account's purchase).
+    private(set) var verifying = false
     var notice: Notice?
 
     @ObservationIgnored private let service: BillingService
     @ObservationIgnored private let purchases = PurchaseManager()
     @ObservationIgnored private var started = false
+    @ObservationIgnored private var inFlight = Set<String>()
+    @ObservationIgnored private var recovering = false
 
     init(service: BillingService = BillingService()) {
         self.service = service
@@ -63,8 +72,15 @@ final class BillingStore {
         guard phase == .idle else { return }
         phase = .loading
         defer { phase = .idle }
+        await reloadEntitlement()
+    }
+
+    /// Read the server's entitlement directly (works inside a purchase/restore phase, unlike `refresh()`).
+    private func reloadEntitlement() async {
         do {
-            entitlement = try await service.entitlement()
+            let e = try await service.entitlement()
+            entitlement = e
+            if e.isPlus { verifying = false; clearFailureNotice() }
         } catch BillingServiceError.notSignedIn {
             entitlement = nil
         } catch {
@@ -76,10 +92,32 @@ final class BillingStore {
     func reset() {
         entitlement = nil
         notice = nil
+        verifying = false
+    }
+
+    /// Billing V2: on sign-in and on foreground, post any Plus transaction StoreKit still holds (a purchase whose earlier post failed
+    /// with a 401 or a network error), then re-read the entitlement. Safe to call often: the server is idempotent per transaction.
+    func recoverPendingTransactions() async {
+        guard !recovering, phase == .idle else { return }
+        recovering = true
+        defer { recovering = false }
+        await reloadEntitlement()
+        let notice0 = notice
+        // Current entitlements are only replayed while the server does not show Plus (a confirmed subscriber is not re-posted on
+        // every foreground); unfinished transactions are always replayed.
+        for (id, jws) in await purchases.recoverableJWS(includeCurrent: !isPlus) {
+            if await forward(jws: jws, reload: false) { await purchases.finish(id: id) }
+        }
+        if notice == .failed { notice = notice0 }    // a background replay of another account's purchase is not this screen's error
+        await reloadEntitlement()
     }
 
     private func loadProduct() async {
         if product == nil { product = await purchases.loadPlus() }
+    }
+
+    private func clearFailureNotice() {
+        if let n = notice, n == .needsSignIn || n == .unavailable || n == .failed { notice = nil }
     }
 
     // MARK: purchase / restore
@@ -104,8 +142,13 @@ final class BillingStore {
 
         switch await purchases.purchase(product, accountToken: token) {
         case .purchased(let jws):
-            if await forward(jws: jws) { await purchases.finishPending(); notice = .purchased }
-            else { notice = .unavailable }      // not finished: StoreKit re-delivers it, so the purchase is not lost
+            verifying = true
+            if await forward(jws: jws) {
+                await purchases.finishPending()
+                notice = .purchased
+            } else if notice == nil {
+                notice = .unavailable      // not finished: StoreKit re-delivers it and recovery re-posts it, so it is not lost
+            }
         case .pending: notice = .pending
         case .cancelled: break
         case .failed: notice = .failed
@@ -118,34 +161,43 @@ final class BillingStore {
         phase = .restoring
         defer { phase = .idle }
         let all = await purchases.restoreJWS()
-        guard !all.isEmpty else { notice = .nothingToRestore; return }
+        guard !all.isEmpty else {
+            await reloadEntitlement()
+            notice = isPlus ? .restored : .nothingToRestore
+            return
+        }
         var accepted = false
         for jws in all {
-            if await forward(jws: jws) { accepted = true }
+            if await forward(jws: jws, reload: false) { accepted = true }
         }
         if accepted { await purchases.finishPending() }
-        await refreshAfterRestore()
-        notice = (isPlus || accepted) ? .restored : .nothingToRestore
-    }
-
-    private func refreshAfterRestore() async {
-        if let e = try? await service.entitlement() { entitlement = e }
+        await reloadEntitlement()
+        if isPlus || accepted { notice = .restored }
+        else if notice == nil { notice = .nothingToRestore }
     }
 
     /// Post one signed transaction. True = the server accepted it (the caller may then finish the StoreKit transaction).
     /// A rejection is NOT finished and NOT retried in a loop: a foreign-account or invalid transaction would only be rejected again.
-    private func forward(jws: String) async -> Bool {
+    /// The same JWS is never posted twice concurrently (listener + purchase + recovery can all see one transaction).
+    private func forward(jws: String, reload: Bool = true) async -> Bool {
+        guard inFlight.insert(jws).inserted else { return false }
+        defer { inFlight.remove(jws) }
         do {
-            if let e = try await service.submit(signedTransaction: jws) { entitlement = e }
+            _ = try await service.submit(signedTransaction: jws)
+            clearFailureNotice()
+            if reload { await reloadEntitlement() }
             return true
         } catch BillingServiceError.notSignedIn {
             notice = .needsSignIn
+            verifying = true
             return false
         } catch BillingServiceError.rejected {
             notice = .failed
+            verifying = false
             return false
         } catch {
             notice = .unavailable
+            verifying = true
             return false
         }
     }

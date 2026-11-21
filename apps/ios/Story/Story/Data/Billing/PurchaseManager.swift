@@ -62,6 +62,31 @@ final class PurchaseManager {
         return out
     }
 
+    /// Billing V2 recovery: every verified Plus transaction StoreKit still holds UNFINISHED (a purchase whose server post failed with
+    /// a 401, a network error or a 503) plus the current entitlement, so it can be posted again on sign-in and on foreground. The
+    /// server is idempotent per original transaction, so a replay is safe. Returned transactions are remembered for `finish(id:)`.
+    func recoverableJWS(includeCurrent: Bool) async -> [(id: UInt64, jws: String)] {
+        var out: [(id: UInt64, jws: String)] = []
+        var seen = Set<UInt64>()
+        for await result in Transaction.unfinished {
+            guard case .verified(let txn) = result, txn.productID == Self.plusProductID, seen.insert(txn.id).inserted else { continue }
+            pendingFinish[txn.id] = txn
+            out.append((txn.id, result.jwsRepresentation))
+        }
+        guard includeCurrent else { return out }
+        for await result in Transaction.currentEntitlements {
+            guard case .verified(let txn) = result, txn.productID == Self.plusProductID, seen.insert(txn.id).inserted else { continue }
+            out.append((txn.id, result.jwsRepresentation))
+        }
+        return out
+    }
+
+    /// Finish one remembered transaction after the server accepted it. No-op for an id that is not pending.
+    func finish(id: UInt64) async {
+        guard let txn = pendingFinish.removeValue(forKey: id) else { return }
+        await txn.finish()
+    }
+
     /// Listen for transactions that arrive outside a purchase call (renewals, Ask to Buy approval, purchases made on another
     /// device, anything left unfinished by an earlier launch). `handler` returns true when the server accepted the transaction.
     func startListening(handler: @escaping @MainActor (String) async -> Bool) {
