@@ -14,6 +14,10 @@ import StoreKit
 @MainActor
 @Observable
 final class BillingStore {
+    /// S3: the outcome of one post. `duplicate` = the same transaction is already being posted by another caller; that caller owns
+    /// the result, so this one reports nothing (neither success nor failure).
+    enum ForwardResult: Equatable { case accepted, failed, duplicate }
+
     enum Phase: Equatable { case idle, loading, purchasing, restoring }
 
     enum Notice: Equatable {
@@ -35,6 +39,9 @@ final class BillingStore {
     private(set) var verifying = false
     /// Display wording only ("Renews" vs "Access until"), from StoreKit's signed renewal info. The date shown is the server's.
     private(set) var willAutoRenew: Bool?
+    /// B1: true when the last entitlement read failed (offline, 5xx, session) and there is no entitlement to show. The paywall then
+    /// shows "Couldn't load your subscription" instead of Subscribe: Subscribe is only ever shown from a SERVER entitlement.
+    private(set) var entitlementLoadFailed = false
     var notice: Notice?
 
     @ObservationIgnored private let service: BillingService
@@ -60,7 +67,7 @@ final class BillingStore {
         started = true
         purchases.startListening { [weak self] jws in
             guard let self else { return false }
-            return await self.forward(jws: jws)
+            return await self.forward(jws: jws) == .accepted
         }
         Task { await self.loadProduct() }
     }
@@ -78,26 +85,33 @@ final class BillingStore {
     }
 
     /// Read the server's entitlement directly (works inside a purchase/restore phase, unlike `refresh()`).
-    private func reloadEntitlement() async {
+    @discardableResult
+    private func reloadEntitlement() async -> Bool {
         do {
             let e = try await service.entitlement()
             entitlement = e
+            entitlementLoadFailed = false
             if e.isPlus {
                 verifying = false
                 clearFailureNotice()
                 await loadProduct()
                 willAutoRenew = await purchases.willAutoRenew(product)
             }
+            return true
         } catch BillingServiceError.notSignedIn {
             entitlement = nil
+            entitlementLoadFailed = true
         } catch {
             // Keep whatever we last knew; the server stays the authority and the next refresh corrects it.
+            entitlementLoadFailed = true
         }
+        return false
     }
 
     /// Forget account-bound state (sign out / account switch). A different account must never see the previous entitlement.
     func reset() {
         entitlement = nil
+        entitlementLoadFailed = false
         notice = nil
         verifying = false
         willAutoRenew = nil
@@ -113,11 +127,12 @@ final class BillingStore {
         let notice0 = notice
         // Current entitlements are only replayed while the server does not show Plus (a confirmed subscriber is not re-posted on
         // every foreground); unfinished transactions are always replayed.
+        var accepted = false
         for (id, jws) in await purchases.recoverableJWS(includeCurrent: !isPlus) {
-            if await forward(jws: jws, reload: false) { await purchases.finish(id: id) }
+            if await forward(jws: jws, reload: false) == .accepted { accepted = true; await purchases.finish(id: id) }
         }
         if notice == .failed { notice = notice0 }    // a background replay of another account's purchase is not this screen's error
-        await reloadEntitlement()
+        await settleAfterAccept(accepted)
     }
 
     private func loadProduct() async {
@@ -151,11 +166,14 @@ final class BillingStore {
         switch await purchases.purchase(product, accountToken: token) {
         case .purchased(let jws):
             verifying = true
-            if await forward(jws: jws) {
+            switch await forward(jws: jws) {
+            case .accepted:
                 await purchases.finishPending()
-                notice = .purchased
-            } else if notice == nil {
-                notice = .unavailable      // not finished: StoreKit re-delivers it and recovery re-posts it, so it is not lost
+                if isPlus { notice = .purchased }
+            case .failed:
+                if notice == nil { notice = .unavailable }   // not finished: StoreKit re-delivers it and recovery re-posts it
+            case .duplicate:
+                break      // S3: the listener or recovery is posting this very transaction and owns the result and the finish
             }
         case .pending: notice = .pending
         case .cancelled: break
@@ -176,10 +194,10 @@ final class BillingStore {
         }
         var accepted = false
         for jws in all {
-            if await forward(jws: jws, reload: false) { accepted = true }
+            if await forward(jws: jws, reload: false) == .accepted { accepted = true }
         }
         if accepted { await purchases.finishPending() }
-        await reloadEntitlement()
+        await settleAfterAccept(accepted)
         if isPlus || accepted { notice = .restored }
         else if notice == nil { notice = .nothingToRestore }
     }
@@ -187,26 +205,34 @@ final class BillingStore {
     /// Post one signed transaction. True = the server accepted it (the caller may then finish the StoreKit transaction).
     /// A rejection is NOT finished and NOT retried in a loop: a foreign-account or invalid transaction would only be rejected again.
     /// The same JWS is never posted twice concurrently (listener + purchase + recovery can all see one transaction).
-    private func forward(jws: String, reload: Bool = true) async -> Bool {
-        guard inFlight.insert(jws).inserted else { return false }
+    func forward(jws: String, reload: Bool = true) async -> ForwardResult {
+        guard inFlight.insert(jws).inserted else { return .duplicate }
         defer { inFlight.remove(jws) }
         do {
             _ = try await service.submit(signedTransaction: jws)
             clearFailureNotice()
-            if reload { await reloadEntitlement() }
-            return true
+            if reload { await settleAfterAccept(true) }
+            return .accepted
         } catch BillingServiceError.notSignedIn {
             notice = .needsSignIn
             verifying = true
-            return false
+            return .failed
         } catch BillingServiceError.rejected {
             notice = .failed
             verifying = false
-            return false
+            return .failed
         } catch {
             notice = .unavailable
             verifying = true
-            return false
+            return .failed
         }
+    }
+
+    /// Re-read the entitlement after the server accepted a transaction. S2: if the read succeeded and the account is still not
+    /// Plus (the server answered `not_active`), stop "Confirming your subscription"; it would otherwise stick until relaunch. A
+    /// failed read keeps `verifying`, so a paying user is not shown Subscribe on unknown state.
+    private func settleAfterAccept(_ accepted: Bool) async {
+        let read = await reloadEntitlement()
+        if accepted && read && !isPlus { verifying = false }
     }
 }

@@ -55,7 +55,10 @@ final class AuthStore: NSObject {
         guard let data = KeychainStore.load(),
               var t = try? JSONDecoder().decode(AuthTokens.self, from: data) else { return }
         if t.isExpired {
-            do { t = try await refreshed(from: t) } catch { signOutLocal(); return }
+            do { t = try await refreshed(from: t) }
+            catch CognitoAuthError.transport {}        // S4: auth server unreachable/unavailable: stay signed in; the next
+            catch is URLError {}                       // fetchAccessToken refreshes (or reports .offline). Never sign out for it.
+            catch { signOutLocal(); return }
         }
         // R1.1 — a token blob persisted by a PRE-R1.1 build carries the Cognito `sub` (not the canonical
         // story_user_id) and `canonicalResolved == false`. We MUST NOT restore a session keyed on the sub, so

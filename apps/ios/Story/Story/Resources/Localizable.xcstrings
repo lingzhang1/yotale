@@ -266,6 +266,17 @@
         }
       }
     },
+    "Couldn't load your subscription. Check your connection and try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载你的订阅。请检查网络后重试。"
+          }
+        }
+      }
+    },
     "Create without overthinking." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -295,6 +306,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在导入你的视频"
+          }
+        }
+      }
+    },
+    "Loading your subscription…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载你的订阅…"
           }
         }
       }

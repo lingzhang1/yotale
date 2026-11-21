@@ -88,7 +88,8 @@ struct BillingEntitlement: Decodable, Equatable {
     }
     /// Counters only for accounts that really have a finite allowance (Free starter, admin_granted) and only once the server
     /// enforces it. Never for Plus or grandfathered accounts (S6).
-    var showsAllowances: Bool { enforced && !isUnlimited && videos != nil }
+    /// S1: also gated on plan, so a lapsed Plus account never shows leftover starter counters (the server omits them too).
+    var showsAllowances: Bool { enforced && !isUnlimited && (plan == "free_starter" || plan == "admin_granted") && videos != nil }
 }
 
 /// A 402 body: `{"error": <code>, "action": <action>, "contract_version": 1, "entitlement": {...}}`.

@@ -153,6 +153,17 @@ final class BillingV2ContractTests: XCTestCase {
         XCTAssertEqual(e.videos?.remaining, 1)
     }
 
+    func testALapsedPlusAccountShowsNoStarterCountersEvenIfAnOlderServerSentThem() throws {
+        let json = """
+        {"contract_version":2,"billing_mode":"enforce","enforced":true,"plan":"plus","status":"plus_expired","unlimited":false,
+         "capabilities":{"video_generation":"metered","moment_analysis":"metered","subscription":{"status":"expired","ends_at":1802592000}},
+         "videos":{"total":2,"used":2,"reserved":0,"remaining":0},"moments":{"total":30,"used":0,"reserved":0,"remaining":30}}
+        """
+        let e = try decoder().decode(BillingEntitlement.self, from: Data(json.utf8))
+        XCTAssertFalse(e.isPlus)
+        XCTAssertFalse(e.showsAllowances)                     // S1: plan-gated on the client too
+    }
+
     func testAContract1ServerStillDecodes() throws {
         let v1 = """
         {"contract_version":1,"billing_mode":"off","enforced":false,

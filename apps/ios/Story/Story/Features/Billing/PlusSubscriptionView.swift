@@ -28,6 +28,10 @@ struct PlusSubscriptionView: View {
                     activeSections
                 } else if billing.verifying {
                     verifyingSection
+                } else if billing.entitlement == nil {
+                    // B1: never Subscribe from unknown state; Subscribe needs a server entitlement that says "not Plus".
+                    heroSection
+                    entitlementUnavailableSection
                 } else {
                     heroSection
                     offerSections
@@ -157,6 +161,22 @@ struct PlusSubscriptionView: View {
                 .foregroundStyle(StoryTheme.gold)
         } footer: {
             Text("Your purchase is safe. YoTale is confirming it with the App Store.")
+        }
+    }
+
+    /// No server entitlement yet: loading, or the read failed (offline / server). Never offers Subscribe.
+    @ViewBuilder private var entitlementUnavailableSection: some View {
+        Section {
+            if billing.entitlementLoadFailed && billing.phase != .loading {
+                Text("Couldn't load your subscription. Check your connection and try again.")
+                Button("Try again") { Task { await billing.refresh() } }
+                    .foregroundStyle(StoryTheme.gold)
+            } else {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Loading your subscription…")
+                }
+            }
         }
     }
 

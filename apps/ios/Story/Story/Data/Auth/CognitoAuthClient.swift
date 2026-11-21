@@ -303,6 +303,12 @@ actor CognitoAuthClient {
         catch { throw CognitoAuthError.transport(error) }
         let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+            // S4: a 5xx, 429 or 408 says the auth server is unavailable or throttling, not that the credentials were rejected.
+            // Report it as transport so a refresh is retried later and the session is kept. 400 invalid_grant (and other 4xx)
+            // stay `.service`, which clears the session.
+            if http.statusCode >= 500 || http.statusCode == 429 || http.statusCode == 408 {
+                throw CognitoAuthError.transport(URLError(.badServerResponse))
+            }
             throw CognitoAuthError.service((obj["error_description"] as? String) ?? (obj["error"] as? String) ?? "oauth error")
         }
         return try Self.tokens(fromOAuth: obj)
