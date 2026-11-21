@@ -19,7 +19,7 @@
       "require_auth": "0",
       "quota_mode": "observe",
       "throttle_mode": "observe",
-      "billing_mode": "off",
+      "billing_mode": "enforce",
       "user_monthly_usd": "8",
       "evidence_persist": "1",
       "xcconfig": "Development"
@@ -64,6 +64,15 @@
       "approved_on": "2026-11-17",
       "expires": "2026-11-30",
       "reason": "Editorial vNext: beta pin to the edit_plan/5.6 Highlights planner after the owner's dev device acceptance. Time-boxed; gamma and production stay on the default. ROLLBACK: remove planner.environment_overrides.beta and this entry (beta returns to the 5.3 default) in one reviewed PR, then deploy beta with the observability context; no job migration is needed because the planner version is read per job."
+    },
+    {
+      "setting": "STORY_BILLING_MODE",
+      "env": "development",
+      "value": "enforce",
+      "approved_by": "owner",
+      "approved_on": "2026-11-20",
+      "expires": "2026-11-27",
+      "reason": "Billing V2: development-only device test of the Free starter trial (2 videos, 30 Moments, 14-day clock), typed 402s and the Plus sandbox purchase. Dev accepts Sandbox transactions only, so no real charge. Beta stays observe; gamma and production stay off. ROLLBACK: set environments.development.billing_mode back to \"off\" and remove this entry in one reviewed PR, then deploy-dev."
     }
   ],
   "approved_degradations": []
