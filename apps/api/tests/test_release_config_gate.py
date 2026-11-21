@@ -255,9 +255,13 @@ def test_committed_manifest_only_carries_time_boxed_dev_and_beta_planner_pins():
     for env in ("gamma", "production"):
         assert gate.manifest_planner_override(COMMITTED, env) is None, env
     approved = COMMITTED["approved_overrides"]
-    assert {(o["setting"], o["env"], str(o["value"])) for o in approved} == \
+    planner_approved = [o for o in approved if o["setting"] == "STORY_EDIT_PLAN_VERSION"]
+    assert {(o["setting"], o["env"], str(o["value"])) for o in planner_approved} == \
         {("STORY_EDIT_PLAN_VERSION", env, str(v)) for env, v in pinned.items()}, \
         "every committed approval must match a pin, and every pin must be approved"
+    # the only other approval allowed is the time-boxed, development-only billing enforce window (Billing V2 device test)
+    others = [o for o in approved if o["setting"] != "STORY_EDIT_PLAN_VERSION"]
+    assert all((o["setting"], o["env"], o["value"]) == ("STORY_BILLING_MODE", "development", "enforce") for o in others)
     for o in approved:
         assert o["env"] in ("development", "beta")
         assert o.get("approved_by") and o.get("reason") and o.get("expires"), "an approval must name who, why and when it ends"
@@ -289,7 +293,8 @@ def test_manifest_planner_override_resolution():
 def _dev_pin_manifest(expires="2099-01-01"):
     return {**MANIFEST,
             "planner": {**MANIFEST["planner"], "emergency_override": None, "environment_overrides": {"development": "5.5"}},
-            "approved_overrides": [{"setting": "STORY_EDIT_PLAN_VERSION", "env": "development", "value": "5.5",
+            "approved_overrides": [*[o for o in MANIFEST["approved_overrides"] if o["setting"] == "STORY_BILLING_MODE"],
+                                   {"setting": "STORY_EDIT_PLAN_VERSION", "env": "development", "value": "5.5",
                                     "approved_by": "owner", "reason": "evaluation", "expires": expires}]}
 
 
@@ -572,7 +577,9 @@ def test_runtime_unknown_provider_fails_explicitly_instead_of_falling_back():
 # ------------------------------------------------------------------------------------------------ Billing V1 posture
 def test_committed_manifest_billing_posture_beta_observe_others_off_never_unapproved_enforce():
     assert {e: p.get("billing_mode") for e, p in COMMITTED["environments"].items()} == {
-        "development": "off", "beta": "observe", "gamma": "off", "production": "off"}
+        "development": "enforce", "beta": "observe", "gamma": "off", "production": "off"}
+    dev_ok = [o for o in COMMITTED["approved_overrides"] if (o["setting"], o["env"], o["value"]) == ("STORY_BILLING_MODE", "development", "enforce")]
+    assert len(dev_ok) == 1 and dev_ok[0]["approved_by"] == "owner" and dev_ok[0]["expires"], "dev enforce must be owner-approved and time-boxed"
     approved = {(o.get("setting"), o.get("env"), str(o.get("value"))) for o in COMMITTED.get("approved_overrides", [])}
     for e, p in COMMITTED["environments"].items():
         if p.get("billing_mode") == "enforce":
@@ -581,10 +588,11 @@ def test_committed_manifest_billing_posture_beta_observe_others_off_never_unappr
 
 @pytest.mark.parametrize("env", ["development", "beta"])
 def test_billing_mode_must_match_the_release_in_service_and_worker(env):
-    # a service value that differs from the manifest (dev=off, beta=observe) and a worker value that always differs
+    # a service value that differs from the manifest (dev=enforce, beta=observe) and a worker value that differs too
     drift = "observe" if env == "development" else "off"
+    wdrift = "off" if env == "development" else "enforce"
     assert "billing_policy" in _codes(_with(_snapshot(env), svc={"STORY_BILLING_MODE": drift}))
-    assert "billing_policy" in _codes(_with(_snapshot(env), wrk={"STORY_BILLING_MODE": "enforce"}))
+    assert "billing_policy" in _codes(_with(_snapshot(env), wrk={"STORY_BILLING_MODE": wdrift}))
 
 
 @pytest.mark.parametrize("bad", ["enforced", "ON", "true", "1", ""])
