@@ -186,6 +186,7 @@ struct StoryApp: App {
                     // On sign-in, resume any deferred background AU (Phase 4): jobs enqueued while signed out
                     // are still PENDING; the existing idempotent upsert + orphan recovery process each exactly
                     // once under the now-authenticated account — never a duplicate understanding row.
+                    if newState != .signedIn { billing.reset() }   // R2: account-bound billing state never outlives the session
                     if newState == .signedIn {
                         // Billing V1 / B3 + V2: read the server's entitlement for this account, and re-post any Plus purchase whose
                         // earlier post failed (401 / offline) so a paying user is never left on Subscribe.

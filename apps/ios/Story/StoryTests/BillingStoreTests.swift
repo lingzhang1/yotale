@@ -40,9 +40,13 @@ final class BillingStoreTests: XCTestCase {
     @MainActor
     func testAcceptedButTheEntitlementReadFailingKeepsVerifying() async {
         let s = store()
+        ScriptedURLProtocol.responses = [(503, Data())]
+        _ = await s.forward(jws: "jws-0")                   // a retryable failure leaves verifying == true
+        XCTAssertTrue(s.verifying)
         ScriptedURLProtocol.responses = [(200, applied), (503, Data())]
         let r = await s.forward(jws: "jws-1")
         XCTAssertEqual(r, .accepted)
+        XCTAssertTrue(s.verifying)                          // accepted, but the read failed: still never Subscribe
         XCTAssertTrue(s.entitlementLoadFailed)
         XCTAssertNil(s.entitlement)
     }
@@ -115,5 +119,57 @@ final class BillingStoreTests: XCTestCase {
         XCTAssertNil(s.notice)
         XCTAssertNil(s.entitlement)
         XCTAssertFalse(s.entitlementLoadFailed)
+    }
+
+    // R1: a stale non-Plus entitlement is not confirmation once the last read failed.
+    @MainActor
+    func testSubscribeIsOfferedOnlyFromTheLastSuccessfulNotPlusRead() async {
+        let s = store()
+        XCTAssertFalse(s.canOfferSubscribe)                 // nothing read yet
+        ScriptedURLProtocol.responses = [(200, freeJSON)]
+        await s.refresh()
+        XCTAssertTrue(s.canOfferSubscribe)
+        ScriptedURLProtocol.responses = [(503, Data())]
+        await s.refresh()
+        XCTAssertNotNil(s.entitlement)                      // the stale value is kept...
+        XCTAssertTrue(s.entitlementLoadFailed)
+        XCTAssertFalse(s.canOfferSubscribe)                 // ...but never offers Subscribe
+        ScriptedURLProtocol.responses = [(200, freeJSON)]
+        await s.refresh()
+        XCTAssertTrue(s.canOfferSubscribe)
+    }
+
+    // R2: the reset StoryApp runs when auth leaves .signedIn also drops a previous account's entitlement.
+    @MainActor
+    func testResetDropsAPreviousAccountsEntitlementAndSubscribeOffer() async {
+        let s = store()
+        ScriptedURLProtocol.responses = [(200, freeJSON)]
+        await s.refresh()
+        s.reset()
+        XCTAssertNil(s.entitlement)
+        XCTAssertFalse(s.canOfferSubscribe)
+    }
+
+    // R3: nothing to replay + a successful not-Plus read clears a stuck verifying. (Assumes the test host's StoreKit holds no
+    // transaction; with none, recovery has nothing to replay.)
+    @MainActor
+    func testRecoveryWithNothingToReplayClearsVerifyingOnASuccessfulNotPlusRead() async {
+        let s = store()
+        ScriptedURLProtocol.responses = [(503, Data())]
+        _ = await s.forward(jws: "gone")
+        XCTAssertTrue(s.verifying)
+        ScriptedURLProtocol.responses = [(200, freeJSON), (200, freeJSON)]
+        await s.recoverPendingTransactions()
+        XCTAssertFalse(s.verifying)
+    }
+
+    @MainActor
+    func testRecoveryWhoseReadFailsKeepsVerifying() async {
+        let s = store()
+        ScriptedURLProtocol.responses = [(503, Data())]
+        _ = await s.forward(jws: "gone")
+        ScriptedURLProtocol.responses = [(503, Data()), (503, Data())]
+        await s.recoverPendingTransactions()
+        XCTAssertTrue(s.verifying)
     }
 }

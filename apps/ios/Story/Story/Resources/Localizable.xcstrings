@@ -10466,6 +10466,17 @@
         }
       }
     },
+    "Your purchase was received, but your subscription is not active yet. If you were charged, tap Restore Purchases or try again in a moment." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已收到你的购买，但订阅尚未生效。如果已扣款，请点击“恢复购买”，或稍后再试。"
+          }
+        }
+      }
+    },
     "No purchase to restore for this Apple ID." : {
       "extractionState" : "manual",
       "localizations" : {

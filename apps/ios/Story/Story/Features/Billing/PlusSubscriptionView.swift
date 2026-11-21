@@ -28,8 +28,8 @@ struct PlusSubscriptionView: View {
                     activeSections
                 } else if billing.verifying {
                     verifyingSection
-                } else if billing.entitlement == nil {
-                    // B1: never Subscribe from unknown state; Subscribe needs a server entitlement that says "not Plus".
+                } else if !billing.canOfferSubscribe {
+                    // B1/R1: never Subscribe from unknown or stale state; Subscribe needs the LAST server read to have succeeded and said "not Plus".
                     heroSection
                     entitlementUnavailableSection
                 } else {
@@ -240,6 +240,7 @@ struct PlusSubscriptionView: View {
         case .needsSignIn: return L10n.t("Sign in to your YoTale account to finish this.")
         case .unavailable: return L10n.t("Couldn't reach the App Store or YoTale. Your purchase is safe. Please try again in a moment.")
         case .failed: return L10n.t("The purchase couldn't be completed.")
+        case .notActive: return L10n.t("Your purchase was received, but your subscription is not active yet. If you were charged, tap Restore Purchases or try again in a moment.")
         }
     }
 }

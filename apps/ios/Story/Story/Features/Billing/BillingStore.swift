@@ -28,6 +28,7 @@ final class BillingStore {
         case needsSignIn
         case unavailable        // server or App Store not reachable / not configured; try again later
         case failed
+        case notActive          // R4: the server accepted the purchase but the account is still not Plus
     }
 
     private(set) var entitlement: BillingEntitlement?
@@ -56,6 +57,9 @@ final class BillingStore {
 
     // MARK: derived (display only)
     var isPlus: Bool { entitlement?.isPlus == true }
+    /// R1: Subscribe is offered only from a server-confirmed "not Plus": an entitlement exists AND the last read succeeded.
+    /// A stale cached entitlement after a failed read is not confirmation.
+    var canOfferSubscribe: Bool { entitlement != nil && !entitlementLoadFailed && !isPlus }
     /// The paywall and credit chips only make sense when an offer exists; credit counters only when the server enforces them.
     var offer: BillingOfferPlan? { entitlement?.offer?.plus }
     var localizedPrice: String? { product?.displayPrice }
@@ -128,11 +132,13 @@ final class BillingStore {
         // Current entitlements are only replayed while the server does not show Plus (a confirmed subscriber is not re-posted on
         // every foreground); unfinished transactions are always replayed.
         var accepted = false
-        for (id, jws) in await purchases.recoverableJWS(includeCurrent: !isPlus) {
+        let pending = await purchases.recoverableJWS(includeCurrent: !isPlus)
+        for (id, jws) in pending {
             if await forward(jws: jws, reload: false) == .accepted { accepted = true; await purchases.finish(id: id) }
         }
         if notice == .failed { notice = notice0 }    // a background replay of another account's purchase is not this screen's error
-        await settleAfterAccept(accepted)
+        // R3: with nothing to replay, a successful read that says not Plus means nothing is left to confirm.
+        await settleAfterAccept(accepted || pending.isEmpty)
     }
 
     private func loadProduct() async {
@@ -170,6 +176,7 @@ final class BillingStore {
             case .accepted:
                 await purchases.finishPending()
                 if isPlus { notice = .purchased }
+                else if !verifying { notice = .notActive }   // R4: never silently fall back to Subscribe
             case .failed:
                 if notice == nil { notice = .unavailable }   // not finished: StoreKit re-delivers it and recovery re-posts it
             case .duplicate:
@@ -188,7 +195,7 @@ final class BillingStore {
         defer { phase = .idle }
         let all = await purchases.restoreJWS()
         guard !all.isEmpty else {
-            await reloadEntitlement()
+            await settleAfterAccept(true)      // R3: nothing to replay
             notice = isPlus ? .restored : .nothingToRestore
             return
         }
