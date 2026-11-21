@@ -392,7 +392,7 @@ def test_ios_xcconfig_mixing_and_unbaked_apple_signin_are_rejected(tmp_repo):
     v, _ = gate.check_ios(tmp_repo)
     assert any(x.code == "ios_identity" and "share STORY_ENV_USER_POOL_ID" in x.message for x in v)
     (cfg / "Beta.xcconfig").write_text(beta)
-    (cfg / "Development.xcconfig").write_text(dev.replace("STORY_APPLE_SIGNIN_AVAILABLE = 0", ""))
+    (cfg / "Development.xcconfig").write_text(re.sub(r"(?m)^STORY_APPLE_SIGNIN_AVAILABLE = .*$", "", dev))
     v, _ = gate.check_ios(tmp_repo)
     assert any(x.code == "ios_apple_signin" for x in v)
 
