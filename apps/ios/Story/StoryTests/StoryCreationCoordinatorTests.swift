@@ -46,7 +46,8 @@ final class StoryCreationCoordinatorTests: XCTestCase {
     /// the coordinator reaches .completed/.failed without any network. `.transport` throws so the poll surfaces
     /// a transport error (used by the 503/retry test).
     private final class FakeJobClient: EditPlanJobClienting {
-        enum Behavior { case ok(EditPlanV2), failInfeasible(String), failUnavailable, throwTransport, staleThenOk(EditPlanV2) }
+        enum Behavior { case ok(EditPlanV2), failInfeasible(String), failUnavailable, throwTransport, staleThenOk(EditPlanV2),
+                        refuse402, refuse429, adoptRefusedJob }
         var behavior: Behavior
         private(set) var submitCount = 0
         private(set) var pollCount = 0
@@ -71,7 +72,32 @@ final class StoryCreationCoordinatorTests: XCTestCase {
             lastSheets = sheets
             lastEvidenceAccounting = evidenceAccounting
             lastBuildProvenance = buildProvenance
+            try throwRefusalIfAny()
             return "fake-job-\(operationId)-\(submitCount)"
+        }
+
+        /// Billing V2: the server's definitive refusal at submit (402 entitlement / 429 usage cap).
+        private func throwRefusalIfAny() throws {
+            switch behavior {
+            case .refuse402:
+                throw EditPlanJobError.entitlementDenied(BillingDenial(code: .videoCreditsExhausted, action: "subscribe",
+                                                                       videosRemaining: 0, momentsRemaining: 30))
+            case .refuse429:
+                throw EditPlanJobError.quotaExceeded(scope: "daily", retryAfter: nil)
+            default: return
+            }
+        }
+
+        /// The REAL client caches the exact submit bytes (lost-reply recovery) before posting. Model that for the
+        /// refusal behaviors, which is where the stuck "submitting" row came from (dev 2026-11-21).
+        func prepareSubmit(_ request: EditPlanRequestDTO, operationId: String, owner: String,
+                           approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
+                           critiqueRevision: Bool, evidenceAccounting: [String: Any]?,
+                           buildProvenance: [String: Any]?) -> PreparedJobSubmit? {
+            switch behavior {
+            case .refuse402, .refuse429: return PreparedJobSubmit(body: Data("multipart".utf8), boundary: "b")
+            default: return nil
+            }
         }
 
         func pollUntilTerminal(jobId: String, maxSeconds: Int,
@@ -92,6 +118,14 @@ final class StoryCreationCoordinatorTests: XCTestCase {
                                         failure: .providerError, failureDetail: "unavailable", diagnostics: nil)
             case .throwTransport:
                 throw EditPlanJobError.transport(URLError(.timedOut))
+            case .refuse402, .refuse429:
+                return EditPlanJobState(jobId: jobId, status: .failed, plan: nil,
+                                        failure: .providerError, failureDetail: "unexpected poll", diagnostics: nil)
+            case .adoptRefusedJob:
+                // A resend of a refused operation returns the SAME, already-failed job (server idempotency).
+                return EditPlanJobState(jobId: jobId, status: .failed, plan: nil,
+                                        failure: .billingDenied, failureDetail: "entitlement does not permit this video",
+                                        diagnostics: nil)
             case .staleThenOk(let p):
                 // First poll (the REUSED stale job) 404s; after the coordinator resubmits, the next poll ok's.
                 if pollCount == 1 { throw EditPlanJobError.badStatus(404) }
@@ -106,6 +140,7 @@ final class StoryCreationCoordinatorTests: XCTestCase {
         private(set) var submitPreparedCount = 0
         func submitPrepared(_ prepared: PreparedJobSubmit) async throws -> String {
             submitPreparedCount += 1
+            try throwRefusalIfAny()
             return "job-recovered"
         }
     }
@@ -1170,5 +1205,85 @@ extension StoryCreationCoordinatorTests {
         XCTAssertTrue(StoryCreationCoordinator.isResumable(row("planning", job: "j"), now: now), "unchanged: a job resumes")
         XCTAssertFalse(StoryCreationCoordinator.isResumable(row("submitting"), now: now), "unchanged: no job, no bytes")
         XCTAssertFalse(StoryCreationCoordinator.isResumable(row("abandoned"), now: now))
+    }
+
+    // MARK: - Billing V2: a definitive submit refusal ends the operation (dev 2026-11-21, job 2e057035)
+
+    func test_billing402AtSubmit_endsTheOperation_noResumableRow_noLingeringBanner() async throws {
+        let s = newStory()
+        let m1 = momentWithFile(s, rel: "media/bill-402-1.mov", dur: 8); completeAU(m1, useful: [(0, 5)])
+        let jobClient = FakeJobClient(.refuse402)
+        let renderer = FakeRenderer(.ok(okResult()))
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(validPlan([m1]))),
+                                             renderer: renderer, context: ctx, jobClient: jobClient)
+        coord.create(for: s)
+        await awaitSettled(coord)
+        guard case .entitlementDenied(let d)? = coord.lastFailure else {
+            return XCTFail("expected entitlementDenied, got \(String(describing: coord.lastFailure))")
+        }
+        XCTAssertEqual(d.code, .videoCreditsExhausted)
+        XCTAssertFalse(renderer.called)
+        XCTAssertFalse(coord.hasRecoverablePendingOperation(storyId: s.id),
+                       "a refused attempt must not stay resumable (that kept 'Creating…' on screen forever)")
+        XCTAssertNil(s.planJobId); XCTAssertNil(s.planOperationId, "the next attempt mints a NEW operation")
+        let sid = s.id
+        let rows = try ctx.fetch(FetchDescriptor<PendingOperationModel>(predicate: #Predicate { $0.storyId == sid }))
+        XCTAssertTrue(rows.allSatisfy { !$0.isRecoverable })
+        XCTAssertEqual(rows.first?.failureCategory, StoryCreationCoordinator.refusedCategoryBilling)
+        XCTAssertTrue(rows.allSatisfy { !PendingJobSubmitStore.exists(operationId: $0.operationId) }, "cached bytes dropped")
+    }
+
+    func test_quota429AtSubmit_endsTheOperation() async throws {
+        let s = newStory()
+        let m1 = momentWithFile(s, rel: "media/bill-429-1.mov", dur: 8); completeAU(m1, useful: [(0, 5)])
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(validPlan([m1]))),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx,
+                                             jobClient: FakeJobClient(.refuse429))
+        coord.create(for: s)
+        await awaitSettled(coord)
+        guard case .quotaDenied? = coord.lastFailure else { return XCTFail("expected quotaDenied") }
+        XCTAssertFalse(coord.hasRecoverablePendingOperation(storyId: s.id))
+    }
+
+    func test_lostReplyResend_refused402_endsTheRow_insteadOfRetryingForever() async throws {
+        let s = newStory()
+        let opId = "op-refused-\(UUID().uuidString)"
+        let op = PendingOperationModel(storyId: s.id, operationId: opId, jobId: nil,
+                                       operationType: "another_version", phase: "submitting", outputFormat: "vertical")
+        ctx.insert(op); try ctx.save()
+        s.planOperationId = opId; try ctx.save()
+        PendingJobSubmitStore.save(PreparedJobSubmit(body: Data("multipart".utf8), boundary: "b"), operationId: opId)
+        defer { PendingJobSubmitStore.remove(operationId: opId) }
+        let jobClient = FakeJobClient(.refuse402)
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(validPlan([]))),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx, jobClient: jobClient)
+        XCTAssertTrue(coord.resumePendingOperation(for: s))
+        await awaitSettled(coord)
+        XCTAssertEqual(jobClient.submitPreparedCount, 1, "a definitive refusal is not retried")
+        guard case .entitlementDenied? = coord.lastFailure else { return XCTFail("expected entitlementDenied") }
+        XCTAssertFalse(coord.hasRecoverablePendingOperation(storyId: s.id))
+        XCTAssertFalse(PendingJobSubmitStore.exists(operationId: opId))
+        XCTAssertEqual(op.failureCategory, StoryCreationCoordinator.refusedCategoryBilling)
+    }
+
+    func test_lostReplyResend_adoptsTheRefusedJob_showsUpgrade_notGenericRetry() async throws {
+        let s = newStory()
+        let m1 = momentWithFile(s, rel: "media/bill-adopt-1.mov", dur: 8); completeAU(m1, useful: [(0, 5)])
+        let opId = "op-adopt-\(UUID().uuidString)"
+        let op = PendingOperationModel(storyId: s.id, operationId: opId, jobId: nil,
+                                       operationType: "another_version", phase: "submitting", outputFormat: "vertical")
+        ctx.insert(op); try ctx.save()
+        s.planOperationId = opId; try ctx.save()
+        PendingJobSubmitStore.save(PreparedJobSubmit(body: Data("multipart".utf8), boundary: "b"), operationId: opId)
+        defer { PendingJobSubmitStore.remove(operationId: opId) }
+        let coord = StoryCreationCoordinator(planner: FakePlanner(behavior: .ok(validPlan([m1]))),
+                                             renderer: FakeRenderer(.ok(okResult())), context: ctx,
+                                             jobClient: FakeJobClient(.adoptRefusedJob))
+        XCTAssertTrue(coord.resumePendingOperation(for: s))
+        await awaitSettled(coord)
+        guard case .entitlementDenied? = coord.lastFailure else {
+            return XCTFail("expected entitlementDenied, got \(String(describing: coord.lastFailure))")
+        }
+        XCTAssertFalse(coord.hasRecoverablePendingOperation(storyId: s.id))
     }
 }

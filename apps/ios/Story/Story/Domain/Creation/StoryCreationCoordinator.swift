@@ -971,6 +971,12 @@ final class StoryCreationCoordinator {
                     return finishFailed(.invalidPlanOutput(final.failureDetail ?? ""))
                 case .unsupportedOperation: return finishFailed(.unsupportedOperation(final.failureDetail ?? ""))
                 case .providerExhausted:  return finishFailed(.planUnavailable)   // quota — try later
+                // A lost-reply resend adopted a job the server had REFUSED at submit: show the upgrade / limit
+                // screen, never a generic "try again" (the job body carries no typed code, so the copy is generic).
+                case .billingDenied:
+                    return finishFailed(.entitlementDenied(BillingDenial(code: .unknown, action: "subscribe",
+                                                                         videosRemaining: nil, momentsRemaining: nil)))
+                case .quotaDenied:         return finishFailed(.quotaDenied(L10n.t("You've reached a usage limit.")))
                 default:                   return finishFailed(.planUnavailable)
                 }
             case .cancelled:
@@ -987,10 +993,15 @@ final class StoryCreationCoordinator {
             return finishFailed(.planTransport("this Story is already being created"))
         } catch let EditPlanJobError.quotaExceeded(scope, _) {
             // Enforce-mode allowance cap (429). Honest, scope-specific message; NOT a retry.
+            // The server definitively REFUSED this operation: end it so no "Creating…" banner lingers (see below).
+            endRefusedOperation(story: story, category: Self.refusedCategoryQuota)
             if cancelRequested { return finishCancelled() }
             return finishFailed(.quotaDenied(EditPlanJobError.quotaExceeded(scope: scope, retryAfter: nil).errorDescription ?? "You've reached a usage limit."))
         } catch let EditPlanJobError.entitlementDenied(denial) {
             // Billing V1 (402): allowance/trial/subscription. The UI opens the upgrade or allowance screen; never a retry.
+            // Billing V2 device fix (dev 2026-11-21, job 2e057035): the pre-submit "submitting" row kept its cached
+            // bytes after the 402, so the Story screen showed "Creating…" forever and disabled Another Version.
+            endRefusedOperation(story: story, category: Self.refusedCategoryBilling)
             if cancelRequested { return finishCancelled() }
             return finishFailed(.entitlementDenied(denial))
         } catch EditPlanJobError.busy {
@@ -1626,6 +1637,21 @@ extension StoryCreationCoordinator {
         try? context.save()
     }
 
+    /// failure_category values for an operation the server REFUSED (never planned). The Story screen keys its copy off them.
+    static let refusedCategoryBilling = "billing_denied"
+    static let refusedCategoryQuota = "quota_denied"
+
+    /// The server definitively refused this operation (402 entitlement / 429 usage cap): a lost-reply resend can only
+    /// replay the refusal. Mark the pending row terminal (drops the cached submit bytes) and clear the job handles so
+    /// nothing resumes it and the next Create / Another Version mints a NEW operation. Retryable refusals (busy, 503)
+    /// do NOT come here: they keep the cached bytes for recovery.
+    func endRefusedOperation(story: StoryModel, category: String) {
+        markPendingFailed(story: story, category: category)
+        Self.clearTerminalJobHandles(story)
+        story.planJobStatus = "failed"
+        try? context.save()
+    }
+
     private func markPendingFailed(story: StoryModel, category: String?) {
         guard let row = fetchPending(storyId: story.id) else { return }
         PendingJobSubmitStore.remove(operationId: row.operationId)
@@ -1708,21 +1734,35 @@ extension StoryCreationCoordinator {
             + "job=\(row.jobId?.prefix(8) ?? "lost-reply") music=\(music == nil ? "none" : "set")")
         task = Task { [weak self] in
             guard let self else { return }
-            if let cachedSubmit, !(await self.recoverLostReply(cachedSubmit, story: story, row: row)) {
-                // Could not reach the server (offline): leave the row + bytes for the next foreground/reopen.
-                self.isCreating = false; self.task = nil
-                Self.setKeepAwake(false, story.id); Self.releaseActive(story.id)
-                self.finishFailed(.planTransport("couldn't reach Story — reopen to continue"))
-                return
+            if let cachedSubmit {
+                switch await self.recoverLostReply(cachedSubmit, story: story, row: row) {
+                case .recovered:
+                    break
+                case .refused(let error):
+                    // The server definitively refused the resend (402 / 429 cap): the row is already ended, so the
+                    // Story screen's banner clears and the next attempt mints a new operation.
+                    self.isCreating = false; self.task = nil
+                    Self.setKeepAwake(false, story.id); Self.releaseActive(story.id)
+                    self.finishFailed(error)
+                    return
+                case .unreachable:
+                    // Could not reach the server (offline): leave the row + bytes for the next foreground/reopen.
+                    self.isCreating = false; self.task = nil
+                    Self.setKeepAwake(false, story.id); Self.releaseActive(story.id)
+                    self.finishFailed(.planTransport("couldn't reach Story — reopen to continue"))
+                    return
+                }
             }
             await self.resumeRun(story: story, row: row)
         }
         return true
     }
 
-    /// Re-send a lost-reply submit's exact bytes (bounded retries) and adopt the returned job id. Returns false
-    /// when the server could not be reached.
-    private func recoverLostReply(_ prepared: PreparedJobSubmit, story: StoryModel, row: PendingOperationModel) async -> Bool {
+    enum LostReplyOutcome { case recovered, unreachable, refused(StoryCreationError) }
+
+    /// Re-send a lost-reply submit's exact bytes (bounded retries) and adopt the returned job id. A definitive server
+    /// refusal (402 entitlement / 429 usage cap) ENDS the operation instead of being retried as "unreachable" forever.
+    private func recoverLostReply(_ prepared: PreparedJobSubmit, story: StoryModel, row: PendingOperationModel) async -> LostReplyOutcome {
         for attempt in 0..<3 {
             do {
                 let jid = try await jobClient.submitPrepared(prepared)
@@ -1730,14 +1770,23 @@ extension StoryCreationCoordinator {
                 row.jobId = jid; row.phase = "planning"; row.updatedAt = .now; try? context.save()
                 PendingJobSubmitStore.remove(operationId: row.operationId)
                 MediaEngineV1.beacon("editplan-recover: lost reply recovered job=\(jid.prefix(8)) attempt=\(attempt + 1)")
-                return true
+                return .recovered
+            } catch let EditPlanJobError.entitlementDenied(denial) {
+                MediaEngineV1.beacon("editplan-recover: resend refused 402 code=\(denial.code.rawValue)")
+                endRefusedOperation(story: story, category: Self.refusedCategoryBilling)
+                return .refused(.entitlementDenied(denial))
+            } catch let EditPlanJobError.quotaExceeded(scope, _) {
+                MediaEngineV1.beacon("editplan-recover: resend refused 429 cap")
+                endRefusedOperation(story: story, category: Self.refusedCategoryQuota)
+                return .refused(.quotaDenied(EditPlanJobError.quotaExceeded(scope: scope, retryAfter: nil).errorDescription
+                                             ?? "You've reached a usage limit."))
             } catch {
                 MediaEngineV1.beacon("editplan-recover: lost-reply resend failed attempt=\(attempt + 1) "
                     + "code=\((error as NSError).code)")
                 try? await Task.sleep(nanoseconds: UInt64(800_000_000 * (attempt + 1)))
             }
         }
-        return false
+        return .unreachable
     }
 
     /// Drive a resumed operation to completion. For plan_ready with a saved plan we SKIP planning entirely and

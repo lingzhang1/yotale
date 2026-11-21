@@ -510,6 +510,17 @@
         }
       }
     },
+    "Upgrade to keep creating. Your current version is saved." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "升级以继续创作。当前版本已保存。"
+          }
+        }
+      }
+    },
     "YoTale is busy right now. Please try again in a moment." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -528,6 +539,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "YoTale Plus 会员 — %@"
+          }
+        }
+      }
+    },
+    "You've reached a usage limit." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已达到使用上限。"
+          }
+        }
+      }
+    },
+    "You've reached a usage limit. Your current version is saved." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已达到使用上限。当前版本已保存。"
           }
         }
       }
