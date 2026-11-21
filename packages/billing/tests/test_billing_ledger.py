@@ -577,7 +577,7 @@ def test_free_user_upgrading_becomes_unlimited_and_loses_the_trial_gate(env):
         L.reserve_video("u1", "op3")                                  # the Free starter is spent
     plus(L)
     e = L.get_entitlement("u1")
-    assert e.plan == "plus" and e.cfg == L.cfg.config_version == "billing-config/3"
+    assert e.plan == "plus" and e.cfg == L.cfg.config_version == "billing-config/4"
     env[1].advance(20 * DAY)                                      # past the old trial end: irrelevant for Plus
     assert L.reserve_video("u1", "op3").reason == "unlimited"
 
