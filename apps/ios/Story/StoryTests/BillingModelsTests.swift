@@ -57,13 +57,14 @@ final class BillingModelsTests: XCTestCase {
 
     func testDenialParsesTypedCodeActionAndAllowances() {
         let body = """
-        {"error":"video_credits_exhausted","action":"wait_for_renewal","contract_version":1,
+        {"error":"video_credits_exhausted","action":"contact_support","contract_version":2,
          "entitlement":{"videos":{"total":12,"used":12,"reserved":0,"remaining":0},"moments":{"total":100,"used":3,"reserved":0,"remaining":97}}}
         """
         let d = BillingDenial.parse(Data(body.utf8))
         XCTAssertEqual(d.code, .videoCreditsExhausted)
-        XCTAssertEqual(d.action, "wait_for_renewal")
-        XCTAssertFalse(d.canUpgrade)                          // a Plus subscriber waits for renewal; no upsell
+        XCTAssertEqual(d.action, "contact_support")
+        XCTAssertFalse(d.canUpgrade)                          // an admin grant is extended by support; no upsell
+        XCTAssertFalse(d.message.contains("Plus"))
         XCTAssertEqual(d.videosRemaining, 0)
         XCTAssertEqual(d.momentsRemaining, 97)
     }
@@ -96,6 +97,130 @@ final class BillingModelsTests: XCTestCase {
         let err = AssetUnderstandingServiceError.quotaExhausted(scope: "billing_moment_allowance_exhausted")
         XCTAssertEqual(AUDisposition.classify(err, isOnline: true), .quotaPark)
         XCTAssertFalse(err.isRetryable)
+    }
+}
+
+// Billing V2: Plus is unlimited. The V2 payload must decode in THIS build and in the shipped contract-1 build (B5).
+final class BillingV2ContractTests: XCTestCase {
+    private static let plusV2 = """
+    {"contract_version":2,"billing_mode":"enforce","enforced":true,
+     "offer":{"plus":{"product_id":"com.lingzhang.story.plus.monthly","unlimited":true,"videos":12,"moments":100}},
+     "capabilities":{"version":1,"video_generation":"unlimited","moment_analysis":"unlimited",
+                     "subscription":{"status":"active","ends_at":1802592000}},
+     "plan":"plus","status":"plus_active","unlimited":true,
+     "trial":{"state":"not_applicable","started_at":null,"ends_at":null,"days":14},
+     "period":{"id":"1000:1000","start":1800000000,"end":1802592000},
+     "videos":null,"moments":null,"refunds":{"used":0,"allowed":0},
+     "upgrade":{"eligible":false,"suggest":false,"blocking":false},
+     "apple_app_account_token":"3b3f1f3e-8f4b-4f6e-9a55-0a1b2c3d4e5f"}
+    """
+
+    private func decoder() -> JSONDecoder {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return d
+    }
+
+    func testPlusV2DecodesAsUnlimitedWithNoCountersAndAVerifiedDate() throws {
+        let e = try decoder().decode(BillingEntitlement.self, from: Data(Self.plusV2.utf8))
+        XCTAssertTrue(e.isPlus)
+        XCTAssertTrue(e.isUnlimited)
+        XCTAssertFalse(e.showsAllowances)                     // no counters for Plus (S6)
+        XCTAssertNil(e.videos)
+        XCTAssertEqual(e.offer?.plus.unlimited, true)
+        XCTAssertEqual(e.subscriptionEndsAt, Date(timeIntervalSince1970: 1802592000))
+    }
+
+    func testAGrandfatheredTesterWhoBoughtPlusIsShownAsSubscribed() throws {
+        let json = """
+        {"contract_version":2,"billing_mode":"off","enforced":false,"plan":"beta_grandfathered","status":"beta_grandfathered",
+         "unlimited":true,"capabilities":{"subscription":{"status":"active","ends_at":1802592000}}}
+        """
+        let e = try decoder().decode(BillingEntitlement.self, from: Data(json.utf8))
+        XCTAssertTrue(e.isPlus)                               // the Active screen, never Subscribe (S8)
+        XCTAssertFalse(e.showsAllowances)
+    }
+
+    func testFreeStarterKeepsItsCounters() throws {
+        let json = """
+        {"contract_version":2,"billing_mode":"enforce","enforced":true,"plan":"free_starter","status":"free_starter","unlimited":false,
+         "capabilities":{"video_generation":"metered","moment_analysis":"metered","subscription":{"status":"none","ends_at":null}},
+         "videos":{"total":2,"used":1,"reserved":0,"remaining":1},"moments":{"total":30,"used":0,"reserved":0,"remaining":30}}
+        """
+        let e = try decoder().decode(BillingEntitlement.self, from: Data(json.utf8))
+        XCTAssertFalse(e.isPlus)
+        XCTAssertTrue(e.showsAllowances)
+        XCTAssertEqual(e.videos?.remaining, 1)
+    }
+
+    func testAContract1ServerStillDecodes() throws {
+        let v1 = """
+        {"contract_version":1,"billing_mode":"off","enforced":false,
+         "offer":{"plus":{"product_id":"com.lingzhang.story.plus.monthly","videos":12,"moments":100}}}
+        """
+        let e = try decoder().decode(BillingEntitlement.self, from: Data(v1.utf8))
+        XCTAssertNil(e.capabilities)
+        XCTAssertFalse(e.isPlus)
+    }
+
+    // ---- copies of the SHIPPED contract-1 structs (BillingModels.swift at 40a77f5), so compatibility is proven, not assumed ----
+    private struct OldAllowance: Decodable { let total: Int; let used: Int; let reserved: Int; let remaining: Int }
+    private struct OldTrial: Decodable { let state: String; let startedAt: Int?; let endsAt: Int?; let days: Int? }
+    private struct OldPeriod: Decodable { let id: String?; let start: Int?; let end: Int? }
+    private struct OldUpgrade: Decodable { let eligible: Bool; let suggest: Bool; let blocking: Bool }
+    private struct OldOfferPlan: Decodable { let productId: String; let videos: Int; let moments: Int }
+    private struct OldOffer: Decodable { let plus: OldOfferPlan }
+    private struct OldEntitlement: Decodable {
+        let billingMode: String
+        let enforced: Bool
+        let offer: OldOffer?
+        let error: String?
+        let plan: String?
+        let status: String?
+        let unlimited: Bool?
+        let trial: OldTrial?
+        let period: OldPeriod?
+        let videos: OldAllowance?
+        let moments: OldAllowance?
+        let upgrade: OldUpgrade?
+        let appleAppAccountToken: String?
+        var isPlus: Bool { plan == "plus" && (status == "plus_active" || status == "plus_grace") }
+        var isUnlimited: Bool { unlimited == true || plan == "beta_grandfathered" }
+        var showsAllowances: Bool { enforced && !isUnlimited && videos != nil }
+    }
+
+    func testTheShippedContract1ModelDecodesTheV2PlusPayload() throws {
+        let old = try decoder().decode(OldEntitlement.self, from: Data(Self.plusV2.utf8))
+        XCTAssertTrue(old.isPlus)                             // the old build shows its Active screen
+        XCTAssertFalse(old.showsAllowances)
+        XCTAssertNil(old.videos)                              // and prints no counters there (it shows them only when videos != nil)
+        XCTAssertEqual(old.offer?.plus.videos, 12)            // required Int still present for the old paywall decode
+    }
+}
+
+// Billing V2: temporary capacity is a retryable busy, never "you reached a limit".
+final class BillingBusyTests: XCTestCase {
+    override func tearDown() { ScriptedURLProtocol.reset(); super.tearDown() }
+
+    func testEditPlanSubmitBusy429IsRetryable() async {
+        ScriptedURLProtocol.responses = [(429, Data(#"{"error":"quota_exceeded","scope":"active_jobs","retry_after_seconds":30,"busy":true}"#.utf8))]
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [ScriptedURLProtocol.self]
+        let client = EditPlanJobClient(baseURL: URL(string: "https://stub.invalid")!,
+                                       session: URLSession(configuration: cfg), isForeground: { true })
+        do {
+            _ = try await client.submitPrepared(PreparedJobSubmit(body: Data(), boundary: "b"))
+            XCTFail("expected busy")
+        } catch EditPlanJobError.busy(let ra) {
+            XCTAssertEqual(ra, 30)
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+    }
+
+    func testCapacityBusyOffersTryAgainNotALimitScreen() {
+        XCTAssertEqual(FailureRecovery.from(.capacityBusy), .technical)
+        XCTAssertEqual(FailureRecovery.from(.quotaDenied("x")), .quotaReached)   // a real per-user cap is unchanged
     }
 }
 

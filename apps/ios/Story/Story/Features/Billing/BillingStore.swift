@@ -33,6 +33,8 @@ final class BillingStore {
     /// error: network, 503, session). The screen then shows "Confirming your subscription" instead of Subscribe, so a paying user is
     /// never asked to buy again. Cleared when the server confirms Plus or REJECTS the transaction (e.g. another account's purchase).
     private(set) var verifying = false
+    /// Display wording only ("Renews" vs "Access until"), from StoreKit's signed renewal info. The date shown is the server's.
+    private(set) var willAutoRenew: Bool?
     var notice: Notice?
 
     @ObservationIgnored private let service: BillingService
@@ -80,7 +82,12 @@ final class BillingStore {
         do {
             let e = try await service.entitlement()
             entitlement = e
-            if e.isPlus { verifying = false; clearFailureNotice() }
+            if e.isPlus {
+                verifying = false
+                clearFailureNotice()
+                await loadProduct()
+                willAutoRenew = await purchases.willAutoRenew(product)
+            }
         } catch BillingServiceError.notSignedIn {
             entitlement = nil
         } catch {
@@ -93,6 +100,7 @@ final class BillingStore {
         entitlement = nil
         notice = nil
         verifying = false
+        willAutoRenew = nil
     }
 
     /// Billing V2: on sign-in and on foreground, post any Plus transaction StoreKit still holds (a purchase whose earlier post failed

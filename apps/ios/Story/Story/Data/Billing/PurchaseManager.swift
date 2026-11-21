@@ -81,6 +81,16 @@ final class PurchaseManager {
         return out
     }
 
+    /// Whether the Plus subscription on this Apple ID will auto-renew (false = canceled but still active until the period end).
+    /// Display wording only; nil when StoreKit has no verified status.
+    func willAutoRenew(_ product: Product?) async -> Bool? {
+        guard let statuses = try? await product?.subscription?.status else { return nil }
+        for s in statuses {
+            if case .verified(let info) = s.renewalInfo, info.currentProductID == Self.plusProductID { return info.willAutoRenew }
+        }
+        return nil
+    }
+
     /// Finish one remembered transaction after the server accepted it. No-op for an id that is not pending.
     func finish(id: UInt64) async {
         guard let txn = pendingFinish.removeValue(forKey: id) else { return }

@@ -1,8 +1,10 @@
 import Foundation
 
-// Billing V1 / B3 wire models. The SERVER is authoritative: these types only DECODE what `/v1/billing/entitlement` and the
-// 402 error bodies say. The app never computes plan, allowance or expiry, and never sends them to the server.
+// Billing V1 / B3 wire models (contract 2 since Billing V2). The SERVER is authoritative: these types only DECODE what
+// `/v1/billing/entitlement` and the 402 error bodies say. The app never computes plan, allowance or expiry, and never sends them.
 // Everything is optional/defaulted because `STORY_BILLING_MODE=off` returns only the base fields (no plan, no allowances).
+// Billing V2: YoTale Plus is unlimited. The server sends `videos`/`moments` = null for unlimited accounts and a `capabilities`
+// object; every field added in V2 is optional so this build also decodes a contract-1 server.
 
 struct BillingAllowance: Decodable, Equatable {
     let total: Int
@@ -32,8 +34,21 @@ struct BillingUpgrade: Decodable, Equatable {
 
 struct BillingOfferPlan: Decodable, Equatable {
     let productId: String
-    let videos: Int
-    let moments: Int
+    let unlimited: Bool?
+    let videos: Int?            // contract-1 decode field only; not a Plus limit (Plus is unlimited)
+    let moments: Int?
+}
+
+/// Billing V2 `capabilities`: what this account can do now, and its Apple-verified subscription state.
+struct BillingCapabilities: Decodable, Equatable {
+    struct Subscription: Decodable, Equatable {
+        let status: String      // active | grace | expired | none
+        let endsAt: Int?        // server-verified renewal or expiry (or grace end) date
+    }
+    let version: Int?
+    let videoGeneration: String?    // unlimited | metered
+    let momentAnalysis: String?
+    let subscription: Subscription?
 }
 
 struct BillingOffer: Decodable, Equatable {
@@ -54,11 +69,25 @@ struct BillingEntitlement: Decodable, Equatable {
     let moments: BillingAllowance?
     let upgrade: BillingUpgrade?
     let appleAppAccountToken: String?   // the UUID the purchase must carry as `appAccountToken`
+    let capabilities: BillingCapabilities?
 
-    var isPlus: Bool { plan == "plus" && (status == "plus_active" || status == "plus_grace") }
-    var isGrace: Bool { status == "plus_grace" }
-    var isUnlimited: Bool { unlimited == true || plan == "beta_grandfathered" }
-    /// Limits are only real once the server enforces them; before that the app shows no allowance counters.
+    /// An active (or grace) YoTale Plus subscription, including one bought by a grandfathered tester (Billing V2, S8).
+    var isPlus: Bool {
+        if plan == "plus" && (status == "plus_active" || status == "plus_grace") { return true }
+        let s = capabilities?.subscription?.status
+        return s == "active" || s == "grace"
+    }
+    var isGrace: Bool { status == "plus_grace" || capabilities?.subscription?.status == "grace" }
+    var isUnlimited: Bool {
+        unlimited == true || plan == "beta_grandfathered" || capabilities?.videoGeneration == "unlimited" || isPlus
+    }
+    /// The server-verified renewal or expiry date of the subscription (nil when there is none).
+    var subscriptionEndsAt: Date? {
+        (capabilities?.subscription?.endsAt ?? (plan == "plus" ? period?.end : nil))
+            .map { Date(timeIntervalSince1970: TimeInterval($0)) }
+    }
+    /// Counters only for accounts that really have a finite allowance (Free starter, admin_granted) and only once the server
+    /// enforces it. Never for Plus or grandfathered accounts (S6).
     var showsAllowances: Bool { enforced && !isUnlimited && videos != nil }
 }
 
@@ -101,13 +130,14 @@ struct BillingDenial: Equatable {
         case .trialExpired:
             return L10n.t("Your free starter period has ended. Upgrade to YoTale Plus to keep creating videos.")
         case .videoCreditsExhausted:
-            return action == "wait_for_renewal"
-                ? L10n.t("You've used all your video credits for this period. They renew with your next billing period.")
-                : L10n.t("You've used your free video credits. Upgrade to YoTale Plus to create more.")
+            // Plus is unlimited (Billing V2): this code only reaches the Free starter (subscribe) or an admin grant (contact support).
+            return action == "subscribe"
+                ? L10n.t("You've used your free video credits. Upgrade to YoTale Plus to create more.")
+                : L10n.t("You've used the videos included in your grant. Contact support to extend it.")
         case .momentAllowanceExhausted:
-            return action == "wait_for_renewal"
-                ? L10n.t("You've used this period's new-Moment analysis. It renews with your next billing period. Your footage is still saved.")
-                : L10n.t("You've used your free Moment analysis. Your footage is still saved. Upgrade to YoTale Plus to analyze more.")
+            return action == "subscribe"
+                ? L10n.t("You've used your free Moment analysis. Your footage is still saved. Upgrade to YoTale Plus to analyze more.")
+                : L10n.t("You've used the Moment analysis included in your grant. Your footage is still saved. Contact support to extend it.")
         case .subscriptionRequired, .unknown:
             return L10n.t("This needs a YoTale Plus subscription.")
         }

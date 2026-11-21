@@ -263,8 +263,11 @@ struct AssetUnderstandingService: AUAnalyzing {
             let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap { Int($0) }
             let err = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             let kind = (err?["error"] as? String) ?? ""
-            if kind == "rate_limited" {
-                throw AssetUnderstandingServiceError.rateLimited(retryAfter: retryAfter)
+            // Billing V2: `busy: true` marks TEMPORARY capacity (active jobs, the shared breaker, the rate limit). Retry later;
+            // never park the footage as if an allowance were spent.
+            if kind == "rate_limited" || (err?["busy"] as? Bool) == true {
+                let ra = retryAfter ?? (err?["retry_after_seconds"] as? Int)
+                throw AssetUnderstandingServiceError.rateLimited(retryAfter: ra)
             }
             // quota_exceeded (or an unrecognized 429): treat as a permanent allowance stop — no auto-retry.
             let scope = (err?["scope"] as? String) ?? (err?["class"] as? String) ?? "quota"
