@@ -170,3 +170,22 @@ If all three are complete, treat it as the sandbox artifact.
 - App Store Connect metadata (section 8), the subscription review screenshot and submission.
 - Account deletion (separate design in progress) must handle the subscription and the `b_sub_*` side record.
 - Monitoring dashboards and alerts in section 5 are not built.
+
+## 10. Release notes (PR #141 review follow-up)
+
+- **Ship the API image and the worker Lambda together.** Both bundle `packages/billing`. A worker still on pre-V2 code that settles or
+  releases a record carrying `b_unmetered` would run the counter leg against a Plus entitlement with `b_v_resv = 0`; the likely
+  outcome is a failed conditional transaction and a `BillingStoreError`. Never deploy only one of the two.
+- **Rollback after unmetered Plus records exist needs care.** Rolling the API or worker back to pre-V2 code while `b_unmetered`
+  records exist has the same failure. Drain or settle in-flight Plus operations first, or roll back both together and watch the
+  settle/release error rate. Do this before any rollback, not after.
+- **Global breaker**: when the global breaker trips, Plus is refused with the retryable busy shape (`Retry-After` 300). Asset analysis
+  keeps jobs pending with backoff, so Plus users wait minutes. This is by design (the breaker is kept).
+- **Entitlement read failure** (`live_plus_active`): the read is retried once; if it still fails the request gets the NORMAL per-user
+  caps, never uncapped, and a `billing_live_plus_read_error` warning is logged (`fallback: normal_caps`). A Plus account over a
+  cap can then see a non-busy `quota_exceeded` until the read recovers.
+- **Counters**: the server returns `videos`/`moments` only for `free_starter` and `admin_granted`; a lapsed Plus account gets null and
+  sees the `subscription_required` paywall, not starter counters.
+- **Denied-submit re-open bound** (`MAX_DENIAL_RECOVERIES = 50` per operation id in `packages/edit_plan_jobs`): a retry of the same
+  operation id after a busy denial re-opens the denied job up to 50 times. 50 consecutive busy retries of one operation is not a
+  realistic user path (each is a manual Try again after 30 s or more); no change made.

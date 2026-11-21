@@ -156,6 +156,48 @@ def test_an_entitlement_read_failure_falls_back_to_normal_caps_never_uncapped(qu
     assert codes.count(202) == 20 and codes[20] == 429                  # CODE: 20 gens/day applies
 
 
+def test_a_single_transient_entitlement_read_failure_is_retried_and_plus_stays_exempt(quota_enforced):
+    """S5: one failed read is retried once; the paying subscriber is still exempt (the second read succeeds)."""
+    q = UserQuota(ddb=QuotaFakeDDB(), usage_table="q", cfg=CODE)
+    r = Rig("off", quota=q)
+    subscribe(r.live)
+    real = r.live
+
+    class FlakyOnce:
+        calls = 0
+        _now = staticmethod(real._now)
+
+        def get_entitlement(self, u):
+            FlakyOnce.calls += 1
+            if FlakyOnce.calls == 1:
+                raise RuntimeError("transient")
+            return real.get_entitlement(u)
+    r.app.state._live_billing_ledger_override = FlakyOnce()
+    for i in range(1, 26):                                              # CODE cap is 20/day; Plus must pass it
+        resp = r.submit(f"v{i}")
+        assert resp.status_code == 202, (i, resp.text)
+        finish_job(r, q, f"v{i}", actual_usd=0.01)
+    assert FlakyOnce.calls >= 2
+
+
+def test_a_persistent_entitlement_read_failure_is_retried_once_then_falls_back_and_logs(caplog):
+    from app.billing_gate import live_plus_active
+
+    class Broken:
+        calls = 0
+
+        def get_entitlement(self, u):
+            Broken.calls += 1
+            raise RuntimeError("store down")
+    r = Rig("off")
+    r.app.state._live_billing_ledger_override = Broken()
+    req = type("Req", (), {"app": r.app})()
+    with caplog.at_level("WARNING"):
+        assert live_plus_active(req, uid) is False
+    assert Broken.calls == 2
+    assert sum(1 for rec in caplog.records if rec.getMessage() == "billing_live_plus_read_error") == 2
+
+
 def test_active_jobs_and_the_global_breaker_are_retryable_busy_for_plus(quota_enforced):
     q = UserQuota(ddb=QuotaFakeDDB(), usage_table="q", cfg=CDK)
     r = Rig("enforce", quota=q)

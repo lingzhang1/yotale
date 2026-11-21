@@ -724,6 +724,9 @@ class BillingLedger:
         trial = ent.trial_state(now)
         free = ent.plan == PLAN_FREE
         unlimited = ent.unlimited_at(now)
+        # S1: counters belong only to accounts whose allowance is a real finite one. A lapsed Plus keeps stale starter counters in
+        # its item; showing them (as "0 left") next to a subscription_required denial would be wrong.
+        counters = (not unlimited) and ent.plan in (PLAN_FREE, PLAN_ADMIN)
         remaining_v, remaining_m = max(ent.v_avail, 0), max(ent.m_avail, 0)
         sub = ent.subscription_status(now)
         if ent.plan == PLAN_PLUS:
@@ -736,10 +739,10 @@ class BillingLedger:
             "trial": {"state": trial, "started_at": ent.trial_start, "ends_at": ent.trial_end,
                       "days": self.cfg.trial_days},
             "period": {"id": ent.period_id, "start": ent.period_start, "end": ent.period_end},
-            # Billing V2: an unlimited account has no allowance to show. null (not 0) so neither the contract-1 nor the V2 client
-            # prints a counter; legacy finite counters stored on a pre-V2 Plus record stay in the item, unread.
-            "videos": None if unlimited else {"total": ent.v_total, "used": ent.v_used, "reserved": ent.v_resv, "remaining": remaining_v},
-            "moments": None if unlimited else {"total": ent.m_total, "used": ent.m_used, "reserved": ent.m_resv, "remaining": remaining_m},
+            # Billing V2: only Free starter and admin-granted accounts have an allowance to show. null (not 0) otherwise, so neither the
+            # contract-1 nor the V2 client prints a counter; legacy counters stored on a Plus record stay in the item, unread.
+            "videos": {"total": ent.v_total, "used": ent.v_used, "reserved": ent.v_resv, "remaining": remaining_v} if counters else None,
+            "moments": {"total": ent.m_total, "used": ent.m_used, "reserved": ent.m_resv, "remaining": remaining_m} if counters else None,
             "refunds": {"used": ent.refunds, "allowed": 0 if unlimited else self.refund_cap(ent)},
             "upgrade": {"eligible": (free or eff == ST_PLUS_EXPIRED) and not unlimited,
                         "suggest": free and ent.v_used >= 1,     # nudge after the first finished video, never a block

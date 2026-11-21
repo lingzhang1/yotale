@@ -511,6 +511,19 @@ def test_expired_subscription_requires_resubscribing_and_keeps_delivered_work(en
     assert rec["b_state"]["S"] == "settled"                           # delivered work untouched
 
 
+def test_a_lapsed_plus_account_is_shown_no_starter_counters_but_free_and_admin_are(env):
+    """S1: stale starter counters on an expired Plus record must not reach the client."""
+    L = mk(env)
+    plus(L)
+    plus(L, status=ST_PLUS_EXPIRED, ts=T0 + 31 * DAY)
+    v = L.entitlement_view("u1")
+    assert v["videos"] is None and v["moments"] is None and v["capabilities"]["subscription"]["status"] == "expired"
+    f = L.entitlement_view("free-user")
+    assert f["plan"] == "free_starter" and f["videos"]["remaining"] == 2 and f["moments"] is not None
+    L.admin_grant("u2", videos=5, moments=50, reason="support")
+    assert L.entitlement_view("u2")["videos"]["total"] == 5
+
+
 def test_unlimited_is_never_granted_at_or_after_the_period_end(env):
     """B4: expiry is checked before any unlimited shortcut, at the exact instant."""
     L = mk(env)

@@ -28,7 +28,7 @@ DENIAL_CODES = (TRIAL_EXPIRED, VIDEO_CREDITS_EXHAUSTED, MOMENT_ALLOWANCE_EXHAUST
 ACTION_SUBSCRIBE, ACTION_WAIT_RENEWAL, ACTION_CONTACT = "subscribe", "wait_for_renewal", "contact_support"
 
 # 2 = Billing V2 (additive over 1): unlimited Plus, `capabilities`, null allowances for unlimited accounts. Every key the
-# contract-1 client requires is still present (see apps/api/tests/test_billing_v2_contract.py and the Swift compat test).
+# contract-1 client requires is still present (see apps/api/tests/test_billing_v2_unlimited_plus.py and the Swift compat test).
 CONTRACT_VERSION = 2
 CAPABILITIES_VERSION = 1
 CAP_UNLIMITED, CAP_METERED = "unlimited", "metered"

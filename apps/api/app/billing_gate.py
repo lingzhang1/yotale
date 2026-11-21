@@ -111,17 +111,21 @@ def _live_ledger(request: Request) -> Optional["BillingLedger"]:
 def live_plus_active(request: Request, uid: str) -> bool:
     """Billing V2: does this account hold a VERIFIED, currently active (or grace) Apple subscription, read from the live ledger in
     EVERY billing mode? Used to exempt a paying subscriber from the per-user quota caps (user_monthly_usd, user_daily_gens) and to
-    keep observe mode from logging would-deny for a paying customer (S2). Never raises; any read failure answers False, so the
+    keep observe mode from logging would-deny for a paying customer (S2). Never raises; a read failure is retried once, then answers False, so the
     caller falls back to the NORMAL caps (never uncapped). Read-only: never creates an entitlement."""
-    try:
-        led = _live_ledger(request)
-        if led is None:
-            return False
-        ent = led.get_entitlement(uid)
-        return bool(ent is not None and ent.has_active_subscription(led._now()))
-    except Exception as e:  # noqa: BLE001
-        log.warning("billing_live_plus_read_error", extra={"error": f"{type(e).__name__}"[:80]})
-        return False
+    led = None
+    for attempt in (1, 2):      # S5: one retry of the read before falling back
+        try:
+            led = _live_ledger(request)
+            if led is None:
+                return False
+            ent = led.get_entitlement(uid)
+            return bool(ent is not None and ent.has_active_subscription(led._now()))
+        except Exception as e:  # noqa: BLE001
+            log.warning("billing_live_plus_read_error",
+                        extra={"error": f"{type(e).__name__}"[:80], "attempt": attempt,
+                               "fallback": "normal_caps" if attempt == 2 else "retry"})
+    return False
 
 
 def principal_uid(request: Request) -> Optional[str]:
