@@ -7,17 +7,21 @@ The global breaker is set high (or low, where the test is about it) so a per-use
 """
 from __future__ import annotations
 
-import os
-
 import pytest
-
-from app import billing_gate, quota_gate
-from billing import BillingConfig, BillingLedger, PlanLimits, ST_PLUS_ACTIVE, ST_PLUS_EXPIRED
+from billing import (
+    ST_PLUS_ACTIVE,
+    ST_PLUS_EXPIRED,
+    BillingConfig,
+    BillingLedger,
+    PlanLimits,
+)
 from billing.fakes import FakeDDB
-from tests.test_billing_au_binding import Rig as AURig, CountingGateway, _GOOD, frames_of, mid
-from tests.test_billing_gate import Rig, _auth, uid
 from user_quota import QuotaConfig, UserQuota
 from user_quota.fakes import FakeDDB as QuotaFakeDDB
+
+from tests.test_billing_au_binding import _GOOD, CountingGateway, frames_of, mid
+from tests.test_billing_au_binding import Rig as AURig
+from tests.test_billing_gate import Rig, _auth, uid
 
 T0 = 1_800_000_000
 DAY = 86400
