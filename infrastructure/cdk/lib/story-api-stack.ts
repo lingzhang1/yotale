@@ -55,6 +55,9 @@ export class StoryApiStack extends cdk.Stack {
     super(scope, id, props);
 
     const { environment } = props;
+    // Account deletion (design 7.5, 8.12): environments where the request table, worker and routes exist. Adding
+    // "beta" is the reviewed change that rolls it out there.
+    const ACCOUNT_DELETION_ENVIRONMENTS = ["development", "test"];
 
     // Immutable deploy: the pipeline passes `-c imageDigest=sha256:...` so App Runner is pinned to an
     // exact digest (auto-deploy off). Absent (legacy/local synth) -> mutable :latest fallback.
@@ -521,6 +524,10 @@ export class StoryApiStack extends cdk.Stack {
               // P0 Beta Security Phase 3: per-user throttle counters table + rollout mode (observe = emit
               // metrics, never 429; enforce = return 429). Default observe for the beta rollout window.
               { name: "STORY_RATE_LIMIT_TABLE", value: rateLimitTable.tableName },
+              // Account deletion (D3): the request table, only where it exists (ACCOUNT_DELETION_ENVIRONMENTS).
+              // Unset elsewhere, so the deletion routes fail closed with 503.
+              ...(ACCOUNT_DELETION_ENVIRONMENTS.includes(environment)
+                ? [{ name: "STORY_ACCOUNT_DELETIONS_TABLE", value: `story-${environment}-account-deletions` }] : []),
               { name: "STORY_THROTTLE_MODE", value: throttleMode },
               // P0 Beta Security Phase 4: AI quota + spend protection. STORY_USER_USAGE_TABLE points the
               // reserve/settle/release at the (auth-stack-owned) durable UserUsage table; STORY_QUOTA_MODE
@@ -848,9 +855,8 @@ export class StoryApiStack extends cdk.Stack {
     // Account deletion D2 (design 5.2, 5.4, 5.11): request table + scheduled worker + its role. DEVELOPMENT ONLY
     // until Ling approves beta (design 7.5, 8.12): extending this list to "beta" is that reviewed change. Inert
     // until D3 adds the routes: only the operator CLI can create a request.
-    const ACCOUNT_DELETION_ENVIRONMENTS = ["development", "test"];
     if (ACCOUNT_DELETION_ENVIRONMENTS.includes(environment)) {
-      new AccountDeletion(this, "AccountDeletion", {
+      const deletion = new AccountDeletion(this, "AccountDeletion", {
         environment,
         mediaTable, storiesTable, understandingTable, rateLimitTable, jobsTable, mediaBucket, stagingBucket,
         usersTableName: storyUsersTableName,
@@ -861,6 +867,14 @@ export class StoryApiStack extends cdk.Stack {
         userPoolId: cognitoUserPoolId ?? "us-east-1_AzfHOEdA5",
         alarmTopic: observability?.alarmTopic,
       });
+      // D3: the API accepts a request in ONE transaction (request item + receipt pointer + the users-row flip,
+      // which the identity-table statement above already covers) and reads it back. No UpdateItem/DeleteItem on
+      // the request table: only the worker advances a request.
+      instanceRole.addToPolicy(new iam.PolicyStatement({
+        sid: "AccountDeletionAccept", effect: iam.Effect.ALLOW,
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
+        resources: [deletion.table.tableArn],
+      }));
     }
   }
 }

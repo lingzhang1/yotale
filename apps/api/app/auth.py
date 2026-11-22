@@ -85,12 +85,28 @@ class AuthError(HTTPException):
         super().__init__(status_code=401, detail=detail)
 
 
+DEFAULT_ALLOWED_STATUS = frozenset({"active"})
+DELETION_STATUS = frozenset({"active", "deleting"})
+
+# Stable error codes on the 403 for an account being deleted / deleted (design 5.7). Only these two, carried in an
+# AUTHENTICATED response, count as confirmed deletion on another device; a generic 401/403 never does.
+_STATUS_ERROR = {"deleting": "account_deletion_in_progress", "deleted": "account_deleted"}
+
+
+class AccountStatusError(HTTPException):
+    def __init__(self, account_status: str):
+        super().__init__(status_code=403, detail=f"account {account_status}")
+        self.account_status = account_status
+        self.error_code = _STATUS_ERROR.get(account_status)
+
+
 @dataclass
 class Principal:
     """The resolved request principal handed to a protected handler."""
     story_user_id: str
     cognito_sub: Optional[str] = None  # None for the legacy dev principal
     is_legacy: bool = False
+    auth_time: Optional[int] = None    # access-token `auth_time` (when the user last signed in); None if absent
 
     @property
     def is_authenticated(self) -> bool:
@@ -203,18 +219,22 @@ class IdentityStore:
         resp = self._c().get_item(TableName=self.users_table, Key={"story_user_id": {"S": story_user_id}})
         it = resp.get("Item")
         if not it:
-            # claim without a row shouldn't happen (row write is same txn); treat as active+eligible.
-            return "active", "eligible"
+            # A claim always has its row (same transaction), and account-deletion tombstones are never deleted, so a
+            # missing row is an inconsistency: FAIL CLOSED (account deletion design 5.3). Verified on development
+            # 2026-11-22: every claim has a row.
+            return "missing", "eligible"
         account_status = it.get("account_status", {}).get("S", "active")
         beta_status = it.get("beta_access_status", {}).get("S", "eligible")
         return account_status, beta_status
 
-    def resolve(self, cognito_sub: str, *, verified_email: Optional[str] = None) -> str:
-        """Return the story_user_id for this cognito_sub, creating it atomically on first sign-in."""
+    def resolve(self, cognito_sub: str, *, verified_email: Optional[str] = None,
+                allow_status: frozenset = DEFAULT_ALLOWED_STATUS) -> str:
+        """Return the story_user_id for this cognito_sub, creating it atomically on first sign-in. `allow_status`
+        widens the accepted account statuses ONLY for the account-deletion routes (auth_boundary decides)."""
         claim_key = f"cognito#{cognito_sub}"
         existing = self._read_claim(claim_key)
         if existing:
-            self._enforce_status(existing)
+            self._enforce_status(existing, allow_status=allow_status)
             return existing
 
         new_id = str(uuid.uuid4())
@@ -248,7 +268,7 @@ class IdentityStore:
                     return won
             raise
 
-    def _enforce_status(self, story_user_id: str) -> None:
+    def _enforce_status(self, story_user_id: str, *, allow_status: frozenset = None) -> None:
         # Tolerate both the current (account_status, beta_status) tuple and a legacy single-string return
         # from a subclass/override, so existing test doubles that return only account_status still work.
         res = self._account_status(story_user_id)
@@ -256,9 +276,11 @@ class IdentityStore:
             account_status, beta_status = res
         else:
             account_status, beta_status = res, "eligible"
-        # A suspended/deleted account is rejected in EVERY environment.
-        if account_status not in ("active",):
-            raise HTTPException(status_code=403, detail=f"account {account_status}")
+        # A suspended/deleted account is rejected in EVERY environment. `deleting` passes only where the caller
+        # widened allow_status (the two account-deletion routes); `deleted` never passes.
+        allowed = DEFAULT_ALLOWED_STATUS if allow_status is None else allow_status
+        if account_status not in allowed or account_status == "deleted":
+            raise AccountStatusError(account_status)
         # Beta eligibility: in a real (non-development) environment the account must be beta-eligible.
         # Accepted values are 'eligible' and 'invited' (an invited tester is allowed in); anything else
         # (e.g. 'revoked', 'waitlisted', 'denied') is refused. Development is not beta-gated.
@@ -293,11 +315,17 @@ def _identity(request: Request) -> IdentityStore:
     return IdentityStore()
 
 
-def _principal_from_token(request: Request, token: str) -> Principal:
+def _principal_from_token(request: Request, token: str, *,
+                          allow_status: frozenset = None) -> Principal:
     claims = _verifier(request).verify_access_token(token)  # raises AuthError on any failure
     sub = claims["sub"]
-    story_user_id = _identity(request).resolve(sub)
-    return Principal(story_user_id=story_user_id, cognito_sub=sub, is_legacy=False)
+    ident = _identity(request)
+    # Only widen when asked, so identity-store doubles without the keyword keep working on every other route.
+    story_user_id = (ident.resolve(sub, allow_status=allow_status) if allow_status is not None
+                     else ident.resolve(sub))
+    at = claims.get("auth_time")
+    return Principal(story_user_id=story_user_id, cognito_sub=sub, is_legacy=False,
+                     auth_time=int(at) if isinstance(at, (int, float)) else None)
 
 
 def require_user(request: Request) -> Principal:
@@ -362,7 +390,15 @@ def _docs_public() -> bool:
 
 # Public ONLY for the named method+path: server-to-server webhook whose authenticity is the cryptographic signature on the body
 # (verified in billing.apple against pinned Apple roots), not a bearer token. Everything else stays deny-by-default.
-PUBLIC_ROUTES = frozenset({("POST", "/v1/billing/apple-notifications")})
+PUBLIC_ROUTES = frozenset({
+    ("POST", "/v1/billing/apple-notifications"),
+    # Account deletion receipt status (design 5.3): no token (it must work after Cognito disables the user); reveals
+    # state only to the holder of the 256-bit receipt secret, and the same 404 for unknown id and wrong secret.
+    ("POST", "/v1/account/deletion/status"),
+})
+
+# Account deletion (design 5.3, review F3): the ONLY routes on which an account in `deleting` is admitted.
+DELETION_ROUTES = frozenset({("POST", "/v1/account/deletion"), ("GET", "/v1/account/deletion")})
 
 
 def is_public_path(path: str) -> bool:
@@ -392,7 +428,8 @@ async def auth_boundary(request: Request, call_next):
     try:
         token = _bearer(request)
         if token:
-            request.state.principal = _principal_from_token(request, token)
+            widen = DELETION_STATUS if (request.method.upper(), path) in DELETION_ROUTES else None
+            request.state.principal = _principal_from_token(request, token, allow_status=widen)
         elif _boundary_auth_required():
             raise AuthError("authentication required")
         else:
@@ -401,6 +438,9 @@ async def auth_boundary(request: Request, call_next):
                 story_user_id=LEGACY_PRINCIPAL, cognito_sub=None, is_legacy=True)
     except HTTPException as e:
         from fastapi.responses import JSONResponse
-        return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
+        content = {"detail": e.detail}
+        if isinstance(e, AccountStatusError) and e.error_code:
+            content["error"] = e.error_code   # stable code the app keys on (never the detail text)
+        return JSONResponse(status_code=e.status_code, content=content)
 
     return await call_next(request)

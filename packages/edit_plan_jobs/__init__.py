@@ -510,13 +510,18 @@ class JobStore:
                 continue
             # best-effort re-enqueue + count bump (not a state change, so no lease needed)
             try:
+                # attribute_exists: never recreate a partial row for a job deleted meanwhile (account deletion
+                # guard G2, design 5.5); a deleted job is simply not re-enqueued.
                 self._ddb_c().update_item(
                     TableName=self.cfg.table, Key={"job_id": {"S": jid}},
                     UpdateExpression="SET reconcile_count = :nc, updated_at = :u",
+                    ConditionExpression="attribute_exists(job_id)",
                     ExpressionAttributeValues={":nc": {"N": str(n + 1)}, ":u": {"N": str(now)}})
                 self.enqueue(jid)
                 reenq.append(jid)
             except Exception as e:  # noqa: BLE001
+                if "ConditionalCheckFailed" in type(e).__name__ or "ConditionalCheckFailed" in str(e):
+                    continue
                 # Do NOT swallow silently: a failing re-enqueue (e.g. the worker role missing sqs:SendMessage)
                 # strands the job in `queued` forever and is invisible. Surface it so it is diagnosable.
                 import json as _json

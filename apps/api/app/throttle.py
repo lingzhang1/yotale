@@ -51,6 +51,9 @@ CLASS_POLICIES: dict[str, ClassPolicy] = {
     # Safe: metadata writes/reads/polling/presign/download. Fail OPEN on store outage.
     "writes":         ClassPolicy(expensive=False, default_per_min=60, env_key="STORY_THROTTLE_WRITES_PER_MIN"),
     "presign":        ClassPolicy(expensive=False, default_per_min=30, env_key="STORY_THROTTLE_PRESIGN_PER_MIN"),
+    # Account deletion request (design 5.3): low limit. Not "expensive" (that marks PAID AI classes the quota gate
+    # covers), so a limiter-store outage fails open; the fresh sign-in and typed confirmation still apply.
+    "account_deletion": ClassPolicy(expensive=False, default_per_min=3, env_key="STORY_THROTTLE_ACCOUNT_DELETION_PER_MIN"),
     "read":           ClassPolicy(expensive=False, default_per_min=120, env_key="STORY_THROTTLE_READ_PER_MIN"),
 }
 
@@ -109,6 +112,11 @@ ROUTE_CLASS: dict[tuple[str, str], str] = {
     # Apple webhook: unauthenticated by design (signature-verified), so there is no principal to throttle per user; the
     # classification only satisfies the route-coverage test. Abuse control is the WAF rate rule on this one path.
     ("POST", "/v1/billing/apple-notifications"): "read",
+    # Account deletion (design 5.3). The status route is PUBLIC (no principal to throttle per user, like the Apple
+    # webhook): its abuse control is the 256-bit receipt secret plus the WAF rate rule where a WAF exists.
+    ("POST", "/v1/account/deletion"): "account_deletion",
+    ("GET", "/v1/account/deletion"): "read",
+    ("POST", "/v1/account/deletion/status"): "read",
     ("GET", "/v1/stories"): "read",
     ("GET", "/v1/stories/{story_id}"): "read",
     ("GET", "/v1/media"): "read",
