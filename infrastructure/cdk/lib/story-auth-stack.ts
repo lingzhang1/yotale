@@ -133,6 +133,30 @@ export class StoryAuthStack extends cdk.Stack {
       });
     }
 
+    // ---- Google (federated IdP) -----------------------------------------------------------------------
+    // Same pattern as Apple: created ONLY with `-c googleSecretName=<name>`, a same-account Secrets Manager
+    // secret holding client_id and client_secret of a Google OAuth client of type "Web application" whose
+    // redirect URI is https://<cognito domain>/oauth2/idpresponse. Both values are dynamic references.
+    // App Store Guideline 4.8: an app offering Google sign-in must also offer Sign in with Apple, so Google
+    // without Apple fails synth.
+    const googleSecretName = this.node.tryGetContext("googleSecretName") as string | undefined;
+    let googleIdp: cognito.UserPoolIdentityProviderGoogle | undefined;
+    if (googleSecretName) {
+      if (!appleEnabled) {
+        throw new Error("googleSecretName requires appleSecretName: App Store Guideline 4.8 needs Sign in with Apple alongside Google");
+      }
+      googleIdp = new cognito.UserPoolIdentityProviderGoogle(this, "GoogleIdp", {
+        userPool: this.userPool,
+        clientId: cdk.SecretValue.secretsManager(googleSecretName, { jsonField: "client_id" }).unsafeUnwrap(),
+        clientSecretValue: cdk.SecretValue.secretsManager(googleSecretName, { jsonField: "client_secret" }),
+        scopes: ["openid", "email", "profile"],
+        attributeMapping: {
+          email: cognito.ProviderAttribute.GOOGLE_EMAIL,
+          custom: { email_verified: cognito.ProviderAttribute.other("email_verified") },
+        },
+      });
+    }
+
     // Correction 2 (Apple flow): a User Pool federates Apple via the OAuth Authorization-Code + PKCE flow
     // against the Cognito DOMAIN — the native ASAuthorization identity token CANNOT be swapped directly for
     // User-Pool tokens (that direct path is Identity-Pool-only, which issues AWS creds, not our account).
@@ -157,18 +181,18 @@ export class StoryAuthStack extends cdk.Stack {
         callbackUrls: [callbackScheme],
         logoutUrls: [callbackScheme],
       },
-      supportedIdentityProviders: appleEnabled
-        ? [
-            cognito.UserPoolClientIdentityProvider.custom("SignInWithApple"),
-            cognito.UserPoolClientIdentityProvider.COGNITO,
-          ]
-        : [cognito.UserPoolClientIdentityProvider.COGNITO], // EMAIL_OTP path works without Apple
+      supportedIdentityProviders: [
+        ...(appleEnabled ? [cognito.UserPoolClientIdentityProvider.custom("SignInWithApple")] : []),
+        ...(googleIdp ? [cognito.UserPoolClientIdentityProvider.GOOGLE] : []),
+        cognito.UserPoolClientIdentityProvider.COGNITO, // EMAIL_OTP path works without any federated IdP
+      ],
       accessTokenValidity: cdk.Duration.minutes(60),
       idTokenValidity: cdk.Duration.minutes(60),
       refreshTokenValidity: cdk.Duration.days(30),
       preventUserExistenceErrors: true,
     });
     if (appleIdp) this.userPoolClient.node.addDependency(appleIdp);
+    if (googleIdp) this.userPoolClient.node.addDependency(googleIdp);
     const cfnClient = this.userPoolClient.node.defaultChild as cognito.CfnUserPoolClient;
     // Correction 3: ONLY USER_AUTH (carries EMAIL_OTP) + REFRESH. No ALLOW_USER_SRP_AUTH, no password flow.
     cfnClient.addPropertyOverride("ExplicitAuthFlows", ["ALLOW_USER_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]);

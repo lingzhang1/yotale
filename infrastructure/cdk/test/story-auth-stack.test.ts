@@ -97,6 +97,34 @@ describe("StoryAuthStack (P0 Beta Auth, Increment 1)", () => {
     expect(whole).not.toContain("BEGIN PRIVATE KEY");
   });
 
+  test("Apple-only client keeps its provider order (no client update when Google is absent)", () => {
+    withApple.hasResourceProperties("AWS::Cognito::UserPoolClient", {
+      SupportedIdentityProviders: ["SignInWithApple", "COGNITO"],
+    });
+    withApple.resourceCountIs("AWS::Cognito::UserPoolIdentityProvider", 1);
+  });
+
+  test("Google IdP: dynamic-reference credentials, email mapping, and listed on the client", () => {
+    const withGoogle = synth({ appleSecretName: "YoTale-Apple-SignIn-Test", googleSecretName: "YoTale-Google-SignIn-Test" });
+    withGoogle.hasResourceProperties("AWS::Cognito::UserPoolIdentityProvider", {
+      ProviderName: "Google",
+      ProviderType: "Google",
+      ProviderDetails: {
+        client_id: "{{resolve:secretsmanager:YoTale-Google-SignIn-Test:SecretString:client_id::}}",
+        client_secret: "{{resolve:secretsmanager:YoTale-Google-SignIn-Test:SecretString:client_secret::}}",
+        authorize_scopes: "openid email profile",
+      },
+      AttributeMapping: { email: "email", email_verified: "email_verified" },
+    });
+    withGoogle.hasResourceProperties("AWS::Cognito::UserPoolClient", {
+      SupportedIdentityProviders: ["SignInWithApple", "Google", "COGNITO"],
+    });
+  });
+
+  test("Google without Apple fails synth (App Store Guideline 4.8)", () => {
+    expect(() => synth({ googleSecretName: "YoTale-Google-SignIn-Test" })).toThrow(/Guideline 4.8/);
+  });
+
   test("dev-provision reality: NO Apple IdP without creds; EMAIL_OTP still works (correction 9)", () => {
     // Apple creds are not yet available — the dev stack provisions without the Apple IdP.
     template.resourceCountIs("AWS::Cognito::UserPoolIdentityProvider", 0);
