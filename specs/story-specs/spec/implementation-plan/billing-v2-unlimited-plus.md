@@ -153,7 +153,7 @@ Use the sandbox Apple ID and the beta or dev backend. Record the build SHA, acco
 | 19 | Free starter: use all 50 AI shooting ideas (camera AI ideas / Rescan), then scan again | The idea note offers See YoTale Plus, no Try again; recording still works; the Plus screen shows "AI shooting ideas left". |
 | 20 | Plus: request more than 50 AI shooting ideas | No idea limit message. |
 
-Note for beta: `STORY_BILLING_MODE` is `off` on beta, and beta quota is `enforce` with a $60 global breaker. Rows 14-15 burn real model
+Note for beta: `STORY_BILLING_MODE` is `observe` on beta (PR #142; it never denies), and beta quota is `enforce` with a $60 global breaker. Rows 14-15 burn real model
 spend and must be run within the owner's approved test budget, not as a stress test.
 
 ## 8. Missing icon and "UNRATED" on the sandbox purchase sheet
@@ -168,9 +168,10 @@ If all three are complete, treat it as the sandbox artifact.
 
 ## 9. Remaining launch blockers
 
-- Owner device Xcode build and Cmd-U of this branch (iOS is parse-checked only), then the sandbox checklist above.
+- Owner device Xcode build and Cmd-U of master (iOS is parse-checked only), then the sandbox checklist above (status in section 12).
 - The parked decisions in section 4, especially the global breaker size for beta.
-- `STORY_BILLING_MODE` is `off` everywhere; turning on observe/enforce is a separate approved rollout.
+- `STORY_BILLING_MODE`: beta `observe`, development/gamma/production `off`. Enforce anywhere is a separate approved rollout (an
+  `approved_overrides` entry in `release/release.json`), preceded on beta by the grandfather migration.
 - App Store Connect metadata (section 8), the subscription review screenshot and submission.
 - Account deletion (separate design in progress) must handle the subscription and the `b_sub_*` side record.
 - Monitoring dashboards and alerts in section 5 are not built.
@@ -218,3 +219,31 @@ If all three are complete, treat it as the sandbox artifact.
   again; the Plus screen shows "AI shooting ideas left" for a Free starter. Parse-checked only; the device Xcode build is the gate.
 - **Tests**: `apps/api/tests/test_billing_ai_idea_meter.py` (ledger on the in-memory double and DynamoDB Local; API wiring in off,
   observe and enforce), `BillingModelsTests` (contract-3 decode, contract-2 compatibility, the new denial code).
+
+## 12. Status at billing closeout (2026-11-22)
+
+**Merged to master**: #135 B0, #136 B1, #137 B2, #138 B3, #139 legal links, #140 Apple token index, #141 Billing V2, #142 beta observe,
+#143 dev enforce window, #144 refused-video pending row fix, #145 AI-idea meter (section 11), #148 pre-check before a refused video and
+the "Plus owned by another account" notice, #150 that notice shown beside Subscribe, and the closeout PR that returned development to
+`off` (this section).
+
+**Posture**: beta `observe`; development, gamma and production `off`; no `STORY_BILLING_MODE` override in `release/release.json`.
+
+**Verified on the dev device (owner, 2026-11-21/22, development in `enforce`)**:
+- Free starter counters (2 videos, 30 Moments, 50 AI ideas) show; the 14-day clock started at the first settled video (ledger read).
+- The third video is refused by the server (402 at submit, jobs `2e057035` and the 22:25:47 UTC submit); the credit is released.
+- Subscribe with a sandbox Apple ID whose Plus belongs to another YoTale account: the server refuses every transaction with 403
+  `app_account_token_mismatch` (the sandbox tester `echozhang4667@gmail.com` bought Plus on beta account `95473d85...` on 2026-11-19).
+  This is correct (checklist row 8); the app now says so instead of a generic failure.
+
+**Not verified on a device yet** (iOS is parse-checked only for #144, #145, #148, #150): the upgrade screen before Customize when no video
+is left (row 16), the cleared "Creating..." banner (row 18), AI-idea exhaustion (row 19), a fresh sandbox purchase (rows 1-7, needs the
+tester's purchase history cleared in App Store Connect or a new tester), and Plus being unlimited (rows 14, 15, 20).
+
+**Known, harmless**: each app launch re-posts the other account's ~8 sandbox renewals once (the skip list is in memory only); the server
+refuses them with 403.
+
+**Open owner items (unchanged)**: beta `global_monthly_usd` breaker ($60, too low for unlimited Plus), grandfather migration then enforce
+on beta, in-app account deletion (must handle `b_sub_*` and the Apple token/transaction records), Epidemic Sound commercial terms, lawyer
+review of the privacy policy and payment-record retention, App Store Connect metadata and review assets, the production AWS account, and
+whether production accepts Sandbox purchases for App Review.

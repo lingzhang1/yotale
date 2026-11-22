@@ -584,9 +584,7 @@ def test_runtime_unknown_provider_fails_explicitly_instead_of_falling_back():
 # ------------------------------------------------------------------------------------------------ Billing V1 posture
 def test_committed_manifest_billing_posture_beta_observe_others_off_never_unapproved_enforce():
     assert {e: p.get("billing_mode") for e, p in COMMITTED["environments"].items()} == {
-        "development": "enforce", "beta": "observe", "gamma": "off", "production": "off"}
-    dev_ok = [o for o in COMMITTED["approved_overrides"] if (o["setting"], o["env"], o["value"]) == ("STORY_BILLING_MODE", "development", "enforce")]
-    assert len(dev_ok) == 1 and dev_ok[0]["approved_by"] == "owner" and dev_ok[0]["expires"], "dev enforce must be owner-approved and time-boxed"
+        "development": "off", "beta": "observe", "gamma": "off", "production": "off"}
     approved = {(o.get("setting"), o.get("env"), str(o.get("value"))) for o in COMMITTED.get("approved_overrides", [])}
     for e, p in COMMITTED["environments"].items():
         if p.get("billing_mode") == "enforce":
@@ -595,9 +593,9 @@ def test_committed_manifest_billing_posture_beta_observe_others_off_never_unappr
 
 @pytest.mark.parametrize("env", ["development", "beta"])
 def test_billing_mode_must_match_the_release_in_service_and_worker(env):
-    # a service value that differs from the manifest (dev=enforce, beta=observe) and a worker value that differs too
+    # a service value that differs from the manifest (dev=off, beta=observe) and a worker value that differs too
     drift = "observe" if env == "development" else "off"
-    wdrift = "off" if env == "development" else "enforce"
+    wdrift = "enforce"
     assert "billing_policy" in _codes(_with(_snapshot(env), svc={"STORY_BILLING_MODE": drift}))
     assert "billing_policy" in _codes(_with(_snapshot(env), wrk={"STORY_BILLING_MODE": wdrift}))
 
