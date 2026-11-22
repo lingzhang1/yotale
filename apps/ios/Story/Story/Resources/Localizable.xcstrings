@@ -10938,6 +10938,633 @@
           }
         }
       }
+    },
+    "Account deletion isn't available on this server yet. Nothing was deleted." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此服务器暂不支持删除账户。没有删除任何内容。"
+          }
+        }
+      }
+    },
+    "Checking your deletion request" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在确认你的删除请求"
+          }
+        }
+      }
+    },
+    "Close YoTale to finish removing your data from this iPhone. It's removed the next time YoTale opens." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭 YoTale 即可完成从这台 iPhone 上移除数据。下次打开 YoTale 时会移除。"
+          }
+        }
+      }
+    },
+    "Confirm it's you" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "确认是你本人"
+          }
+        }
+      }
+    },
+    "Continue Without Cancelling" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不取消订阅，继续"
+          }
+        }
+      }
+    },
+    "Copies on other iPhones signed in to this account, until you remove them there" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登录此账户的其他 iPhone 上的副本，需在那台设备上移除"
+          }
+        }
+      }
+    },
+    "Copies you saved to your Photos library, and iCloud or computer backups of this iPhone" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你存到“照片”中的副本，以及这台 iPhone 的 iCloud 或电脑备份"
+          }
+        }
+      }
+    },
+    "Couldn't finish removing data from this iPhone" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未能从这台 iPhone 上移除全部数据"
+          }
+        }
+      }
+    },
+    "Couldn't prepare the request on this iPhone. Please try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法在这台 iPhone 上准备请求。请重试。"
+          }
+        }
+      }
+    },
+    "Couldn't request deletion. Nothing was deleted. Please try again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法提交删除请求。没有删除任何内容。请重试。"
+          }
+        }
+      }
+    },
+    "DELETE" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除"
+          }
+        }
+      }
+    },
+    "Delete Account" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除账户"
+          }
+        }
+      }
+    },
+    "Delete your YoTale account?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除你的 YoTale 账户？"
+          }
+        }
+      }
+    },
+    "Deleting your account doesn't cancel it. Apple keeps billing you until you cancel in your Apple Account settings. We can't cancel or refund it, and it can't be moved to a new account." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除账户不会取消订阅。在你于 Apple 账户设置中取消之前，Apple 会继续扣费。我们无法为你取消或退款，订阅也无法转到新账户。"
+          }
+        }
+      }
+    },
+    "Deletion usually finishes within two hours, and a final check runs a day later. It can't be undone." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除通常在两小时内完成，一天后还会做最后一次检查。此操作无法撤销。"
+          }
+        }
+      }
+    },
+    "Deletion was already requested for this account." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此账户已经提交过删除请求。"
+          }
+        }
+      }
+    },
+    "Enter the code we sent to %@." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入我们发送到 %@ 的验证码。"
+          }
+        }
+      }
+    },
+    "Frames and text already sent to our AI, image and music providers, which we can't recall" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已发送给我们的 AI、图片和音乐服务提供商的画面和文字，我们无法收回"
+          }
+        }
+      }
+    },
+    "Keep on This iPhone" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留在这台 iPhone 上"
+          }
+        }
+      }
+    },
+    "Last step" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最后一步"
+          }
+        }
+      }
+    },
+    "Nothing new is saved until this finishes. Try again, or close and reopen YoTale." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成之前不会保存任何新内容。请重试，或关闭后重新打开 YoTale。"
+          }
+        }
+      }
+    },
+    "Please confirm it's you again. Sign-in has to be within the last 5 minutes." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请再次确认是你本人。需要在最近 5 分钟内登录过。"
+          }
+        }
+      }
+    },
+    "Purchase records that Apple keeps" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 保留的购买记录"
+          }
+        }
+      }
+    },
+    "Remove From This iPhone" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从这台 iPhone 上移除"
+          }
+        }
+      }
+    },
+    "Send Code" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送验证码"
+          }
+        }
+      }
+    },
+    "Send a New Code" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新发送验证码"
+          }
+        }
+      }
+    },
+    "Sign in with Apple again to confirm." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请再次通过 Apple 登录以确认。"
+          }
+        }
+      }
+    },
+    "Sign in with Google again to confirm." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请再次通过 Google 登录以确认。"
+          }
+        }
+      }
+    },
+    "Sign-in was cancelled or failed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登录已取消或失败。"
+          }
+        }
+      }
+    },
+    "Status: deleting. This usually finishes within two hours." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "状态：正在删除。通常在两小时内完成。"
+          }
+        }
+      }
+    },
+    "Status: request received. This usually finishes within two hours." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "状态：已收到请求。通常在两小时内完成。"
+          }
+        }
+      }
+    },
+    "Status: your account and its cloud data are deleted." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "状态：你的账户及其云端数据已删除。"
+          }
+        }
+      }
+    },
+    "That sign-in was for a different account. Sign in with the account you're deleting." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这次登录的是另一个账户。请用要删除的账户登录。"
+          }
+        }
+      }
+    },
+    "The AI analysis we saved for your Moments, and your music favorites" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我们为你的瞬间保存的 AI 分析，以及你收藏的音乐"
+          }
+        }
+      }
+    },
+    "The request didn't reach us, so nothing was deleted. You can try again from the account menu." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求没有送达，所以没有删除任何内容。你可以在账户菜单中重试。"
+          }
+        }
+      }
+    },
+    "This account can't be deleted from the app. Contact privacy@yotale.ai." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法在 App 中删除此账户。请联系 privacy@yotale.ai。"
+          }
+        }
+      }
+    },
+    "This account is being deleted. After deletion finishes, this email can create a new account." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此账户正在删除中。删除完成后，可以用这个邮箱创建新账户。"
+          }
+        }
+      }
+    },
+    "This account was deleted from another device" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此账户已在另一台设备上删除"
+          }
+        }
+      }
+    },
+    "This permanently deletes:" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "以下内容会被永久删除："
+          }
+        }
+      }
+    },
+    "This sign-in method isn't available in this build." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此版本不支持这种登录方式。"
+          }
+        }
+      }
+    },
+    "Type %@ to delete your account. Your local Moments and videos on this iPhone will be deleted too." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入“%@”以删除你的账户。这台 iPhone 上的瞬间和视频也会被删除。"
+          }
+        }
+      }
+    },
+    "We couldn't confirm whether your request reached us. Keep YoTale open with a connection; this finishes on its own." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我们无法确认你的请求是否已送达。请保持 YoTale 打开并连接网络，确认会自动完成。"
+          }
+        }
+      }
+    },
+    "We'll email a code to %@." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "我们会将验证码发送到 %@。"
+          }
+        }
+      }
+    },
+    "What stays:" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会保留的内容："
+          }
+        }
+      }
+    },
+    "You have an active YoTale Plus subscription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你有生效中的 YoTale Plus 订阅"
+          }
+        }
+      }
+    },
+    "You signed in with Apple. To also remove YoTale from your Apple Account, open Settings, tap your name, then Sign-In & Security, Sign in with Apple, YoTale, and choose Stop Using." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你是通过 Apple 登录的。如需同时从 Apple 账户中移除 YoTale，请打开“设置”，轻点你的姓名，然后依次进入“登录与安全性”、“通过 Apple 登录”、YoTale，选择“停止使用”。"
+          }
+        }
+      }
+    },
+    "You're signed out. Sign in again to delete your account." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已退出登录。请重新登录后再删除账户。"
+          }
+        }
+      }
+    },
+    "You've been signed out. Remove this account's Stories, Moments and videos from this iPhone too?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已退出登录。是否同时从这台 iPhone 上移除此账户的故事、瞬间和视频？"
+          }
+        }
+      }
+    },
+    "Your Moments, Stories and videos on this iPhone" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 上的瞬间、故事和视频"
+          }
+        }
+      }
+    },
+    "Your Stories, and the Moments and videos backed up to the cloud" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的故事，以及备份到云端的瞬间和视频"
+          }
+        }
+      }
+    },
+    "Your YoTale account was deleted" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的 YoTale 账户已删除"
+          }
+        }
+      }
+    },
+    "Your account and its cloud data were deleted on %@." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的账户及其云端数据已于 %@ 删除。"
+          }
+        }
+      }
+    },
+    "Your account and its cloud data were deleted." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的账户及其云端数据已删除。"
+          }
+        }
+      }
+    },
+    "Your account and sign-in" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的账户和登录信息"
+          }
+        }
+      }
+    },
+    "Your account deletion started, but this iPhone couldn't save that. Reopen YoTale." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "账户删除已开始，但这台 iPhone 未能保存该状态。请重新打开 YoTale。"
+          }
+        }
+      }
+    },
+    "Your account is being deleted" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的账户正在删除中"
+          }
+        }
+      }
+    },
+    "Your account wasn't deleted" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的账户未被删除"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

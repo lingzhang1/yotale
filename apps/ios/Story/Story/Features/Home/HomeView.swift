@@ -19,6 +19,7 @@ struct HomeView: View {
     @State private var confirmSignOut = false
     @State private var showSignIn = false   // Home-header direct sign-in sheet (no gated action required)
     @State private var showPlus = false     // Billing V1 / B3: YoTale Plus subscription screen
+    @State private var showDeleteAccount = false   // Account deletion (D5)
 
     // R1 account isolation: the @Query is unscoped (SwiftData predicates can't close over runtime auth state),
     // so we filter in memory through the CENTRALIZED AccountScope rules. SwiftUI re-renders this view when
@@ -115,6 +116,11 @@ struct HomeView: View {
                     }
                     Button { showPlus = true } label: { Label("YoTale Plus", systemImage: "sparkles") }
                     Button("Sign Out", role: .destructive) { confirmSignOut = true }
+                    if AccountDeletionAvailability.offered {
+                        Button(role: .destructive) { showDeleteAccount = true } label: {
+                            Label(L10n.t("Delete Account"), systemImage: "trash")
+                        }
+                    }
                 } label: {
                     Image(systemName: "person.crop.circle")
                         .font(.system(size: 20))
@@ -137,6 +143,7 @@ struct HomeView: View {
             Text("Your Moments and Stories stay on this device. You'll sign in again to use Story's AI.")
         }
         .sheet(isPresented: $showPlus) { PlusSubscriptionView() }
+        .sheet(isPresented: $showDeleteAccount) { DeleteAccountView() }
         .sheet(isPresented: $showSignIn) {
             // Direct sign-in from Home: no pending action to resume — dismiss on success or cancel. On success,
             // AuthStore resolves the canonical story_user_id (R1.1) and the Home lists re-scope to the account.
