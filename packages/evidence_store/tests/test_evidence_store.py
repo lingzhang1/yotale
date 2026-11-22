@@ -183,3 +183,43 @@ def test_delete_for_owner_removes_all_and_is_account_scoped():
     assert n == 2
     assert s.get_manifest(owner="o1", moment_id="m1") is None
     assert s.get_manifest(owner="o2", moment_id="m1") is not None   # other account untouched
+
+
+def test_delete_for_owner_follows_every_query_page():
+    s = _store()
+    for i in range(5):
+        s.put(owner="o1", moment_id=f"m{i}", content_sha256=f"{i}" * 64, frames=_frames(3))
+    real_query = s._ddb.query
+    calls = []
+
+    def paged(**kw):   # one item per page, like a 1 MB page boundary
+        resp = real_query(TableName=kw["TableName"], KeyConditionExpression=kw["KeyConditionExpression"],
+                          ExpressionAttributeValues=kw["ExpressionAttributeValues"])
+        items = sorted(resp["Items"], key=lambda it: it["cloud_media_id"]["S"])
+        start = kw.get("ExclusiveStartKey")
+        if start:
+            items = [it for it in items if it["cloud_media_id"]["S"] > start["cloud_media_id"]["S"]]
+        calls.append(1)
+        page = items[:1]
+        out = {"Items": page}
+        if len(items) > 1:
+            out["LastEvaluatedKey"] = {"story_user_id": page[0]["story_user_id"],
+                                       "cloud_media_id": page[0]["cloud_media_id"]}
+        return out
+
+    s._ddb.query = paged
+    assert s.delete_for_owner(owner="o1") == 5
+    assert len(calls) >= 5
+
+
+def test_delete_for_owner_reports_a_blob_it_could_not_delete():
+    s = _store()
+    s.put(owner="o1", moment_id="m1", content_sha256=SHA_A, frames=_frames(3))
+
+    def boom(Bucket, Key):
+        raise RuntimeError("AccessDenied")
+
+    s._s3.delete_object = boom
+    with pytest.raises(e.EvidenceDeleteIncomplete):
+        s.delete_for_owner(owner="o1")
+    assert s.get_manifest(owner="o1", moment_id="m1") is not None   # manifest kept so a retry can find the blob
