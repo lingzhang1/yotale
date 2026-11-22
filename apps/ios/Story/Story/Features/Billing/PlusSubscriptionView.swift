@@ -245,6 +245,7 @@ struct PlusSubscriptionView: View {
         case .unavailable: return L10n.t("Couldn't reach the App Store or YoTale. Your purchase is safe. Please try again in a moment.")
         case .failed: return L10n.t("The purchase couldn't be completed.")
         case .notActive: return L10n.t("Your purchase was received, but your subscription is not active yet. If you were charged, tap Restore Purchases or try again in a moment.")
+        case .ownedByAnotherAccount: return L10n.t("This Apple ID's YoTale Plus subscription belongs to a different YoTale account. Sign in to that account to use it, or subscribe with a different Apple ID.")
         }
     }
 }

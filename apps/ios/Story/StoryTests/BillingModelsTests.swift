@@ -187,6 +187,35 @@ final class BillingV2ContractTests: XCTestCase {
         XCTAssertFalse(d.message.isEmpty)
     }
 
+    // Billing V2 preflight (dev 2026-11-21): the app must show the upgrade screen BEFORE starting a video the server will refuse.
+    private func ent(_ fields: String) throws -> BillingEntitlement {
+        try decoder().decode(BillingEntitlement.self, from: Data("{\(fields)}".utf8))
+    }
+
+    func testPreflightRefusesAFreeStarterWithNoVideoLeft() throws {
+        let e = try ent(#""billing_mode":"enforce","enforced":true,"plan":"free_starter","status":"free_starter","unlimited":false,"trial":{"state":"active"},"videos":{"total":2,"used":2,"reserved":0,"remaining":0},"moments":{"total":30,"used":0,"reserved":0,"remaining":30}"#)
+        XCTAssertEqual(e.videoPreflightDenial?.code, .videoCreditsExhausted)
+        XCTAssertEqual(e.videoPreflightDenial?.canUpgrade, true)
+    }
+
+    func testPreflightRefusesAnExpiredTrialAndALapsedPlus() throws {
+        let trial = try ent(#""billing_mode":"enforce","enforced":true,"plan":"free_starter","status":"free_starter","unlimited":false,"trial":{"state":"expired"},"videos":{"total":2,"used":1,"reserved":0,"remaining":1}"#)
+        XCTAssertEqual(trial.videoPreflightDenial?.code, .trialExpired)
+        let lapsed = try ent(#""billing_mode":"enforce","enforced":true,"plan":"plus","status":"plus_expired","unlimited":false,"capabilities":{"video_generation":"metered","subscription":{"status":"expired","ends_at":1}}"#)
+        XCTAssertEqual(lapsed.videoPreflightDenial?.code, .subscriptionRequired)
+    }
+
+    func testPreflightNeverRefusesWhenAllowedUnenforcedOrUnlimited() throws {
+        let left = try ent(#""billing_mode":"enforce","enforced":true,"plan":"free_starter","status":"free_starter","unlimited":false,"videos":{"total":2,"used":1,"reserved":0,"remaining":1}"#)
+        XCTAssertNil(left.videoPreflightDenial)
+        let observe = try ent(#""billing_mode":"observe","enforced":false,"plan":"free_starter","status":"free_starter","unlimited":false,"videos":{"total":2,"used":2,"reserved":0,"remaining":0}"#)
+        XCTAssertNil(observe.videoPreflightDenial, "observe never blocks")
+        let plus = try ent(#""billing_mode":"enforce","enforced":true,"plan":"plus","status":"plus_active","unlimited":true,"capabilities":{"video_generation":"unlimited","subscription":{"status":"active","ends_at":4000000000}}"#)
+        XCTAssertNil(plus.videoPreflightDenial)
+        let admin = try ent(#""billing_mode":"enforce","enforced":true,"plan":"admin_granted","status":"admin_granted","unlimited":false,"videos":{"total":5,"used":5,"reserved":0,"remaining":0}"#)
+        XCTAssertEqual(admin.videoPreflightDenial?.action, "contact_support")
+    }
+
     func testALapsedPlusAccountShowsNoStarterCountersEvenIfAnOlderServerSentThem() throws {
         let json = """
         {"contract_version":2,"billing_mode":"enforce","enforced":true,"plan":"plus","status":"plus_expired","unlimited":false,

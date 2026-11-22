@@ -29,6 +29,7 @@ final class BillingStore {
         case unavailable        // server or App Store not reachable / not configured; try again later
         case failed
         case notActive          // R4: the server accepted the purchase but the account is still not Plus
+        case ownedByAnotherAccount  // this Apple ID's Plus belongs to a different YoTale account (403 token mismatch / 409 bound)
     }
 
     private(set) var entitlement: BillingEntitlement?
@@ -50,6 +51,9 @@ final class BillingStore {
     @ObservationIgnored private var started = false
     @ObservationIgnored private var inFlight = Set<String>()
     @ObservationIgnored private var recovering = false
+    /// Transactions the server refused for THIS account as another account's purchase. Not re-posted again this session (every
+    /// foreground and every Subscribe tap used to re-post the same ~8 sandbox renewals). Cleared on sign-out / account switch.
+    @ObservationIgnored private var foreignJWS = Set<String>()
 
     init(service: BillingService = BillingService()) {
         self.service = service
@@ -79,6 +83,17 @@ final class BillingStore {
     func stop() {
         purchases.stopListening()
         started = false
+    }
+
+    /// Pre-check before starting a NEW video (create, another version, revise). Re-reads the server first whenever the account is
+    /// metered (or the entitlement is unknown), so a stale "0 left" never blocks a user who just subscribed and a stale "1 left"
+    /// never lets the app start work the server will refuse. A failed read keeps the last server answer. Advisory only: the
+    /// server's 402 stays authoritative; nil proceeds.
+    func videoPreflightDenial() async -> BillingDenial? {
+        if entitlement == nil || (entitlement?.enforced == true && entitlement?.isUnlimited == false) {
+            if phase == .idle { await refresh() }
+        }
+        return entitlement?.videoPreflightDenial
     }
 
     func refresh() async {
@@ -119,6 +134,7 @@ final class BillingStore {
         notice = nil
         verifying = false
         willAutoRenew = nil
+        foreignJWS.removeAll()
     }
 
     /// Billing V2: on sign-in and on foreground, post any Plus transaction StoreKit still holds (a purchase whose earlier post failed
@@ -136,7 +152,7 @@ final class BillingStore {
         for (id, jws) in pending {
             if await forward(jws: jws, reload: false) == .accepted { accepted = true; await purchases.finish(id: id) }
         }
-        if notice == .failed { notice = notice0 }    // a background replay of another account's purchase is not this screen's error
+        if notice == .failed || notice == .ownedByAnotherAccount { notice = notice0 }    // a background replay of another account's purchase is not this screen's error
         // R3: with nothing to replay, a successful read that says not Plus means nothing is left to confirm.
         await settleAfterAccept(accepted || pending.isEmpty)
     }
@@ -146,7 +162,7 @@ final class BillingStore {
     }
 
     private func clearFailureNotice() {
-        if let n = notice, n == .needsSignIn || n == .unavailable || n == .failed { notice = nil }
+        if let n = notice, n == .needsSignIn || n == .unavailable || n == .failed || n == .ownedByAnotherAccount { notice = nil }
     }
 
     // MARK: purchase / restore
@@ -168,10 +184,18 @@ final class BillingStore {
             notice = .unavailable
             return
         }
+        // This Apple ID already has an active Plus subscription bought under ANOTHER YoTale account: StoreKit would not sell a
+        // second one, it hands back that subscription, and the server refuses it for this account. Say so instead of
+        // flashing "Confirming" and a generic failure.
+        if let owner = await purchases.activePlusAccountToken(), owner != token {
+            notice = .ownedByAnotherAccount
+            return
+        }
 
         switch await purchases.purchase(product, accountToken: token) {
         case .purchased(let jws):
-            verifying = true
+            // `verifying` ("Confirming your subscription") is set by `forward` only when the post fails RETRYABLY; while the
+            // post is in flight the Subscribe button already shows progress (phase = purchasing), so a refusal never flashes it.
             switch await forward(jws: jws) {
             case .accepted:
                 await purchases.finishPending()
@@ -213,6 +237,7 @@ final class BillingStore {
     /// A rejection is NOT finished and NOT retried in a loop: a foreign-account or invalid transaction would only be rejected again.
     /// The same JWS is never posted twice concurrently (listener + purchase + recovery can all see one transaction).
     func forward(jws: String, reload: Bool = true) async -> ForwardResult {
+        if foreignJWS.contains(jws) { notice = .ownedByAnotherAccount; return .failed }
         guard inFlight.insert(jws).inserted else { return .duplicate }
         defer { inFlight.remove(jws) }
         do {
@@ -224,8 +249,13 @@ final class BillingStore {
             notice = .needsSignIn
             verifying = true
             return .failed
-        } catch BillingServiceError.rejected {
-            notice = .failed
+        } catch BillingServiceError.rejected(let code) {
+            if code == "app_account_token_mismatch" || code == "transaction_bound_elsewhere" {
+                foreignJWS.insert(jws)
+                notice = .ownedByAnotherAccount
+            } else {
+                notice = .failed
+            }
             verifying = false
             return .failed
         } catch {

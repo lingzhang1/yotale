@@ -123,6 +123,8 @@ struct StoryResultView: View {
     @State private var generationPhase: String?
     @State private var generationFailed: String?        // failureCategory of a failed op (honest message)
     @State private var showPlusFromRefusal = false       // Billing V2: a background attempt was refused with a 402
+    @State private var preflightDenial: BillingDenial?   // Billing V2: a revise the server would refuse (no video left)
+    @Environment(BillingStore.self) private var billing
     @State private var showExport = false                // consolidated Save-or-Share sheet
     // R7-D — cloud-restore of the generated MP4 when the local file is absent but a verified backup exists.
     @State private var restoring = false
@@ -247,6 +249,7 @@ struct StoryResultView: View {
             }
             .task { await observePendingRecovery() }
             .sheet(isPresented: $showPlusFromRefusal) { PlusSubscriptionView() }
+            .sheet(item: $preflightDenial) { denial in PlusSubscriptionView(denial: denial) }
 
             versionChipRow
             actionPanel
@@ -785,6 +788,12 @@ struct StoryResultView: View {
         reviseWorking = true
         reviseError = nil
         Task { @MainActor in
+            // Billing V2 preflight: a revise is a new video; with none left, show the upgrade screen instead of starting it.
+            if let denial = await billing.videoPreflightDenial() {
+                reviseWorking = false
+                preflightDenial = denial
+                return
+            }
             // Carry the base version's soundtrack into the revise so the revised video keeps its music
             // (reviseVersion with no music would render silent). My Music resolves locally; a provider track
             // is re-resolved live (download + analysis) exactly as Change Music does. Nil => honestly no music.

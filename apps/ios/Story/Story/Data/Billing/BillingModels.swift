@@ -92,6 +92,26 @@ struct BillingEntitlement: Decodable, Equatable {
     /// enforces it. Never for Plus or grandfathered accounts (S6).
     /// S1: also gated on plan, so a lapsed Plus account never shows leftover starter counters (the server omits them too).
     var showsAllowances: Bool { enforced && !isUnlimited && (plan == "free_starter" || plan == "admin_granted") && videos != nil }
+    /// A NEW video the server will certainly refuse, judged from this server read (dev 2026-11-21: the third Free video opened the
+    /// generation screen and only then got its 402). ADVISORY: it lets the app show the upgrade screen BEFORE any preparation or
+    /// AI call; the server's 402 stays authoritative, and nil (unknown / allowed) always proceeds.
+    var videoPreflightDenial: BillingDenial? {
+        guard enforced, !isUnlimited else { return nil }
+        if plan == "plus" && status == "plus_expired" {
+            return BillingDenial(code: .subscriptionRequired, action: "subscribe",
+                                 videosRemaining: nil, momentsRemaining: moments?.remaining)
+        }
+        if plan == "free_starter" && trial?.state == "expired" {
+            return BillingDenial(code: .trialExpired, action: "subscribe",
+                                 videosRemaining: videos?.remaining, momentsRemaining: moments?.remaining)
+        }
+        if plan == "free_starter" || plan == "admin_granted", let v = videos, v.remaining < 1 {
+            return BillingDenial(code: .videoCreditsExhausted, action: plan == "free_starter" ? "subscribe" : "contact_support",
+                                 videosRemaining: v.remaining, momentsRemaining: moments?.remaining)
+        }
+        return nil
+    }
+
     /// The AI-idea counter shows only for an enforced Free starter that the server reports as metered for ideas.
     var showsIdeaAllowance: Bool { enforced && !isUnlimited && plan == "free_starter" && ideas != nil }
 }
@@ -106,7 +126,8 @@ enum BillingDenialCode: String {
     case unknown
 }
 
-struct BillingDenial: Equatable {
+struct BillingDenial: Equatable, Identifiable {
+    var id: String { "\(code.rawValue)|\(action)" }
     let code: BillingDenialCode
     let action: String                  // subscribe | wait_for_renewal | contact_support
     let videosRemaining: Int?

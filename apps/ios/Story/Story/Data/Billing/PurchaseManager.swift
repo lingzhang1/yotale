@@ -81,6 +81,18 @@ final class PurchaseManager {
         return out
     }
 
+    /// The appAccountToken of this Apple ID's ACTIVE Plus subscription, if StoreKit has one (nil = none active, or no token).
+    /// A different token than the signed-in account's means the subscription belongs to another YoTale account: a purchase
+    /// would only hand back that subscription, which the server correctly refuses (dev 2026-11-22, 403 token mismatch).
+    func activePlusAccountToken() async -> UUID? {
+        for await result in Transaction.currentEntitlements {
+            guard case .verified(let txn) = result, txn.productID == Self.plusProductID, txn.revocationDate == nil else { continue }
+            if let exp = txn.expirationDate, exp < Date() { continue }
+            return txn.appAccountToken
+        }
+        return nil
+    }
+
     /// Whether the Plus subscription on this Apple ID will auto-renew (false = canceled but still active until the period end).
     /// Display wording only; nil when StoreKit has no verified status.
     func willAutoRenew(_ product: Product?) async -> Bool? {
