@@ -111,6 +111,8 @@ struct StoryCreatingView: View {
 
     @State private var coordinator: StoryCreationCoordinator?
     @State private var showPlus = false               // Billing V1: YoTale Plus opened from an entitlement denial
+    @State private var preflightDenial: BillingDenial? // Billing V2: refused before any work started (last-line preflight)
+    @Environment(BillingStore.self) private var billing
     // R-d.2 keep-alive: creating a Story runs a long foreground pipeline (Opus planning + AVAssetExportSession),
     // both of which iOS SUSPENDS when the screen locks/darkens — killing the request (-1005) and the export
     // ("Operation Interrupted"). Disabling the idle timer stops auto-lock mid-create; a background task buys a
@@ -172,6 +174,13 @@ struct StoryCreatingView: View {
             // prod renderer = MediaEngineV1 (device-gated). R-d: resolve a soundtrack FIRST (recommend top
             // track -> download), then start MUSIC-AWARE creation; if music is unavailable (provider off,
             // plan/provider failure) fall back to the device-verified no-music path. Music never blocks.
+            // Billing V2 last-line preflight: any NEW video (not a resume of work already accepted) that the server would refuse
+            // shows the upgrade screen here, before music, evidence preparation or any AI call. The entry screens check first;
+            // this covers every other way in.
+            if coordinator == nil, !resumePending, let denial = await billing.videoPreflightDenial() {
+                preflightDenial = denial
+                return
+            }
             if coordinator == nil {
                 createStartedAt = Date()   // start the patience timer from the real creation moment
                 let coord = StoryCreationCoordinator(planner: EditPlannerService(), context: context)
@@ -258,6 +267,9 @@ struct StoryCreatingView: View {
 
     @ViewBuilder
     private var content: some View {
+        if let denial = preflightDenial {
+            entitlementBody(denial)
+        } else {
         switch phase {
         case .indeterminate(let status):
             creatingBody(status: status, determinate: false, progress: 0)
@@ -271,6 +283,7 @@ struct StoryCreatingView: View {
         case .completed:
             // Transition handled by navigationDestination; show the final frame of the bar meanwhile.
             creatingBody(status: L10n.t("Finishing up…"), determinate: true, progress: 1.0)
+        }
         }
     }
 

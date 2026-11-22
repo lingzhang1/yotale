@@ -81,6 +81,17 @@ final class BillingStore {
         started = false
     }
 
+    /// Pre-check before starting a NEW video (create, another version, revise). Re-reads the server first whenever the account is
+    /// metered (or the entitlement is unknown), so a stale "0 left" never blocks a user who just subscribed and a stale "1 left"
+    /// never lets the app start work the server will refuse. A failed read keeps the last server answer. Advisory only: the
+    /// server's 402 stays authoritative; nil proceeds.
+    func videoPreflightDenial() async -> BillingDenial? {
+        if entitlement == nil || (entitlement?.enforced == true && entitlement?.isUnlimited == false) {
+            if phase == .idle { await refresh() }
+        }
+        return entitlement?.videoPreflightDenial
+    }
+
     func refresh() async {
         guard phase == .idle else { return }
         phase = .loading

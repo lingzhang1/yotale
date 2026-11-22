@@ -15,6 +15,9 @@ struct CreateStoryPreviewView: View {
     @Environment(\.modelContext) private var context
     @State private var cloudGate = CloudAuthGateModel()
     @Environment(AuthStore.self) private var auth
+    @Environment(BillingStore.self) private var billing
+    /// Billing V2 preflight: the server will refuse a new video, so show the upgrade screen before any preparation.
+    @State private var preflightDenial: BillingDenial?
     @Bindable var story: StoryModel
     @Environment(\.dismiss) private var dismiss
     /// When set, this host launches a CREATE ANOTHER VERSION from that parent (Explore + Customize), not a
@@ -117,6 +120,12 @@ struct CreateStoryPreviewView: View {
     private func promptDuration() {
         recommendingDuration = true
         Task {
+            // Billing V2 preflight (create AND create-another-version both come through here): a Free starter with no video
+            // left goes straight to the upgrade screen instead of Customize -> music -> generation -> 402.
+            if let denial = await billing.videoPreflightDenial() {
+                await MainActor.run { recommendingDuration = false; preflightDenial = denial }
+                return
+            }
             let payload = EditPlanRequestBuilder.momentsPayload(for: story, context: context)
             let rec: DurationRecommendation? = await {
                 guard let p = payload else { return nil }
@@ -442,6 +451,14 @@ struct CreateStoryPreviewView: View {
         // view, and a nested navigationDestination set from onAppear / after a sheet dismissal fires
         // unreliably on a pushed view (it silently dropped the Creating push, so the edit-plan job was never
         // submitted). A cover is reliable regardless of nav-stack timing.
+        .sheet(item: $preflightDenial, onDismiss: {
+            // Subscribed from the upgrade sheet -> continue the create; otherwise back to the Story (never a blank host).
+            if billing.entitlement?.videoPreflightDenial == nil && billing.entitlement?.isUnlimited == true {
+                promptDuration()
+            } else {
+                userBackedOut = true
+            }
+        }) { denial in PlusSubscriptionView(denial: denial) }
         .fullScreenCover(isPresented: $showCreating) {
             StoryCreatingView(story: story, preresolvedMusic: chosenMusic, musicIsPreresolved: true,
                               sourceVersion: recreateSource,
