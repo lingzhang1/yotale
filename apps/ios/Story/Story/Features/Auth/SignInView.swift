@@ -1,4 +1,3 @@
-import AuthenticationServices
 import SwiftUI
 
 /// Passwordless email sign-up AND sign-in in ONE screen (TestFlight self-signup, Option A): enter email →
@@ -22,39 +21,61 @@ struct SignInView: View {
     @State private var timer: Timer?
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text("Sign in to use Story's AI")
-                .font(.headline)
-            Text("Your captured Moments and saved Stories stay on this device either way.")
-                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        // Top-aligned in a scroll view: the sheet no longer floats the form in the middle of an empty screen,
+        // and the keyboard can't cover the buttons on small phones.
+        ScrollView {
+            VStack(spacing: 24) {
+                header
 
-            switch step {
-            case .email: emailStep
-            case .code: codeStep
-            }
-
-            if StoryAuthConfig.appleSignInAvailable {
-                // Apple's standard button (HIG). It only draws the button; the tap runs our Cognito web flow.
-                AppleSignInButton(enabled: !busy) { Task { await appleSignIn() } }
-                    .frame(maxWidth: .infinity).frame(height: 48)
-                if StoryAuthConfig.googleSignInAvailable {
-                    // Dev placeholder: Google's branding rules require its official "G" mark before an App
-                    // Store build (asset not yet in the catalog).
-                    Button { Task { await googleSignIn() } } label: {
-                        Text("Continue with Google").font(.body.weight(.medium)).frame(maxWidth: .infinity)
-                            .frame(height: 36)
-                    }.buttonStyle(.bordered).disabled(busy)
+                switch step {
+                case .email:
+                    // One-tap providers first, then the email code path under an "or" divider.
+                    if StoryAuthConfig.appleSignInAvailable {
+                        VStack(spacing: 12) {
+                            AppleSignInButton(enabled: !busy) { Task { await appleSignIn() } }
+                            if StoryAuthConfig.googleSignInAvailable {
+                                GoogleSignInButton(enabled: !busy) { Task { await googleSignIn() } }
+                            }
+                        }
+                        orDivider
+                    } else {
+                        Label("Apple sign-in unavailable in this build", systemImage: "applelogo")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    emailStep
+                case .code:
+                    codeStep
                 }
-            } else {
-                Label("Apple sign-in unavailable in this build", systemImage: "applelogo")
-                    .font(.footnote).foregroundStyle(.tertiary)
-            }
 
-            if let error { Text(error).font(.footnote).foregroundStyle(.red).multilineTextAlignment(.center) }
-            Button("Not now", action: onCancel).font(.footnote)
+                if let error { Text(error).font(.footnote).foregroundStyle(.red).multilineTextAlignment(.center) }
+                Button("Not now", action: onCancel).font(.subheadline)
+            }
+            .padding(.horizontal, StoryTheme.screenPadding)
+            .padding(.top, 48).padding(.bottom, 24)
         }
-        .padding()
+        .scrollDismissesKeyboard(.interactively)
+        .presentationDragIndicator(.visible)
         .onDisappear { timer?.invalidate() }
+    }
+
+    private var header: some View {
+        VStack(spacing: 10) {
+            Text(verbatim: "YoTale")
+                .font(StoryTheme.display(36))
+            Text("Sign in to use Story's AI")
+                .font(.title3.weight(.semibold))
+            Text("Your captured Moments and saved Stories stay on this device either way.")
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .padding(.bottom, 8)
+    }
+
+    private var orDivider: some View {
+        HStack(spacing: 12) {
+            Rectangle().fill(Color(.separator)).frame(height: 1)
+            Text("Or use your email").font(.footnote).foregroundStyle(.secondary).fixedSize()
+            Rectangle().fill(Color(.separator)).frame(height: 1)
+        }
     }
 
     private var emailStep: some View {
@@ -62,34 +83,35 @@ struct SignInView: View {
             TextField("you@example.com", text: $email)
                 .textContentType(.emailAddress).keyboardType(.emailAddress)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
+                .signInFieldStyle()
             Button { Task { await requestCode() } } label: {
                 HStack { if busy { ProgressView() }; Text("Continue") }.frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .signInPrimaryStyle()
             .disabled(busy || !AuthHelpers.isPlausibleEmail(email))
             Text("New here or returning — we'll email you a code. No password needed.")
-                .font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
+                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
     }
 
     private var codeStep: some View {
         VStack(spacing: 12) {
             Text("Enter the code sent to \(challenge?.maskedDestination ?? AuthHelpers.normalizeEmail(email))")
-                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             TextField("123456", text: $code)
-                .keyboardType(.numberPad).textFieldStyle(.roundedBorder).multilineTextAlignment(.center)
+                .keyboardType(.numberPad).multilineTextAlignment(.center)
                 .textContentType(.oneTimeCode)
+                .signInFieldStyle()
             Button { Task { await verify() } } label: {
                 HStack { if busy { ProgressView() }; Text("Verify") }.frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent).disabled(busy || code.count < 4)
+            .signInPrimaryStyle().disabled(busy || code.count < 4)
             Button(cooldownLeft > 0 ? L10n.t("Resend in \(cooldownLeft)s") : L10n.t("Resend code")) {
                 Task { await resend() }
             }
-            .font(.footnote).disabled(busy || cooldownLeft > 0)
+            .font(.subheadline).disabled(busy || cooldownLeft > 0)
             Text("The code can take a minute or two to arrive. Check your spam folder if you don't see it.")
-                .font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
+                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
     }
 
@@ -172,34 +194,83 @@ struct SignInView: View {
     }
 }
 
-/// Apple's system "Continue with Apple" button (`ASAuthorizationAppleIDButton`), as Apple's design rules
-/// require. SwiftUI's `SignInWithAppleButton` is not used because it always starts the NATIVE Apple flow,
-/// whose identity token a Cognito User Pool cannot accept; this button only renders and reports the tap, and
-/// `AuthStore.signInWithApple()` runs the Cognito hosted (web) flow. The system localizes the title.
-private struct AppleSignInButton: UIViewRepresentable {
+// ---- shared sign-in controls ----
+// Every control on this screen uses the same height and corner radius so the providers and the email path
+// read as one set, and so Apple and Google get equal prominence (both brands' rules ask for that).
+private enum SignInMetrics {
+    static let height: CGFloat = 50
+    static let cornerRadius: CGFloat = 12
+}
+
+private extension View {
+    func signInFieldStyle() -> some View {
+        padding(.horizontal, 14)
+            .frame(height: SignInMetrics.height)
+            .background(Color(.secondarySystemBackground),
+                        in: RoundedRectangle(cornerRadius: SignInMetrics.cornerRadius))
+            .overlay(RoundedRectangle(cornerRadius: SignInMetrics.cornerRadius)
+                .strokeBorder(Color(.separator), lineWidth: 1))
+    }
+
+    func signInPrimaryStyle() -> some View {
+        buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .buttonBorderShape(.roundedRectangle(radius: SignInMetrics.cornerRadius))
+    }
+}
+
+/// Custom "Continue with Apple" button drawn to Apple's HIG for Sign in with Apple (black in light mode, white
+/// in dark mode, Apple logo plus title, same height as the other buttons). The system
+/// `ASAuthorizationAppleIDButton` was dropped because it titles itself in the PHONE's language and ignores the
+/// app's own language setting, so a Chinese app showed an English button. SwiftUI's `SignInWithAppleButton` is
+/// not an option either: it always starts the native Apple flow, which a Cognito User Pool cannot accept. The tap
+/// runs `AuthStore.signInWithApple()` (Cognito hosted web flow).
+private struct AppleSignInButton: View {
     var enabled: Bool
     var action: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
-    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
-
-    func makeUIView(context: Context) -> ASAuthorizationAppleIDButton {
-        let button = ASAuthorizationAppleIDButton(type: .continue, style: colorScheme == .dark ? .white : .black)
-        button.cornerRadius = 10
-        button.addTarget(context.coordinator, action: #selector(Coordinator.tapped), for: .touchUpInside)
-        return button
+    var body: some View {
+        let dark = colorScheme == .dark
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "applelogo").font(.system(size: 19, weight: .medium))
+                Text("Continue with Apple").font(.system(size: 17, weight: .semibold))
+            }
+            .foregroundStyle(dark ? Color.black : Color.white)
+            .frame(maxWidth: .infinity, minHeight: SignInMetrics.height)
+            .background(dark ? Color.white : Color.black,
+                        in: RoundedRectangle(cornerRadius: SignInMetrics.cornerRadius))
+            .contentShape(RoundedRectangle(cornerRadius: SignInMetrics.cornerRadius))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
     }
+}
 
-    func updateUIView(_ button: ASAuthorizationAppleIDButton, context: Context) {
-        context.coordinator.action = action
-        button.isEnabled = enabled
-        button.alpha = enabled ? 1 : 0.5
-        // The style is fixed at init, so a light/dark switch shows on the next appearance of this screen.
-    }
+/// "Continue with Google" in Google's Light theme (fill #FFFFFF, 1 pt #747775 stroke, #1F1F1F text) with the
+/// official standard-color "G" at its fixed 20 pt size, cropped from Google's signin-assets.zip
+/// (Assets.xcassets/google_g). Google allows the title to be localized to the app's language.
+private struct GoogleSignInButton: View {
+    var enabled: Bool
+    var action: () -> Void
 
-    final class Coordinator: NSObject {
-        var action: () -> Void
-        init(action: @escaping () -> Void) { self.action = action }
-        @objc func tapped() { action() }
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image("google_g").resizable().frame(width: 20, height: 20).accessibilityHidden(true)
+                Text("Continue with Google").font(.system(size: 17, weight: .medium))
+            }
+            .foregroundStyle(Color(hex: 0x1F1F1F))
+            .frame(maxWidth: .infinity, minHeight: SignInMetrics.height)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: SignInMetrics.cornerRadius))
+            .overlay(RoundedRectangle(cornerRadius: SignInMetrics.cornerRadius)
+                .strokeBorder(Color(hex: 0x747775), lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: SignInMetrics.cornerRadius))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
     }
 }
