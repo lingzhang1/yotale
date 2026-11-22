@@ -88,7 +88,7 @@ class DeletionConfig:
         """The deployed worker's wiring (D2 sets these). A missing value raises: never a default resource."""
         e = os.environ
         req = lambda k: e[k]  # noqa: E731  (KeyError = fail closed)
-        return cls(env=req("STORY_ENV"), region=e.get("AWS_REGION", "us-east-1"),
+        return cls(env=req("STORY_ENVIRONMENT"), region=e.get("AWS_REGION", "us-east-1"),
                    requests_table=req("STORY_ACCOUNT_DELETIONS_TABLE"), users_table=req("STORY_USERS_TABLE"),
                    claims_table=req("STORY_IDENTITY_CLAIMS_TABLE"), usage_table=req("STORY_USER_USAGE_TABLE"),
                    media_table=req("STORY_MEDIA_TABLE"), stories_table=req("STORY_STORIES_TABLE"),

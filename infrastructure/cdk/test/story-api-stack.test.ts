@@ -111,10 +111,10 @@ describe("StoryApiStack (Milestone A)", () => {
     // (main + DLQ), the worker (+ the S3 auto-delete helper), the staging bucket, an SQS event source,
     // and the reconcile rule. API Gateway / Cognito / Fargate remain forbidden (separate tests below).
     // R2/R3 (owner-approved) adds the media ownership table -> 2 DynamoDB tables total.
-    template.resourceCountIs("AWS::DynamoDB::Table", 5);  // jobs + media + R7 stories + R7-E understanding + P0-P3 rate-limits
+    template.resourceCountIs("AWS::DynamoDB::Table", 6);  // jobs + media + R7 stories + R7-E understanding + P0-P3 rate-limits + account-deletions (D2)
     template.resourceCountIs("AWS::SQS::Queue", 2);          // jobs + DLQ
     template.resourceCountIs("AWS::Lambda::EventSourceMapping", 1);
-    template.resourceCountIs("AWS::Events::Rule", 1);         // reconcile tick
+    template.resourceCountIs("AWS::Events::Rule", 2);         // reconcile tick + account-deletion schedule (D2)
     // At least the worker Lambda + the staging bucket exist.
     const all = template.toJSON().Resources as Record<string, { Type: string }>;
     const types = Object.values(all).map((r) => r.Type);
@@ -409,10 +409,10 @@ describe("P0 Beta Observability construct", () => {
     t.resourceCountIs("AWS::Budgets::Budget", 0);
   });
 
-  test("enabled: 4 dashboards, 10 alarms, 1 SNS topic", () => {
+  test("enabled: 4 dashboards, 15 alarms, 1 SNS topic", () => {
     const t = synthWith({ environment: "test", observability: "true" });
     t.resourceCountIs("AWS::CloudWatch::Dashboard", 4);
-    t.resourceCountIs("AWS::CloudWatch::Alarm", 10);
+    t.resourceCountIs("AWS::CloudWatch::Alarm", 15);   // 10 observability + 5 account deletion (D2)
     t.resourceCountIs("AWS::SNS::Topic", 1);
     // Every alarm wires an SNS action (no silent alarm).
     const alarms = t.findResources("AWS::CloudWatch::Alarm");

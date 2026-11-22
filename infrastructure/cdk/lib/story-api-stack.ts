@@ -13,6 +13,7 @@ import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as fs from "fs";
 import * as path from "path";
 import { Observability } from "./observability";
+import { AccountDeletion } from "./account-deletion";
 
 export interface StoryApiStackProps extends cdk.StackProps {
   /** Deployment environment name (development | staging | production). */
@@ -826,8 +827,7 @@ export class StoryApiStack extends cdk.Stack {
 
     // P0 Beta Observability (opt-in via context, default OFF so a plain synth is unchanged). Provisions
     // nothing at synth time; the owner enables it on deploy after B0 beta infra is accepted.
-    if (props.enableObservability) {
-      new Observability(this, "Observability", {
+    const observability = props.enableObservability ? new Observability(this, "Observability", {
         environment,
         jobsQueue,
         dlq,
@@ -836,6 +836,23 @@ export class StoryApiStack extends cdk.Stack {
         alarmDestination: props.alarmDestination,
         monthlyBudgetUsd: props.monthlyBudgetUsd ?? (environment === "beta" ? 100 : undefined),
         createBudget: props.createBudget,
+      }) : undefined;
+
+    // Account deletion D2 (design 5.2, 5.4, 5.11): request table + scheduled worker + its role. DEVELOPMENT ONLY
+    // until Ling approves beta (design 7.5, 8.12): extending this list to "beta" is that reviewed change. Inert
+    // until D3 adds the routes: only the operator CLI can create a request.
+    const ACCOUNT_DELETION_ENVIRONMENTS = ["development", "test"];
+    if (ACCOUNT_DELETION_ENVIRONMENTS.includes(environment)) {
+      new AccountDeletion(this, "AccountDeletion", {
+        environment,
+        mediaTable, storiesTable, understandingTable, rateLimitTable, jobsTable, mediaBucket, stagingBucket,
+        usersTableName: storyUsersTableName,
+        identityClaimsTableName,
+        userUsageTableName,
+        // The same value App Runner gets: dev falls back to the dev pool; non-dev already failed synth above
+        // without an explicit -c cognitoUserPoolId.
+        userPoolId: cognitoUserPoolId ?? "us-east-1_AzfHOEdA5",
+        alarmTopic: observability?.alarmTopic,
       });
     }
   }
