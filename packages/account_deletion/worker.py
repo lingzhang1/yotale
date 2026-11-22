@@ -17,9 +17,12 @@ from .targets import Targets
 
 
 def _default_emit(metrics: dict, dims: Optional[dict] = None) -> None:
+    """EMF with the `env` dimension, the same shape the Observability alarms read (namespace Story/Beta)."""
     try:
+        import os
+
         from observability import emit_metrics
-        emit_metrics(metrics, dims or {})
+        emit_metrics(metrics, {"env": os.environ.get("STORY_ENVIRONMENT", "development"), **(dims or {})})
     except Exception:  # noqa: BLE001 — metrics never break deletion
         pass
 
