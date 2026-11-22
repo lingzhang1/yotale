@@ -43,13 +43,18 @@ enum AuthHelpers {
     /// display/convenience hint; the backend re-verifies the token and resolves the authoritative
     /// story_user_id. Never treat this as trusted identity.
     static func unverifiedSub(fromJWT token: String) -> String? {
+        unverifiedClaims(fromJWT: token)?["sub"] as? String
+    }
+
+    /// All claims of a JWT, UNVERIFIED (display/routing hints only; the backend re-verifies every token).
+    static func unverifiedClaims(fromJWT token: String) -> [String: Any]? {
         let parts = token.split(separator: ".")
         guard parts.count == 3 else { return nil }
         var b64 = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         while b64.count % 4 != 0 { b64 += "=" }
         guard let data = Data(base64Encoded: b64),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return obj["sub"] as? String
+        return obj
     }
 }
 

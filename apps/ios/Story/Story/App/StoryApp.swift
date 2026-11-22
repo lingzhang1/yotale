@@ -16,6 +16,11 @@ struct StoryApp: App {
     @State private var languageStore = AppLanguageStore.shared
 
     init() {
+        // Account deletion (design 5.7): if a deletion was accepted, wipe local data NOW, before any ModelContainer
+        // exists, so no file of an open store is ever deleted. On failure the marker stays and the app runs on an
+        // in-memory store behind the deletion lock screen (nothing touches disk until a retry succeeds).
+        let wipe = LocalWipe.runIfPending()
+        if wipe != .nothingPending { print("ACCOUNT_DELETION local wipe: \(wipe)") }
         // Backend selection: the build's xcconfig decides (Story = dev, Story (Beta) = beta). Delete backend
         // values older builds persisted (they made a Debug build stick to a past scheme's backend), then log ONE
         // line with what this launch ACTUALLY uses. Runs before any StoryAuthConfig / StoryBackend value is read.
@@ -42,6 +47,10 @@ struct StoryApp: App {
             GeneratedOutputBackupJobModel.self   // R7-D: persistent generated-MP4 backup queue state
         ])
         let storeURL = URL.applicationSupportDirectory.appending(path: "default.store")
+        if case .failed = wipe {
+            // swiftlint:disable:next force_try
+            container = try! ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        } else {
         do {
             // Default store location (unchanged) so existing on-device Stories keep loading.
             container = try ModelContainer(for: schema)
@@ -66,6 +75,8 @@ struct StoryApp: App {
                 fatalError("Failed to create fallback ModelContainer (original store preserved at \(preservedPath)): \(error)")
             }
         }
+        }
+        AccountDeletionCoordinator.shared.bootstrap(wipe: wipe)
         MediaStore.shared.ensureMediaDirectory()
         MediaStore.shared.purgeDownloadTemps()   // R6: discard partial downloads from a prior run (whole-file retry)
         RenderOutputStore.shared.purgeDownloadTemps()   // R7-D: discard partial generated-MP4 restores (whole-file retry)
@@ -85,7 +96,7 @@ struct StoryApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HomeView()
+            AccountDeletionRootView { HomeView() }
                 // Rebuild the view tree when the EFFECTIVE app language changes so String-valued text computed in
                 // view bodies (L10n.t) refreshes too. Stories, Moments and GeneratedOutputs live in SwiftData and
                 // are untouched; only navigation state resets to Home.
