@@ -20,7 +20,8 @@ STORY_ENV_APP_CLIENT_ID = 4f3dtn9d0nk5uq1hcvbdc7m73c
 STORY_ENV_DOMAIN_PREFIX = story-beta-auth
 STORY_ENV_REDIRECT_URI = story:$(SLASH)$(SLASH)auth
 
-// Apple Sign In availability (baked into Info.plist as StoryAppleSignInAvailable). 0 until the
-// SignInWithApple identity provider exists on this environment's Cognito pool; scripts/release_config_gate.py
-// requires an explicit 0/1 and, for 1, verifies the IdP on the pool (post-deploy).
-STORY_APPLE_SIGNIN_AVAILABLE = 0
+// Federated sign-in providers offered by this build (baked into Info.plist as StoryFederatedProviders).
+// Comma-separated Cognito provider names (SignInWithApple, Google) or `none`. scripts/release_config_gate.py
+// requires an explicit value, rejects Google without SignInWithApple (App Store Guideline 4.8), and post-deploy
+// verifies every listed provider exists on this environment's Cognito pool.
+STORY_FEDERATED_PROVIDERS = none
