@@ -699,6 +699,13 @@ export class StoryApiStack extends cdk.Stack {
 
       // App Runner: describe/update/start scoped to the dev service ARN; ListServices has no
       // resource-level support (AWS limitation) so it is a separate `*`-scoped read-only statement.
+      // Post-deploy release gate (scripts/release_config_gate.py post): confirms every federated sign-in provider the
+      // build bakes in exists on this environment's pool. Read-only, scoped to the one pool the API uses.
+      deployRole.addToPolicy(new iam.PolicyStatement({
+        sid: "ReleaseGateIdentityProviders",
+        actions: ["cognito-idp:ListIdentityProviders"],
+        resources: [`arn:aws:cognito-idp:${this.region}:${this.account}:userpool/${cognitoUserPoolId ?? "us-east-1_AzfHOEdA5"}`],
+      }));
       deployRole.addToPolicy(new iam.PolicyStatement({
         sid: "AppRunnerList",
         actions: ["apprunner:ListServices"],
