@@ -99,3 +99,26 @@ describe("Account deletion (D2)", () => {
     });
   });
 });
+
+describe("Account deletion (D3) API wiring", () => {
+  const envVars = (t: Template) => {
+    const svc = Object.values(t.findResources("AWS::AppRunner::Service"))[0] as any;
+    return (svc.Properties.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables as
+      Array<{ Name: string; Value: unknown }>);
+  };
+
+  test("App Runner gets the request table where it exists, and not elsewhere", () => {
+    const dev = envVars(synth("test")).find((e) => e.Name === "STORY_ACCOUNT_DELETIONS_TABLE");
+    expect(dev?.Value).toBe("story-test-account-deletions");
+    const beta = synth("beta", { imageDigest: "sha256:abc", cognitoUserPoolId: "us-east-1_beta",
+                                 cognitoAppClientId: "client", allowNoObservability: "true" });
+    expect(envVars(beta).some((e) => e.Name === "STORY_ACCOUNT_DELETIONS_TABLE")).toBe(false);
+  });
+
+  test("the API may only accept and read requests (no UpdateItem or DeleteItem on the table)", () => {
+    const st = (Object.values(synth("test").findResources("AWS::IAM::Policy")) as any[])
+      .flatMap((p) => p.Properties.PolicyDocument.Statement)
+      .find((s: any) => s.Sid === "AccountDeletionAccept");
+    expect(st.Action).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"]);
+  });
+});

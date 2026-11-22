@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from uuid import UUID, uuid4
 
@@ -190,6 +191,21 @@ MM_CREATIVE_BRIEF = (
     "payoffs, and choose shot durations appropriate to the material. Do not force a conventional "
     "travel-diary structure."
 )
+
+
+class AccountDeletionRequest(BaseModel):
+    """POST /v1/account/deletion (design 5.3). The client generates request_id (UUIDv4) and a 256-bit receipt
+    secret, persists both BEFORE sending, and sends only the secret's SHA-256."""
+    model_config = ConfigDict(extra="forbid")
+    confirm: str
+    request_id: str
+    receipt_hash: str
+
+
+class AccountDeletionStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: str
+    receipt_secret: str
 
 
 class MediaInitiateRequest(BaseModel):
@@ -714,6 +730,92 @@ def create_app() -> FastAPI:
         return {"story_user_id": principal.story_user_id}
 
     # ========================================================================================================
+    # ACCOUNT DELETION (D3; design specs/story-specs/spec/implementation-plan/account-deletion-design.md 5.3).
+    # Acceptance is ONE transaction (request item + receipt pointer + users active -> deleting); nothing is
+    # enqueued after it, so a 202 means accepted and a 503 means "unknown, ask the status route". The scheduled
+    # worker (D2) does the rest. Fails closed (503) where the request table is not wired.
+    # ========================================================================================================
+    _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+    _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+    _REAUTH_WINDOW_S = 300
+
+    def _deletion_store():
+        ov = getattr(app.state, "_deletion_store_override", None)
+        if ov is not None:
+            return ov
+        table = os.environ.get("STORY_ACCOUNT_DELETIONS_TABLE", "")
+        if not table:
+            return None
+        st = getattr(app.state, "_deletion_store", None)
+        if st is None:
+            import types
+            import boto3
+            from account_deletion import RequestStore
+            cfg = types.SimpleNamespace(requests_table=table,
+                                        users_table=os.environ.get("STORY_USERS_TABLE", ""))
+            st = app.state._deletion_store = RequestStore(
+                boto3.client("dynamodb", region_name=os.environ.get("AWS_REGION", "us-east-1")), cfg)
+        return st
+
+    def _deletion_err(status: int, code: str) -> JSONResponse:
+        return JSONResponse(status_code=status, content={"error": code})
+
+    @app.post("/v1/account/deletion", status_code=202)
+    def account_deletion_request(body: AccountDeletionRequest, principal: Principal = Depends(require_user)):
+        """Request deletion of the CALLER's account (uid only from the verified token). Requires a sign-in within
+        the last 5 minutes (access-token auth_time; a refresh keeps the original auth_time) and confirm="DELETE".
+        Reachable while the account is `deleting` (DELETION_ROUTES), so a retry with the same request_id is
+        idempotent."""
+        store = _deletion_store()
+        if store is None:
+            return _deletion_err(503, "deletion_unavailable")
+        if body.confirm != "DELETE":
+            return _deletion_err(400, "confirm_required")
+        rid, rh = body.request_id.strip().lower(), body.receipt_hash.strip().lower()
+        if not _UUID_RE.match(rid) or not _HEX64_RE.match(rh):
+            return _deletion_err(422, "invalid_request_id_or_receipt")
+        at = principal.auth_time
+        if at is None or int(time.time()) - int(at) > _REAUTH_WINDOW_S:
+            return _deletion_err(401, "reauth_required")
+        try:
+            res = store.accept(principal.story_user_id, rid, rh, int(time.time()))
+        except Exception as e:  # noqa: BLE001 — the outcome is unknown to the client; it resolves via the receipt
+            log.warning("account_deletion_accept_error", extra={"error": type(e).__name__})
+            return _deletion_err(503, "deletion_outcome_unknown")
+        if res.outcome in ("accepted", "idempotent"):
+            from account_deletion import public_view
+            log.info("account_deletion_accepted", extra={"outcome": res.outcome, "request_id": rid})
+            return JSONResponse(status_code=202, content={**public_view(res.request or {}), "request_id": rid})
+        if res.outcome == "already_requested":
+            return _deletion_err(409, "deletion_already_requested")
+        return _deletion_err(403, "account_not_active")
+
+    @app.get("/v1/account/deletion", status_code=200)
+    def account_deletion_get(principal: Principal = Depends(require_user)):
+        """The caller's own request, while their token still works (DELETION_ROUTES admits `deleting`)."""
+        store = _deletion_store()
+        if store is None:
+            return _deletion_err(503, "deletion_unavailable")
+        req = store.get(principal.story_user_id)
+        if not req:
+            return _deletion_err(404, "not_found")
+        from account_deletion import public_view
+        return {**public_view(req), "request_id": req.get("request_id")}
+
+    @app.post("/v1/account/deletion/status", status_code=200)
+    def account_deletion_status(body: AccountDeletionStatusRequest):
+        """PUBLIC (no token): works after Cognito disables the user. Reveals state only to the holder of the
+        receipt secret; an unknown request_id and a wrong secret get the same 404."""
+        store = _deletion_store()
+        if store is None:
+            return _deletion_err(503, "deletion_unavailable")
+        rid, secret = body.request_id.strip().lower(), body.receipt_secret.strip().lower()
+        view = store.status_by_receipt(rid, secret) if (_UUID_RE.match(rid) and _HEX64_RE.match(secret)) else None
+        if view is None:
+            return _deletion_err(404, "not_found")
+        return view
+
+    # ========================================================================================================
     # BILLING V1 — server-authoritative entitlement read model + controlled video-credit refund. The client never
     # supplies plan, price, allowance or expiry; it only displays what the server says. See billing_gate.py.
     # ========================================================================================================
@@ -826,6 +928,8 @@ def create_app() -> FastAPI:
                 size_bytes=body.size_bytes, content_type=body.content_type,
                 device_asset_id=body.device_asset_id, source_moment_id=body.source_moment_id,
                 media_kind=body.media_kind, source_output_id=body.source_output_id)
+        except _media.SinglePutTooLarge as e:
+            raise HTTPException(status_code=413, detail=str(e))
         except _media.MediaOwnershipConflict as e:
             raise HTTPException(status_code=409, detail=str(e))
         presign = store.presign_upload(owner=principal.story_user_id, cloud_media_id=rec["cloud_media_id"])

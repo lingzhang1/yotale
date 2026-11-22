@@ -68,6 +68,9 @@ WORKER_REQUIRED: dict[str, str] = {
     "STORY_OPENAI_MODEL": "D", "STORY_GEMINI_MODEL": "D",
 }
 WORKER_NON_STORY_ALLOWED = {"PYTHONPATH"}
+# Infrastructure wiring present only where the resource exists (not required everywhere). Account deletion's request
+# table is deployed per environment as it is approved (account-deletion-design.md 7.5); the API fails closed (503) without it.
+SERVICE_OPTIONAL: dict[str, str] = {"STORY_ACCOUNT_DELETIONS_TABLE": "B"}
 BILLING_MODES = {"off", "observe", "enforce"}
 # Present ONLY as an approved emergency rollback (release.json approved_overrides); never in normal deploys.
 OVERRIDE_ONLY = {"STORY_EDIT_PLAN_VERSION"}
@@ -207,7 +210,7 @@ def check_snapshot(snap: Snapshot, manifest: dict, repo: Path = REPO) -> tuple[l
 
     # --- removed / unknown / unapproved settings, mocks, restricted providers ---------------------------
     approved = {(o.get("setting"), o.get("env"), str(o.get("value"))) for o in manifest.get("approved_overrides", [])}
-    for scope, keys, allowed in (("service", set(svc), set(SERVICE_REQUIRED)),
+    for scope, keys, allowed in (("service", set(svc), set(SERVICE_REQUIRED) | set(SERVICE_OPTIONAL)),
                                  ("worker", set(wrk), set(WORKER_REQUIRED) | WORKER_NON_STORY_ALLOWED)):
         for n in sorted(keys):
             if n in allowed:

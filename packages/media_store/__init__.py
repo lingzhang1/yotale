@@ -87,6 +87,7 @@ UPLOAD_URL_TTL_SECONDS = 60 * 60
 MIN_S3_PART_SIZE = 5 * 1024 * 1024
 MULTIPART_PART_SIZE = 8 * 1024 * 1024
 MULTIPART_THRESHOLD = 16 * 1024 * 1024   # <= this -> single PUT; above -> multipart
+SINGLE_PUT_CAPPED_KINDS = (MEDIA_KIND_MOMENT, MEDIA_KIND_GENERATED)   # guard G1, see SinglePutTooLarge
 #
 # CHECKSUM STRATEGY (owner Phase 2 — documented, equivalent integrity; no bytes through App Runner):
 #   • The device declares the FULL-FILE sha256 (hex) at initiate (provenance + the single-PUT guarantee).
@@ -116,6 +117,14 @@ def object_key(owner: str, cloud_media_id: str) -> str:
 
 class MediaOwnershipConflict(Exception):
     """An initiate reused a cloud_media_id with a DIFFERENT declared (size/sha) — a client bug, not a retry."""
+
+
+class SinglePutTooLarge(Exception):
+    """A single presigned PUT was requested for a Moment original or generated video above MULTIPART_THRESHOLD.
+    Account deletion guard G1 (design 5.5): bounds how long a PUT started before deletion can still land. The
+    app already switches to multipart above the threshold for these kinds (MediaUploadQueue,
+    GeneratedOutputBackupQueue). My Music and ai_artifact uploads are single-PUT only and are not capped; a late
+    one is caught by deletion's verification passes and final check."""
 
 
 class MediaNotFound(Exception):
@@ -207,6 +216,8 @@ class MediaStore:
         (the GeneratedOutput id) instead of a `source_moment_id`. The storage path/verification are IDENTICAL —
         only the provenance fields differ, so the R4 upload pipeline is reused unchanged (no second uploader)."""
         media_kind = _normalize_media_kind(media_kind)
+        if media_kind in SINGLE_PUT_CAPPED_KINDS and int(size_bytes) > MULTIPART_THRESHOLD:
+            raise SinglePutTooLarge(f"{media_kind} above {MULTIPART_THRESHOLD} bytes must use multipart")
         cmid = cloud_media_id_for(owner, content_sha256)
         now = _now()
         key = object_key(owner, cmid)
