@@ -107,17 +107,32 @@ final class AuthStore: NSObject {
         } catch { state = .signedOut; lastError = (error as? LocalizedError)?.errorDescription; throw error }
     }
 
-    // ---- Apple (OAuth code + PKCE via ASWebAuthenticationSession) ------------------------------------
+    // ---- Apple / Google (Cognito hosted OAuth code + PKCE via ASWebAuthenticationSession) -------------
     func signInWithApple() async throws {
         guard StoryAuthConfig.appleSignInAvailable else {
             throw CognitoAuthError.service(L10n.t("Apple sign-in isn't available in this build yet."))
         }
+        try await signInWithHostedProvider(StoryAuthConfig.appleProviderName,
+                                           failure: L10n.t("Apple sign-in was cancelled or failed."))
+    }
+
+    func signInWithGoogle() async throws {
+        guard StoryAuthConfig.googleSignInAvailable else {
+            throw CognitoAuthError.service(L10n.t("Google sign-in isn't available in this build yet."))
+        }
+        try await signInWithHostedProvider(StoryAuthConfig.googleProviderName,
+                                           failure: L10n.t("Google sign-in was cancelled or failed."))
+    }
+
+    /// One flow for every federated provider: Cognito `/oauth2/authorize?identity_provider=<provider>` in an
+    /// ephemeral `ASWebAuthenticationSession`, state check, then code + PKCE verifier exchange at Cognito.
+    private func signInWithHostedProvider(_ provider: String, failure: String) async throws {
         state = .authenticating
         let verifier = AuthHelpers.randomCodeVerifier()
         let challenge = AuthHelpers.codeChallenge(for: verifier)
         let st = AuthHelpers.randomState()
         pkceVerifier = verifier; pkceState = st
-        let url = StoryAuthConfig.authorizeURL(state: st, codeChallenge: challenge)
+        let url = StoryAuthConfig.authorizeURL(provider: provider, state: st, codeChallenge: challenge)
         let scheme = URL(string: StoryAuthConfig.redirectURI)!.scheme!
 
         let code: String = try await withCheckedThrowingContinuation { cont in
@@ -128,15 +143,15 @@ final class AuthStore: NSObject {
                       let returnedState = comps.queryItems?.first(where: { $0.name == "state" })?.value,
                       returnedState == self?.pkceState,
                       let c = comps.queryItems?.first(where: { $0.name == "code" })?.value else {
-                    cont.resume(throwing: CognitoAuthError.service(L10n.t("Apple sign-in was cancelled or failed.")))
+                    cont.resume(throwing: CognitoAuthError.service(failure))
                     return
                 }
                 cont.resume(returning: c)
             }
             session.presentationContextProvider = self
             // Ephemeral: no shared Safari cookies. Otherwise Cognito's hosted-session cookie outlives an in-app
-            // sign-out and the next "Continue with Apple" silently re-issues a code for the PREVIOUS Apple
-            // account without contacting Apple (no account switch, no consent/email choice) for ~1 hour.
+            // sign-out and the next federated sign-in silently re-issues a code for the PREVIOUS provider
+            // account without contacting the provider (no account switch, no consent/email choice) for ~1 hour.
             session.prefersEphemeralWebBrowserSession = true
             self.webAuthSession = session
             session.start()

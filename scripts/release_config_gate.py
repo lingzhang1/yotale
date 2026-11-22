@@ -394,6 +394,20 @@ def _which_env_owns(repo: Path, key: str, value: str) -> str | None:
 # --------------------------------------------------------------------------------------------------------
 # iOS build-configuration gate (independent of Xcode Run arguments)
 # --------------------------------------------------------------------------------------------------------
+KNOWN_FEDERATED_PROVIDERS = frozenset({"SignInWithApple", "Google"})
+
+
+def federated_providers(cfg: dict) -> set[str] | None:
+    """STORY_FEDERATED_PROVIDERS as a set (`none` = empty), or None when missing or not a known-provider list."""
+    raw = (cfg.get("STORY_FEDERATED_PROVIDERS") or "").strip()
+    if raw == "none":
+        return set()
+    items = {x.strip() for x in raw.split(",") if x.strip()}
+    if not items or not items <= KNOWN_FEDERATED_PROVIDERS:
+        return None
+    return items
+
+
 def check_ios(repo: Path = REPO, scheme: Path | None = None) -> tuple[list[Violation], list[str]]:
     v: list[Violation] = []
     warn: list[str] = []
@@ -411,13 +425,19 @@ def check_ios(repo: Path = REPO, scheme: Path | None = None) -> tuple[list[Viola
     for k in ("STORY_ENV_API_BASE_URL", "STORY_ENV_USER_POOL_ID", "STORY_ENV_APP_CLIENT_ID"):
         if dev.get(k) and dev.get(k) == beta.get(k):
             v.append(Violation("ios_identity", f"Development and Beta xcconfig share {k} (environments mixed)"))
-    # Apple Sign In must be an explicit, baked, per-environment value (never an Xcode Run argument).
+    # Federated sign-in providers must be an explicit, baked, per-environment list (never an Xcode Run argument).
     for name, cfg in (("Development", dev), ("Beta", beta)):
-        if cfg.get("STORY_APPLE_SIGNIN_AVAILABLE") not in ("0", "1"):
-            v.append(Violation("ios_apple_signin",
-                               f"{name}.xcconfig must bake STORY_APPLE_SIGNIN_AVAILABLE as 0 or 1 explicitly"))
-        elif cfg["STORY_APPLE_SIGNIN_AVAILABLE"] == "1":
-            warn.append(f"{name}: Apple Sign In is advertised; post-deploy gate requires the SignInWithApple IdP on its pool")
+        provs = federated_providers(cfg)
+        if provs is None:
+            v.append(Violation("ios_federated_providers",
+                               f"{name}.xcconfig must bake STORY_FEDERATED_PROVIDERS as `none` or a comma-separated "
+                               f"subset of {', '.join(sorted(KNOWN_FEDERATED_PROVIDERS))}"))
+            continue
+        if "Google" in provs and "SignInWithApple" not in provs:
+            v.append(Violation("ios_federated_providers",
+                               f"{name}.xcconfig offers Google without SignInWithApple (App Store Guideline 4.8)"))
+        if provs:
+            warn.append(f"{name}: offers {', '.join(sorted(provs))}; post-deploy gate requires each IdP on its pool")
     # Shared schemes: no product-feature switches, no hand-set backend identity, no duplicate enabled keys.
     # (Identity comes from the xcconfig selected by the scheme's build configuration; Debug may still be
     # re-pointed from a LOCAL, uncommitted scheme, but a tracked scheme must not carry it.)
@@ -497,12 +517,12 @@ class LiveInfo:
     image_tags: list[str]
     worker_build_sha: str | None
     worker_files: set[str]
-    apple_idp_present: bool | None = None
+    missing_idps: list[str] | None = None
     notes: list[str] = field(default_factory=list)
 
 
 def collect_live(environment: str, aws: AwsRunner, fetch: Callable[[str], bytes] = fetch_bytes,
-                 want_apple_check: bool = False, user_pool_id: str | None = None) -> LiveInfo:
+                 want_idps: frozenset[str] = frozenset(), user_pool_id: str | None = None) -> LiveInfo:
     name = f"story-{environment}-api"
     services = aws(["apprunner", "list-services"])["ServiceSummaryList"]
     arn = next((s["ServiceArn"] for s in services if s["ServiceName"] == name), None)
@@ -524,12 +544,12 @@ def collect_live(environment: str, aws: AwsRunner, fetch: Callable[[str], bytes]
     zf = zipfile.ZipFile(io.BytesIO(zdata))
     files = set(zf.namelist())
     wsha = zf.read("BUILD_SHA").decode().strip() if "BUILD_SHA" in files else None
-    apple = None
-    if want_apple_check and user_pool_id:
+    missing = None
+    if want_idps and user_pool_id:
         provs = aws(["cognito-idp", "list-identity-providers", "--user-pool-id", user_pool_id])["Providers"]
-        apple = any(p.get("ProviderName") == "SignInWithApple" for p in provs)
+        missing = sorted(want_idps - {p.get("ProviderName") for p in provs})
     return LiveInfo(Snapshot(environment, service, dict(wvars), "live"), svc.get("Status", "?"), ident, tags,
-                    wsha, files, apple)
+                    wsha, files, missing)
 
 
 def check_live(info: LiveInfo, manifest: dict, expected_sha: str, expected_digest: str | None,
@@ -558,8 +578,9 @@ def check_live(info: LiveInfo, manifest: dict, expected_sha: str, expected_diges
            or manifest.get("planner", {}).get("version"))
     if f"prompts/edit_plan/{eff}/system.md" not in info.worker_files:
         v.append(Violation("worker_prompt_missing", f"deployed worker zip lacks prompts/edit_plan/{eff}/system.md"))
-    if info.apple_idp_present is False:
-        v.append(Violation("ios_apple_signin", "an iOS build advertises Apple Sign In but the Cognito pool has no SignInWithApple IdP"))
+    if info.missing_idps:
+        v.append(Violation("ios_federated_providers",
+                           f"an iOS build offers {', '.join(info.missing_idps)} but the Cognito pool has no such IdP"))
     return v, warn
 
 
@@ -613,11 +634,11 @@ def main(argv: list[str] | None = None) -> int:
     aws = default_aws(a.profile, a.region)
     xc = manifest["environments"].get(a.environment, {}).get("xcconfig")
     cfg = _xcconfig_for(REPO, xc) if xc else None
-    apple = bool(cfg and cfg.get("STORY_APPLE_SIGNIN_AVAILABLE") == "1")
+    want_idps = frozenset(federated_providers(cfg) or ()) if cfg else frozenset()
     try:
         deadline = time.monotonic() + a.wait_seconds
         while True:
-            info = collect_live(a.environment, aws, want_apple_check=apple,
+            info = collect_live(a.environment, aws, want_idps=want_idps,
                                 user_pool_id=(cfg or {}).get("STORY_ENV_USER_POOL_ID"))
             if info.service_status != "OPERATION_IN_PROGRESS" or time.monotonic() >= deadline:
                 break
