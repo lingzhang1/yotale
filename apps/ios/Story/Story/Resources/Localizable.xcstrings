@@ -448,6 +448,17 @@
         }
       }
     },
+    "This Apple ID's YoTale Plus subscription belongs to a different YoTale account. Sign in to that account to use it, or subscribe with a different Apple ID." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个 Apple ID 的 YoTale Plus 订阅属于另一个 YoTale 账户。请登录那个账户使用，或用另一个 Apple ID 订阅。"
+          }
+        }
+      }
+    },
     "This request has a conflict. Please adjust it and try again. (%@)" : {
       "comment" : "Chinese presentation of a server interpreter message (ServerMessageLocalizer); the English UI shows the server text unchanged.",
       "extractionState" : "manual",

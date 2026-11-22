@@ -64,6 +64,27 @@ final class BillingStoreTests: XCTestCase {
         XCTAssertEqual(s.notice, .failed)
     }
 
+    // Dev 2026-11-22: this Apple ID's Plus was bought under another YoTale account; the server answered 403 token mismatch to
+    // ~8 re-posted sandbox renewals on every tap, and the screen only said "couldn't be completed".
+    @MainActor
+    func testAnotherAccountsPurchaseShowsTheSpecificNoticeAndIsNotRepostedThisSession() async {
+        let s = store()
+        ScriptedURLProtocol.responses = [(403, Data(#"{"error":"app_account_token_mismatch"}"#.utf8))]
+        let r1 = await s.forward(jws: "foreign")
+        XCTAssertEqual(r1, .failed)
+        XCTAssertFalse(s.verifying, "a refusal never leaves 'Confirming your subscription' on screen")
+        XCTAssertEqual(s.notice, .ownedByAnotherAccount)
+        let posts = ScriptedURLProtocol.authHeaders.count
+        let r2 = await s.forward(jws: "foreign")
+        XCTAssertEqual(r2, .failed)
+        XCTAssertEqual(ScriptedURLProtocol.authHeaders.count, posts, "the refused transaction is not posted again")
+        s.reset()                                           // a different account may legitimately own it
+        ScriptedURLProtocol.responses = [(409, Data(#"{"error":"transaction_bound_elsewhere"}"#.utf8))]
+        _ = await s.forward(jws: "foreign")
+        XCTAssertEqual(ScriptedURLProtocol.authHeaders.count, posts + 1, "after sign-out / account switch it is posted again")
+        XCTAssertEqual(s.notice, .ownedByAnotherAccount)
+    }
+
     @MainActor
     func testTheSameTransactionIsPostedOnceAndTheLoserIsADuplicateNotAFailure() async {
         let s = store()
