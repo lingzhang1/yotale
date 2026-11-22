@@ -120,6 +120,9 @@ describe("Account deletion (D3) API wiring", () => {
       .flatMap((p) => p.Properties.PolicyDocument.Statement)
       .find((s: any) => s.Sid === "AccountDeletionAccept");
     expect(st.Action).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"]);
+  });
+});
+
 describe("deploy role (release gate)", () => {
   test("may list the pool's identity providers, read-only, on the configured pool only", () => {
     const t = synth("test");
