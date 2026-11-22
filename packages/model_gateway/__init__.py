@@ -235,7 +235,9 @@ def log_model_call(task: str, rec: dict) -> None:
     EXCLUDES `thoughtsTokenCount`, but thinking tokens are billed at the output rate, so for Gemini the billed
     output is output + reasoning (otherwise cost is a lower bound).
 
-    Only token COUNTS, model/provider ids and the task name are logged: never prompts, media or user ids.
+    Only token COUNTS, model/provider ids and the task name are logged: never prompts or media. The line DOES
+    carry the call context (pseudonymous `story_user_id`, `story_id`, `job_id`) for cost attribution; logs
+    expire with the log-group retention and are not rewritten on account deletion.
     Best-effort: observability must never break a model call."""
     try:
         in_tok = rec.get("input_tokens")

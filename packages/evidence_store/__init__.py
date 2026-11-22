@@ -67,6 +67,10 @@ class EvidenceTooLarge(Exception):
         self.limit = limit
 
 
+class EvidenceDeleteIncomplete(Exception):
+    """delete_for_owner could not remove every manifest or blob; the caller must not report success."""
+
+
 # A packed 24-frame contact-quality blob is ~1-3 MB; cap generously well under any object limit.
 MAX_PACKED_BYTES = 12 * 1024 * 1024
 
@@ -297,15 +301,38 @@ class EvidenceStore:
         """Delete all evidence for an account (account deletion). Returns how many were removed.
         Scoped to EVIDENCE rows only (cloud_media_id begins_with 'evidence#') so it never deletes the owner's
         media / music / ai_artifact records that share this table. Query on the PK + RANGE prefix (never a
-        Scan) so it is inherently account-scoped."""
-        resp = self._ddb_c().query(
-            TableName=self.cfg.table,
-            KeyConditionExpression="story_user_id = :o AND begins_with(cloud_media_id, :pfx)",
-            ExpressionAttributeValues={":o": {"S": owner}, ":pfx": {"S": "evidence#"}})
-        n = 0
-        for it in resp.get("Items", []):
-            sk = it.get("cloud_media_id", {}).get("S", "")
-            mid = sk[len("evidence#"):] if sk.startswith("evidence#") else ""
-            if mid and self.delete_for_moment(owner=owner, moment_id=mid):
-                n += 1
+        Scan) so it is inherently account-scoped. Follows LastEvaluatedKey, so every page is deleted.
+
+        Unlike `delete_for_moment` (best-effort on the blob), this REPORTS failures: it raises
+        EvidenceDeleteIncomplete when any manifest or blob could not be deleted, so an account-deletion caller
+        never reports success over an orphaned blob. (The account-deletion worker itself deletes evidence by
+        S3 prefix listing; this method stays correct for any other caller.)"""
+        n, failed = 0, 0
+        kwargs: dict = {"TableName": self.cfg.table,
+                        "KeyConditionExpression": "story_user_id = :o AND begins_with(cloud_media_id, :pfx)",
+                        "ExpressionAttributeValues": {":o": {"S": owner}, ":pfx": {"S": "evidence#"}}}
+        while True:
+            resp = self._ddb_c().query(**kwargs)
+            for it in resp.get("Items", []):
+                sk = it.get("cloud_media_id", {}).get("S", "")
+                mid = sk[len("evidence#"):] if sk.startswith("evidence#") else ""
+                if not mid:
+                    continue
+                man = self.get_manifest(owner=owner, moment_id=mid)
+                blob_cmid = ((man or {}).get("frames_ref") or {}).get("cloud_media_id")
+                try:
+                    if blob_cmid:
+                        self._s3_c().delete_object(Bucket=self.cfg.bucket, Key=evidence_object_key(owner, blob_cmid))
+                    self._ddb_c().delete_item(
+                        TableName=self.cfg.table,
+                        Key={"story_user_id": {"S": owner}, "cloud_media_id": {"S": evidence_sort_key(mid)}})
+                    n += 1
+                except Exception:  # noqa: BLE001 — counted and reported below, never swallowed
+                    failed += 1
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                break
+            kwargs["ExclusiveStartKey"] = lek
+        if failed:
+            raise EvidenceDeleteIncomplete(f"{failed} evidence item(s) could not be deleted ({n} deleted)")
         return n

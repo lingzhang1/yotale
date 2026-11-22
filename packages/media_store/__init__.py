@@ -179,12 +179,18 @@ class MediaStore:
         return self._decode(it) if it else None
 
     def list_for_owner(self, owner: str) -> list[dict]:
-        """All media records owned by `owner` (Query on the PK — never a Scan, so no cross-account leak)."""
-        resp = self._ddb_c().query(
-            TableName=self.cfg.table,
-            KeyConditionExpression="story_user_id = :o",
-            ExpressionAttributeValues={":o": {"S": owner}})
-        return [self._decode(it) for it in resp.get("Items", [])]
+        """All media records owned by `owner` (Query on the PK — never a Scan, so no cross-account leak).
+        Follows LastEvaluatedKey: an account with more than one Query page (1 MB) is returned in full."""
+        out: list[dict] = []
+        kwargs: dict = {"TableName": self.cfg.table, "KeyConditionExpression": "story_user_id = :o",
+                        "ExpressionAttributeValues": {":o": {"S": owner}}}
+        while True:
+            resp = self._ddb_c().query(**kwargs)
+            out.extend(self._decode(it) for it in resp.get("Items", []))
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                return out
+            kwargs["ExclusiveStartKey"] = lek
 
     # --- initiate (idempotent, conditional) ----------------------------------------------------------
     def initiate_upload(self, *, owner: str, content_sha256: str, size_bytes: int,
