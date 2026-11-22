@@ -14,6 +14,12 @@ struct PlusSubscriptionView: View {
     var denial: BillingDenial?
 
     @State private var showManage = false
+    @State private var anotherAccountAlertSeen = false
+
+    /// The Free-starter offer (with the Subscribe button) is on screen.
+    private var showsOfferInline: Bool {
+        auth.isSignedIn && !billing.isPlus && !billing.verifying && billing.canOfferSubscribe
+    }
 
     var body: some View {
         NavigationStack {
@@ -38,7 +44,7 @@ struct PlusSubscriptionView: View {
                 }
                 if auth.isSignedIn { restoreSection }
                 legalSection
-                noticeSection
+                if !showsOfferInline { noticeSection }   // the offer section shows the notice beside Subscribe
             }
             .scrollContentBackground(.hidden)
             .background(StoryTheme.ink)
@@ -50,6 +56,13 @@ struct PlusSubscriptionView: View {
                 await billing.refresh()
             }
             .manageSubscriptionsSheet(isPresented: $showManage)
+            .alert("YoTale Plus", isPresented: Binding(
+                get: { billing.notice == .ownedByAnotherAccount && showsOfferInline && !anotherAccountAlertSeen },
+                set: { if !$0 && billing.notice == .ownedByAnotherAccount { anotherAccountAlertSeen = true } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(message(for: .ownedByAnotherAccount))
+            }
         }
     }
 
@@ -100,6 +113,7 @@ struct PlusSubscriptionView: View {
                     .foregroundStyle(StoryTheme.cream)
             }
             Button {
+                anotherAccountAlertSeen = false          // every tap explains again
                 Task { await billing.purchasePlus() }
             } label: {
                 HStack {
@@ -110,6 +124,12 @@ struct PlusSubscriptionView: View {
             }
             .disabled(billing.phase != .idle || billing.product == nil)
             .foregroundStyle(StoryTheme.gold)
+            // The result of a Subscribe tap shows HERE, next to the button (dev 2026-11-22: it was only in the last section, below
+            // Terms and Privacy, so tapping Subscribe looked like nothing happened).
+            if let n = billing.notice {
+                Text(message(for: n)).font(StoryTheme.body(14)).foregroundStyle(StoryTheme.cream)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         } footer: {
             Text("Payment is charged to your Apple ID. The subscription renews every month until you cancel it at least 24 hours before the renewal date. Manage or cancel any time in your Apple ID settings.")
         }

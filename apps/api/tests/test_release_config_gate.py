@@ -383,7 +383,7 @@ def test_ios_scheme_with_removed_flags_or_hand_set_identity_is_rejected(tmp_path
     assert not any("STORY_SCENE_IMAGES" in x.message for x in v), "a DISABLED row is not an active definition"
 
 
-def test_ios_xcconfig_mixing_and_unbaked_apple_signin_are_rejected(tmp_repo):
+def test_ios_xcconfig_mixing_and_unbaked_federated_providers_are_rejected(tmp_repo):
     cfg = tmp_repo / "apps/ios/Story/Config"
     beta = (cfg / "Beta.xcconfig").read_text()
     dev = (cfg / "Development.xcconfig").read_text()
@@ -392,24 +392,30 @@ def test_ios_xcconfig_mixing_and_unbaked_apple_signin_are_rejected(tmp_repo):
     v, _ = gate.check_ios(tmp_repo)
     assert any(x.code == "ios_identity" and "share STORY_ENV_USER_POOL_ID" in x.message for x in v)
     (cfg / "Beta.xcconfig").write_text(beta)
-    (cfg / "Development.xcconfig").write_text(re.sub(r"(?m)^STORY_APPLE_SIGNIN_AVAILABLE = .*$", "", dev))
-    v, _ = gate.check_ios(tmp_repo)
-    assert any(x.code == "ios_apple_signin" for x in v)
+    line = r"(?m)^STORY_FEDERATED_PROVIDERS = .*$"
+    for bad in ("", "STORY_FEDERATED_PROVIDERS = Facebook", "STORY_FEDERATED_PROVIDERS = Google"):
+        (cfg / "Development.xcconfig").write_text(re.sub(line, bad, dev))
+        v, _ = gate.check_ios(tmp_repo)
+        assert any(x.code == "ios_federated_providers" for x in v), bad
+    for ok in ("STORY_FEDERATED_PROVIDERS = none", "STORY_FEDERATED_PROVIDERS = SignInWithApple, Google"):
+        (cfg / "Development.xcconfig").write_text(re.sub(line, ok, dev))
+        v, _ = gate.check_ios(tmp_repo)
+        assert not any(x.code == "ios_federated_providers" for x in v), ok
 
 
-def test_apple_signin_is_baked_and_not_read_from_launch_config():
+def test_federated_providers_are_baked_and_not_read_from_launch_config():
     sw = (REPO / "apps/ios/Story/Story/Data/Auth/StoryAuthConfig.swift").read_text()
-    assert "StoryLaunchConfig" not in sw.split("appleSignInAvailable")[1].split("static var domainHost")[0]
-    assert "StoryAppleSignInAvailable" in (REPO / "apps/ios/Story/Story/Info.plist").read_text()
+    assert "StoryLaunchConfig" not in sw.split("static var federatedProviders")[1].split("static var domainHost")[0]
+    assert "StoryFederatedProviders" in (REPO / "apps/ios/Story/Story/Info.plist").read_text()
 
 
 # --------------------------------------------------------------------------- post-deploy (live) verification
 def _live(env="beta", *, sha="abc123def456", digest="sha256:" + "a" * 64, status="RUNNING", worker_sha=None,
-          tags=None, files=None, snapshot=None, apple=None):
+          tags=None, files=None, snapshot=None, missing_idps=None):
     return gate.LiveInfo(
         snapshot or _snapshot(env), status, f"123.dkr.ecr.us-east-1.amazonaws.com/story-{env}-api@{digest}",
         tags if tags is not None else [f"git-{sha}"], worker_sha if worker_sha is not None else sha,
-        files if files is not None else {"BUILD_SHA", "prompts/edit_plan/5.3/system.md"}, apple)
+        files if files is not None else {"BUILD_SHA", "prompts/edit_plan/5.3/system.md"}, missing_idps)
 
 
 def _live_codes(info, sha="abc123def456", digest="sha256:" + "a" * 64, manifest=MANIFEST):
@@ -445,9 +451,10 @@ def test_live_runtime_environment_is_judged_by_the_same_rules_as_the_template():
     assert {"auth_policy", "removed_setting"} <= codes
 
 
-def test_live_apple_signin_advertised_without_idp_is_rejected():
-    assert "ios_apple_signin" in _live_codes(_live(apple=False))
-    assert "ios_apple_signin" not in _live_codes(_live(apple=True))
+def test_live_federated_provider_offered_without_idp_is_rejected():
+    assert "ios_federated_providers" in _live_codes(_live(missing_idps=["Google"]))
+    assert "ios_federated_providers" not in _live_codes(_live(missing_idps=[]))
+    assert "ios_federated_providers" not in _live_codes(_live(missing_idps=None))
 
 
 def test_N12_unauthorized_or_unreadable_deployment_state_fails_closed(monkeypatch, capsys):
