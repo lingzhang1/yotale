@@ -37,6 +37,14 @@ struct SignInView: View {
                 // Apple's standard button (HIG). It only draws the button; the tap runs our Cognito web flow.
                 AppleSignInButton(enabled: !busy) { Task { await appleSignIn() } }
                     .frame(maxWidth: .infinity).frame(height: 48)
+                if StoryAuthConfig.googleSignInAvailable {
+                    // Dev placeholder: Google's branding rules require its official "G" mark before an App
+                    // Store build (asset not yet in the catalog).
+                    Button { Task { await googleSignIn() } } label: {
+                        Text("Continue with Google").font(.body.weight(.medium)).frame(maxWidth: .infinity)
+                            .frame(height: 36)
+                    }.buttonStyle(.bordered).disabled(busy)
+                }
             } else {
                 Label("Apple sign-in unavailable in this build", systemImage: "applelogo")
                     .font(.footnote).foregroundStyle(.tertiary)
@@ -144,6 +152,12 @@ struct SignInView: View {
         error = nil; busy = true; defer { busy = false }
         do { try await auth.signInWithApple(); onSignedIn() }
         catch { self.error = (error as? LocalizedError)?.errorDescription ?? L10n.t("Apple sign-in failed.") }
+    }
+
+    private func googleSignIn() async {
+        error = nil; busy = true; defer { busy = false }
+        do { try await auth.signInWithGoogle(); onSignedIn() }
+        catch { self.error = (error as? LocalizedError)?.errorDescription ?? L10n.t("Google sign-in failed.") }
     }
 
     private func startCooldownTimer() {
