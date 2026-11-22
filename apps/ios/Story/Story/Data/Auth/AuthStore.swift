@@ -134,7 +134,10 @@ final class AuthStore: NSObject {
                 cont.resume(returning: c)
             }
             session.presentationContextProvider = self
-            session.prefersEphemeralWebBrowserSession = false
+            // Ephemeral: no shared Safari cookies. Otherwise Cognito's hosted-session cookie outlives an in-app
+            // sign-out and the next "Continue with Apple" silently re-issues a code for the PREVIOUS Apple
+            // account without contacting Apple (no account switch, no consent/email choice) for ~1 hour.
+            session.prefersEphemeralWebBrowserSession = true
             self.webAuthSession = session
             session.start()
         }

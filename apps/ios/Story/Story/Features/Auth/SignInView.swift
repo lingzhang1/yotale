@@ -1,3 +1,4 @@
+import AuthenticationServices
 import SwiftUI
 
 /// Passwordless email sign-up AND sign-in in ONE screen (TestFlight self-signup, Option A): enter email →
@@ -33,9 +34,9 @@ struct SignInView: View {
             }
 
             if StoryAuthConfig.appleSignInAvailable {
-                Button { Task { await appleSignIn() } } label: {
-                    Label("Continue with Apple", systemImage: "applelogo").frame(maxWidth: .infinity)
-                }.buttonStyle(.bordered).disabled(busy)
+                // Apple's standard button (HIG). It only draws the button; the tap runs our Cognito web flow.
+                AppleSignInButton(enabled: !busy) { Task { await appleSignIn() } }
+                    .frame(maxWidth: .infinity).frame(height: 48)
             } else {
                 Label("Apple sign-in unavailable in this build", systemImage: "applelogo")
                     .font(.footnote).foregroundStyle(.tertiary)
@@ -154,5 +155,37 @@ struct SignInView: View {
                 if cooldownLeft == 0 { t.invalidate() }
             }
         }
+    }
+}
+
+/// Apple's system "Continue with Apple" button (`ASAuthorizationAppleIDButton`), as Apple's design rules
+/// require. SwiftUI's `SignInWithAppleButton` is not used because it always starts the NATIVE Apple flow,
+/// whose identity token a Cognito User Pool cannot accept; this button only renders and reports the tap, and
+/// `AuthStore.signInWithApple()` runs the Cognito hosted (web) flow. The system localizes the title.
+private struct AppleSignInButton: UIViewRepresentable {
+    var enabled: Bool
+    var action: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeUIView(context: Context) -> ASAuthorizationAppleIDButton {
+        let button = ASAuthorizationAppleIDButton(type: .continue, style: colorScheme == .dark ? .white : .black)
+        button.cornerRadius = 10
+        button.addTarget(context.coordinator, action: #selector(Coordinator.tapped), for: .touchUpInside)
+        return button
+    }
+
+    func updateUIView(_ button: ASAuthorizationAppleIDButton, context: Context) {
+        context.coordinator.action = action
+        button.isEnabled = enabled
+        button.alpha = enabled ? 1 : 0.5
+        // The style is fixed at init, so a light/dark switch shows on the next appearance of this screen.
+    }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+        @objc func tapped() { action() }
     }
 }
