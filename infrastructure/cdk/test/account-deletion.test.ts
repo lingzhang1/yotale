@@ -120,5 +120,13 @@ describe("Account deletion (D3) API wiring", () => {
       .flatMap((p) => p.Properties.PolicyDocument.Statement)
       .find((s: any) => s.Sid === "AccountDeletionAccept");
     expect(st.Action).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"]);
+describe("deploy role (release gate)", () => {
+  test("may list the pool's identity providers, read-only, on the configured pool only", () => {
+    const t = synth("test");
+    const policies = Object.values(t.findResources("AWS::IAM::Policy")) as any[];
+    const st = policies.flatMap((p) => p.Properties.PolicyDocument.Statement)
+      .find((s: any) => s.Sid === "ReleaseGateIdentityProviders");
+    expect(st.Action).toBe("cognito-idp:ListIdentityProviders");
+    expect(st.Resource).toBe("arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_AzfHOEdA5");
   });
 });
