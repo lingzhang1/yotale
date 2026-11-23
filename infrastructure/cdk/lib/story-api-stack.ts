@@ -294,7 +294,7 @@ export class StoryApiStack extends cdk.Stack {
     });
 
     // The ONLY EditPlan-version control: the emergency rollback recorded in release/release.json
-    // (planner.emergency_override), a reviewed + committed decision. Normal deployments emit NOTHING (v5.3 is the
+    // (planner.emergency_override), a reviewed + committed decision. Normal deployments emit NOTHING (v5.6 is the
     // code default). Because it lives in the repo and not on a command line, a LATER deploy cannot silently drop
     // an intentional rollback, and it reaches API and worker identically. scripts/release_config_gate.py rejects
     // an override with no approved_overrides entry, or a manifest override this stack failed to apply.
@@ -552,23 +552,20 @@ export class StoryApiStack extends cdk.Stack {
               // Music provider (Epidemic) — without these the provider is disabled and /v1/music/candidates 404s.
               { name: "STORY_EPIDEMIC_MODE", value: "prototyping" },
               { name: "STORY_MUSIC_PROVIDER", value: "mcp" },
-              // EditPlan version: code default (v5.3); only an explicit emergency rollback context is emitted.
+              // EditPlan version: code default (v5.6); only an explicit emergency rollback context is emitted.
               ...Object.entries(emergencyEditPlanVersionEnv).map(([name, value]) => ({ name, value })),
-              // P1-F reusable AU visual evidence — SERVER persistence gate (default OFF everywhere). This is the
+              // P1-F reusable AU visual evidence — SERVER persistence gate (default ON everywhere). This is the
               // authoritative kill-switch: when "0" the AU endpoint writes NO durable personal-frame package
               // even if an authed client sends a content_sha256 claim. DURABLE in CDK (an App Runner env is a
               // full-replace on every deploy, so a manual console/CLI set is wiped by the next `cdk deploy`).
-              // Enable for DEV + BETA (owner promoted beta 2026-10-27 for TestFlight reusable-evidence
-              // testing); gamma/prod stay OFF until a retention/account-deletion policy is approved. NOTE:
-              // account-deletion is still design-only — beta now durably stores testers' personal frames.
+              // ON in EVERY environment (owner 2026-11-24: no stage drift; production persists evidence like beta/dev).
+              // NOTE: account deletion must delete this evidence (design-only for production as of this change).
               // Override a given env with `-c evidencePersist=0` to roll back. This is an OPERATIONAL PRIVACY
               // KILL-SWITCH, not a product-feature flag: cache reuse (always on in the iOS client since PR #102)
               // gracefully falls back to full re-analysis when persistence is off. Turning it off is a degraded
               // state that the release gate flags and promotion must explicitly approve.
               { name: "STORY_EVIDENCE_PERSIST_ENABLED",
-                value: ((this.node.tryGetContext("evidencePersist") as string) === "1"
-                        || ((environment === "development" || environment === "beta")
-                            && (this.node.tryGetContext("evidencePersist") as string) !== "0")) ? "1" : "0" },
+                value: (this.node.tryGetContext("evidencePersist") as string) === "0" ? "0" : "1" },
               // Provider routing: STORY_MODEL_PROVIDER is intentionally NOT set (code default "direct" =
               // OpenAI/Gemini; Anthropic/Bedrock refused). The two model ids below are the only provider knobs.
               { name: "STORY_OPENAI_MODEL", value: (this.node.tryGetContext("openaiModel") as string) ?? "gpt-5.1" },

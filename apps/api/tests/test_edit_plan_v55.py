@@ -71,9 +71,9 @@ def test_v53_system_prompt_file_untouched():
 # --------------------------------------------------------------------------------------------------------------
 # 2. isolated candidate: resolution, never default
 # --------------------------------------------------------------------------------------------------------------
-def test_default_is_53_and_55_is_never_default():
+def test_default_is_56_for_every_stage():
     assert _py("import edit_planner as e;print(e._EDIT_PLAN_DEFAULT, e.PROMPT_VERSION, e._v53_active(), e._v55_active())"
-               ) == "5.3 edit_plan/5.3 True False"
+               ) == "5.6 edit_plan/5.6 True True"
 
 
 def test_version_55_resolves_only_when_selected():
@@ -84,7 +84,7 @@ def test_version_55_resolves_only_when_selected():
 
 def test_unknown_version_falls_back_to_default():
     assert _py("import edit_planner as e;print(e.PROMPT_VERSION, e._v55_active())",
-               {"STORY_EDIT_PLAN_VERSION": "5.7"}) == "edit_plan/5.3 False"
+               {"STORY_EDIT_PLAN_VERSION": "5.7"}) == "edit_plan/5.6 True"
 
 
 def test_existing_53_cand_dir_does_not_parse_as_55():
