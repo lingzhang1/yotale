@@ -2,10 +2,10 @@ import Foundation
 import SwiftUI
 
 /// Where the in-app "Delete Account" entry is offered: the environments whose backend has the deletion routes
-/// (design 7.5). Development only until the beta rollout is approved; adding `.beta` here is part of that change.
+/// (design 7.5). Beta added with the beta rollout (2026-11-23); production stays a separate decision.
 /// The lock screen, wipe and other-device handling run in every build, so a build never strands a request.
 enum AccountDeletionAvailability {
-    static let environments: Set<StoryEnvironmentKind> = [.development]
+    static let environments: Set<StoryEnvironmentKind> = [.development, .beta]
     static var offered: Bool { environments.contains(StoryEnvironment.current.kind) }
 }
 
