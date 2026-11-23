@@ -11565,6 +11565,83 @@
           }
         }
       }
+    },
+    "Account" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "账户"
+          }
+        }
+      }
+    },
+    "Sign out of YoTale?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要退出 YoTale 吗？"
+          }
+        }
+      }
+    },
+    "Signed in as %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已登录：%@"
+          }
+        }
+      }
+    },
+    "Signed in with Apple" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已通过 Apple 登录"
+          }
+        }
+      }
+    },
+    "Signed in with Google" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已通过 Google 登录"
+          }
+        }
+      }
+    },
+    "Subscribed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已订阅"
+          }
+        }
+      }
+    },
+    "Your Moments and Stories stay on this iPhone. Sign in again to use YoTale's AI features." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的瞬间和故事会保留在这台 iPhone 上。再次登录即可使用 YoTale 的 AI 功能。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
