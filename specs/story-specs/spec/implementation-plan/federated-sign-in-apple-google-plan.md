@@ -1,12 +1,18 @@
 # Federated sign-in plan: finish Apple on dev, then Google
 
-Status (2026-11-22): **Apple on dev: DONE and device-accepted by Ling.** Google: B2 merged (PR #151, 3ffe53a, inert without `googleSecretName`); B3 iOS in PR #152; B1 (Google Cloud client + secret) is Ling's next step.
+Status (2026-11-24): **Apple: live on dev (device-accepted) and beta. Google: live on dev (device-accepted) and on the beta backend; Beta build turned on in PR #167 (019c4d9); beta device test pending.**
 
 Apple record:
 - A2 merged in PR #146 (7aedaac). A3: story-development-auth deployed from 7aedaac with `appleSecretName=YoTale-Apple-SignIn-Dev`; IdP live, client lists it, authorize redirects to Apple with the dev Services ID. A4 merged in PR #147 (87659cf; also fixed a release-gate test that assumed dev was 0).
 - Device test found the in-app sign-out left Cognito's hosted-session cookie in the shared browser session, so the next Apple sign-in skipped Apple for about an hour. Fixed in PR #149 (388178b): ephemeral `ASWebAuthenticationSession`, plus Apple's standard `ASAuthorizationAppleIDButton`.
 - Evidence: one Cognito user `SignInWithApple_000598…` (sub b4d834e8-…), created 01:51:27 UTC with a relay email; Story account ab38007c-0521-4611-8bd0-f21bfeaf67ca created 01:51:29 UTC. After Ling removed the app from her Apple account and signed in with Share My Email, the SAME Cognito user and Story account were reused (modified 02:16:01 UTC, email now the real address); no second user or claim. API logs since 01:50 UTC: 38 `GET /v1/me`, all 200; no 401/500/Traceback lines.
 - **Apple on beta: enabled 2026-11-23.** F4 met: account deletion is live on beta and D7 ships the TN3194 fallback with the server-to-server notification endpoint `/v1/auth/apple-signin-notifications` (deletion design, D7 status). Secret copied to beta, `story-beta-auth` deployed with `appleSecretName=YoTale-Apple-SignIn-Beta`, `Beta.xcconfig` lists `SignInWithApple`. Open: register the endpoint on the App ID in the Apple Developer portal (Ling); a TestFlight build from master.
+Google record:
+- B2 PR #151 (3ffe53a), B3 PR #152 (c5cb458). Dev: secret `YoTale-Google-SignIn-Dev` (dev account), `story-development-auth` deployed with both secret names, `Development.xcconfig` lists `SignInWithApple,Google` (PR #155, e5ea07f). Device test 2026-11-22: Cognito user `Google_115251263561416055503` and a new Story account `f2345bb8-…`, `GET /v1/me` 200, no 5xx.
+- Sign-in UI (PR #158, d2dc01e, device-accepted): providers first, then an "Or use your email" divider; custom HIG Apple button so the title follows the app language; Google Light-theme button with the official "G" (`Assets.xcassets/google_g`, cropped from Google's signin-assets.zip); one 50 pt height and 12 pt radius for all controls.
+- Beta (2026-11-24): `YoTale-Google-SignIn-Beta` copied from dev into beta account 224033508028 (shape-checked). `story-beta-auth` deployed with `-c sesFromEmail=no-reply@beta.yotale.ai -c sesAccountId=224033508028 -c appleSecretName=YoTale-Apple-SignIn-Beta -c googleSecretName=YoTale-Google-SignIn-Beta` plus the API stack's required release inputs. **Omitting `sesFromEmail` would remove the pool's SES sender and break beta email codes**; the diff then shows `[-] EmailConfiguration`. Live: pool lists Google and SignInWithApple, client allows COGNITO/Google/SignInWithApple, authorize redirects (302) to accounts.google.com with the beta client. `Beta.xcconfig` lists `SignInWithApple,Google` (PR #167).
+- Google Auth Platform: publishing status In production, External. Home page `https://lingzhang1.github.io/yotale-legal/`, privacy `…/privacy.html`, authorized domains: both Cognito domains and `lingzhang1.github.io`. Search Console HTML file `googlebad2e57f9180152b.html` added to `yotale-legal` gh-pages (fe03ca9); keep it. Brand verification (logo/name on the consent screen) pending; does not block sign-in.
+- Open: beta device test; brand verification retry after 24 h (the Cognito domains may block it, fix = Cognito custom domain such as `auth.yotale.ai`); Google Sans font for the button; Google's policy prefers separate projects for test and production clients (prod should get its own project); about 8 rejected `POST /v1/billing/transactions` (403 `app_account_token_mismatch`) per sign-in on a phone whose sandbox purchases belong to another account.
 Scope: dev first. Beta and prod are out of scope until the dev acceptance below passes and Ling approves.
 
 A2 as built: `-c appleSecretName=<name>` (replaces `applePrivateKey`/`appleServicesId`/`appleTeamId`/`appleKeyId` and the unused stack props). Secret JSON fields: `services_id`, `team_id`, `key_id`, `private_key`. All four become `{{resolve:secretsmanager:<name>:SecretString:<field>::}}`; logical id `AppleIdp` unchanged. CDK's own `UserPoolIdentityProviderApple` (`privateKeyValue: SecretValue`) exists in 2.160, which indicates dynamic references are accepted here; the dev deploy (A3) is the real proof.
@@ -108,7 +114,7 @@ App Store Guideline 4.8: a build that offers Google must also offer Sign in with
 - Add a "Continue with Google" button following Google's branding rules. `ASWebAuthenticationSession` is allowed by Google (embedded `WKWebView` is not).
 - Flags: rather than adding `STORY_GOOGLE_SIGNIN_AVAILABLE`, replace the Apple flag with one baked list `STORY_FEDERATED_PROVIDERS` (for example `SignInWithApple,Google`), and have `release_config_gate.py` check each listed provider exists on the pool and reject Google without Apple (Guideline 4.8). This keeps one parameter instead of two. Decision F3.
 - `L10n` strings for the new button (en + zh-Hans).
-- Before any App Store build: replace the placeholder bordered "Continue with Google" button with Google's official branded button and "G" mark (asset not yet in the catalog).
+- Done in PR #158: Google Light-theme button with the official "G" mark. Remaining: Google Sans font.
 
 ### B4. Dev deploy and acceptance
 
@@ -140,4 +146,4 @@ Same shape as A3 and A5: diff shows only the Google IdP and client update; devic
 - CloudFormation dynamic reference inside Cognito `ProviderDetails` (A2).
 - Hosted-flow UX on device (Face ID vs password prompt in the Apple web sheet; the system "wants to use amazoncognito.com to sign in" prompt).
 - Cognito pre-sign-up linking behavior (only relevant if F1 changes).
-- Google brand verification lead time.
+- Google brand verification outcome with `amazoncognito.com` authorized domains.
