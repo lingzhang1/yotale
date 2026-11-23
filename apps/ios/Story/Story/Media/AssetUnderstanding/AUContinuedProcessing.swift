@@ -173,7 +173,7 @@ enum AUContinuedProcessing {
             } else {
                 backoffSince = nil
             }
-            if !AssetUnderstandingQueue.isDraining, snap.state != .retryingSoon {
+            if !AssetUnderstandingQueue.isDraining, snap.state != .retryingSoon, !InteractiveAIHold.isHeld {
                 // Launching another drain that made no progress since the previous launch, twice in a row, means
                 // the rest is backing off / failing: stop instead of spinning. Jobs stay PENDING for the next
                 // foreground / reconnect / retry timer.

@@ -34,7 +34,7 @@ enum StoryBackend {
         return URLSession(configuration: cfg)
     }()
 
-    /// A SEPARATE session for BACKGROUND model inference (asset/scene understanding). Isolating it from the
+    /// A SEPARATE session for BACKGROUND model inference (asset understanding) and media transfer. Isolating it from the
     /// interactive `longSession` means a Story's 20-25 large multipart AU uploads cannot occupy the connection
     /// pool that interactive requests (creative-intent, guide, director) need — so starting/working on Story B
     /// stays responsive while Story A analyzes. Per-host connections are capped so the client itself bounds how
@@ -46,6 +46,19 @@ enum StoryBackend {
         cfg.timeoutIntervalForResource = 300
         cfg.waitsForConnectivity = true
         cfg.httpMaximumConnectionsPerHost = 2   // bound background upload concurrency at the transport layer
+        return URLSession(configuration: cfg)
+    }()
+
+    /// A DEDICATED session for the AI Ideas scene scan (POST /v1/scene-understanding). The user is waiting on the
+    /// camera for this call, so it must not queue behind AU, media upload or media download traffic on
+    /// `backgroundSession` (2 connections per host). Beta 2026-11-23: the 576 KB scan took 20.2 s to arrive while
+    /// an AU upload was in flight, against a 7.5 s model call. Same generous timeouts as before (the model call
+    /// has been slow on some providers); only the connection pool changes.
+    static let sceneScanSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 180
+        cfg.timeoutIntervalForResource = 300
+        cfg.waitsForConnectivity = true
         return URLSession(configuration: cfg)
     }()
 

@@ -6,12 +6,15 @@ import CoreImage
 //   a) reject blurry frames (Laplacian variance sharpness proxy)
 //   b) reject near-duplicates (8x8 average-hash, Hamming distance)
 //   c) cap to `max`, preferring sharper + diverse frames
-//   d) resize longest side <= 1024px, JPEG quality 0.6
+//   d) resize longest side <= 768px, JPEG quality 0.6
 //
 // Core Image / UIKit only, iOS 17+. Deterministic given the same input.
 struct SceneFrameProcessor {
 
-    private static let maxLongestSide: CGFloat = 1024
+    // 768 px (was 1024): about half the bytes per frame, so the scan upload the user waits on is about
+    // twice as fast (beta 2026-11-23: 5 frames = 576 KB at 1024 px). Scene understanding needs layout,
+    // subjects and light, not fine detail.
+    private static let maxLongestSide: CGFloat = 768
     private static let jpegQuality: CGFloat = 0.6
     private static let hammingThreshold = 8        // < this => near-duplicate
     private static let sharpnessFloor: Double = 0.0015

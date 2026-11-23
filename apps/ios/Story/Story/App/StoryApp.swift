@@ -125,6 +125,15 @@ struct StoryApp: App {
                         let q = AssetUnderstandingQueue(context: container.mainContext)
                         Task { await q.drain() }
                     }
+                    // AI Ideas held background uploads while the user waited; resume all three queues now.
+                    InteractiveAIHold.onRelease = {
+                        let q = AssetUnderstandingQueue(context: container.mainContext)
+                        Task { await q.drain() }
+                        let uq = makeUploadQueue()
+                        Task { await uq.drain() }
+                        let obq = makeOutputBackupQueue()
+                        Task { await obq.drain() }
+                    }
                     // P1-E (AU durability): push a completed understanding to the account store as soon as it
                     // is produced (AU drain) OR as soon as its media becomes cloud-backed (upload verified),
                     // instead of only on the next foreground/sign-in. Bound here to the live AuthStore +

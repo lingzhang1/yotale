@@ -45,13 +45,23 @@ from model_gateway import (
 
 # v2 (Phase 1A visual Shooting Ideas): identical to v1 plus ONE optional per-shot
 # `visual_reference_query` the model writes in the same call (no extra inference).
-# Rollback = point these back at v1 (prompts/story_director/v1 is kept unchanged).
-PROMPT_VERSION = "story_director/v2"
-SCHEMA_VERSION = "story_director.envelope/2"
+# v3 (AI Ideas latency): same direction rules, shorter OUTPUT. The model writes each shot once: the decision
+# points at a plan shot by `plan_shot_id`, `alternatives` holds only the OTHER ideas (the server rebuilds
+# candidates = [decision, *alternatives]), and director_state.last_decision / concept.rationale are not
+# model-written. The wire DirectorOutput is unchanged.
+# Rollback = point these back at v2 (prompts/story_director/v2 is kept unchanged).
+PROMPT_VERSION = "story_director/v3"
+SCHEMA_VERSION = "story_director.envelope/3"
 TASK_INIT = "story_director.initialize"
 TASK_NEXT = "story_director.next"
 
-_PROMPT_DIR = Path(__file__).resolve().parent.parent.parent / "prompts" / "story_director" / "v2"
+_PROMPT_DIR = Path(__file__).resolve().parent.parent.parent / "prompts" / "story_director" / "v3"
+
+# ---- Lean model output (v3) -----------------------------------------------------
+# MODEL-FACING ONLY keys, resolved in _mint_ids and never present on the validated DirectorOutput.
+PLAN_SHOT_REF_KEY = "plan_shot_id"      # on a decision: "this decision's shot is plan.shots[id]"
+ALTERNATIVES_KEY = "alternatives"       # up to MAX_ALTERNATIVES other decisions for the same slot
+MAX_ALTERNATIVES = 2
 
 # ---- Visual reference queries (Phase 1A) -----------------------------------
 # The model may attach `visual_reference_query` to any shot it emits. It is NOT a field of the FROZEN
@@ -140,35 +150,59 @@ def _load_system_prompt() -> str:
 
 
 # Appended to the user content when requesting ephemeral alternatives (DIRECT UX).
-# candidates[0] MUST equal `decision`; #1/#2 are genuinely different approaches to the
-# SAME narrative need, not paraphrases. They are NOT a multi-shot plan and must NOT add
-# beats/shots. The user captures at most one.
+# The server builds candidates = [decision, *alternatives], so the model never repeats the decision.
+# Alternatives are genuinely different approaches to the SAME narrative need, not paraphrases. They are
+# NOT a multi-shot plan and must NOT add beats/shots. The user captures at most one.
 _CANDIDATES_INSTRUCTION = (
-    "\n\nALTERNATIVES: also return `candidates` — up to 3 RANKED alternative decisions for "
-    "the SAME current slot. candidates[0] MUST equal `decision`. candidates[1]/[2] must be "
-    "GENUINELY DIFFERENT creative approaches (different subject_action / framing / angle) to "
-    "serve the SAME narrative need, NOT paraphrases of candidates[0]. They are EPHEMERAL: the "
-    "user captures AT MOST ONE. Do NOT add beats or shots to the plan for them, do NOT treat "
-    "them as additional required captures, and keep plan.beats / plan.shots exactly as minimal "
-    "as for a single recommendation. Every candidate must independently satisfy feasibility, "
-    "safety, scene-grounding (or environment-agnosticism when the scene is null), and narrative "
-    "relevance."
+    "\n\nALTERNATIVES: also return `alternatives` — up to 2 RANKED alternative decisions for "
+    "the SAME current slot, each with the SAME action as `decision`. Do NOT repeat `decision` "
+    "in `alternatives`. Each must be a GENUINELY DIFFERENT creative approach (different "
+    "subject_action / framing / angle) to serve the SAME narrative need, NOT a paraphrase. They "
+    "are EPHEMERAL: the user captures AT MOST ONE. Do NOT add beats or shots to the plan for "
+    "them, do NOT treat them as additional required captures, and keep plan.beats / plan.shots "
+    "exactly as minimal as for a single recommendation. Every alternative must independently "
+    "satisfy feasibility, safety, scene-grounding (or environment-agnosticism when the scene is "
+    "null), and narrative relevance."
 )
 
 
 def _envelope_schema() -> dict:
     """JSON Schema the model must satisfy. Server owns ids (concept/plan/shot
     ids are minted by us if the model omits them), so we relax `required` to the
-    creative content and reconcile ids in _to_output."""
+    creative content and reconcile ids in _to_output.
+
+    v3 lean output: the model-facing schema drops `candidates` (rebuilt server-side from `decision` +
+    `alternatives`), `director_state.last_decision` (server-filled) and `concept.rationale` (never shown),
+    and lets a decision reference a plan shot by id instead of repeating it."""
     schema = copy.deepcopy(DirectorOutput.model_json_schema())
     props = schema.get("properties", {})
+    defs = schema.get("$defs", {})
     # Server-computed, never model-authored.
-    props.pop("shot_reference_queries", None)
-    if "shot_reference_queries" in schema.get("required", []):
-        schema["required"].remove("shot_reference_queries")
+    for key in ("shot_reference_queries", "candidates"):
+        props.pop(key, None)
+        if key in schema.get("required", []):
+            schema["required"].remove(key)
+    props[ALTERNATIVES_KEY] = {
+        "type": "array",
+        "maxItems": MAX_ALTERNATIVES,
+        "items": {"$ref": "#/$defs/DirectorDecision"},
+        "description": "Up to 2 OTHER ideas for the same slot. Never repeats `decision`.",
+    }
+    decision_def = defs.get("DirectorDecision")
+    if isinstance(decision_def, dict):
+        decision_def.setdefault("properties", {})[PLAN_SHOT_REF_KEY] = {
+            "type": "string",
+            "description": "id of the plan.shots entry this decision captures. When set, omit `shot`.",
+        }
+    state_def = defs.get("DirectorState")
+    if isinstance(state_def, dict):
+        state_def.get("properties", {}).pop("last_decision", None)
+    concept_def = defs.get("StoryConceptContract")
+    if isinstance(concept_def, dict):
+        concept_def.get("properties", {}).pop("rationale", None)
     # MODEL-FACING ONLY: allow an optional per-shot reference query. The canonical (frozen) ShotContract
     # model is untouched; _mint_ids pops the key before canonical validation.
-    shot_def = schema.get("$defs", {}).get("ShotContract")
+    shot_def = defs.get("ShotContract")
     if isinstance(shot_def, dict):
         shot_def.setdefault("properties", {})[REFERENCE_QUERY_KEY] = {
             "type": "string", "description": _RQ_SCHEMA_DESCRIPTION,
@@ -257,9 +291,9 @@ class RealStoryDirectorEngine:
             user_content=(
                 prefix
                 + "INITIALIZE. Produce the concept, plan (beats + shots), initial "
-                "director_state, the first decision, and up to 3 ranked ephemeral "
-                "`candidates` (alternatives for this ONE slot; candidates[0] == decision; "
-                "do NOT add beats/shots for them) for this task:\n"
+                "director_state, the first decision, and up to 2 `alternatives` (other ideas "
+                "for this ONE slot, never repeating the decision; do NOT add beats/shots for "
+                "them) for this task:\n"
                 + json.dumps(content, ensure_ascii=False)
                 + _CANDIDATES_INSTRUCTION
             ),
@@ -350,33 +384,65 @@ class RealStoryDirectorEngine:
                     shot.pop("example_asset_id", None)   # asset-owned, not the model's
                     old = shot.get("id")
                     new = str(uuid4())
-                    if isinstance(old, str):
-                        shot_id_map[old] = new
+                    if isinstance(old, (str, int)) and not isinstance(old, bool):
+                        shot_id_map[str(old)] = new
                     shot["id"] = new
                     _take_reference_query(shot)
         # The decision shot is minted even without a plan dict (create_now/rescan carry none anyway),
         # so its reference-query key is always popped before canonical validation.
+        minted_plan_shots: dict[str, dict[str, Any]] = {}
+        if isinstance(plan, dict):
+            for shot in plan.get("shots", []) or []:
+                if isinstance(shot, dict) and isinstance(shot.get("id"), str):
+                    minted_plan_shots[shot["id"]] = shot
+
+        def _prepare(dec: dict[str, Any]) -> None:
+            # Mint a decision's shot id, or (v3) resolve `plan_shot_id` to a copy of the already-minted plan
+            # shot so the validated output has the old full shape. An unknown ref with no shot leaves `shot`
+            # absent, and _integrity_guard rejects a capture_shot without one.
+            ref = dec.pop(PLAN_SHOT_REF_KEY, None)
+            s = dec.get("shot")
+            if isinstance(s, dict):
+                s.pop("example_asset_id", None)
+                old = s.get("id")
+                # If the decision's shot matches a plan shot by old id, reuse its UUID.
+                s["id"] = shot_id_map.get(old, str(uuid4())) if isinstance(old, str) else str(uuid4())
+                _take_reference_query(s)
+            elif isinstance(ref, (str, int)) and shot_id_map.get(str(ref)) in minted_plan_shots:
+                dec["shot"] = copy.deepcopy(minted_plan_shots[shot_id_map[str(ref)]])
+
         decision = data.get("decision")
-        if isinstance(decision, dict) and isinstance(decision.get("shot"), dict):
-            dshot = decision["shot"]
-            dshot.pop("example_asset_id", None)
-            old = dshot.get("id")
-            # If the decision's shot matches a plan shot by old id, reuse its UUID.
-            dshot["id"] = shot_id_map.get(old, str(uuid4())) if isinstance(old, str) else str(uuid4())
-            _take_reference_query(dshot)
+        if isinstance(decision, dict):
+            _prepare(decision)
+            if (decision.get("action") in ("capture_shot", "retry_shot")
+                    and not isinstance(decision.get("shot"), dict) and minted_plan_shots):
+                # A shot-bearing decision whose plan_shot_id did not resolve: fall back to the plan shot for the
+                # current beat (else the first plan shot) rather than failing the user's AI Ideas request.
+                ds0 = data.get("director_state") if isinstance(data.get("director_state"), dict) else {}
+                beat = ds0.get("current_beat_id")
+                pick = next((s for s in minted_plan_shots.values() if beat and s.get("beat_id") == beat),
+                            next(iter(minted_plan_shots.values())))
+                decision["shot"] = copy.deepcopy(pick)
         data.setdefault("director_state", {"beat_progress": []})
         # Ephemeral candidates[]: each carries a shot whose model id must be minted too.
         # Reuse the plan shot's UUID when a candidate references the same old id; otherwise
         # mint fresh. candidates do NOT create plan beats/shots.
+        # v3: the model writes `alternatives` (never repeating the decision) and the server rebuilds
+        # candidates = [decision, *alternatives]. A legacy `candidates` list (v2 output) is kept as-is.
+        alternatives = data.pop(ALTERNATIVES_KEY, None)
         candidates = data.get("candidates")
         if isinstance(candidates, list):
             for cand in candidates:
-                if isinstance(cand, dict) and isinstance(cand.get("shot"), dict):
-                    cshot = cand["shot"]
-                    cshot.pop("example_asset_id", None)
-                    old = cshot.get("id")
-                    cshot["id"] = shot_id_map.get(old, str(uuid4())) if isinstance(old, str) else str(uuid4())
-                    _take_reference_query(cshot)
+                if isinstance(cand, dict):
+                    _prepare(cand)
+        elif isinstance(alternatives, list) and isinstance(decision, dict):
+            alts = [a for a in alternatives if isinstance(a, dict)][:MAX_ALTERNATIVES]
+            for alt in alts:
+                _prepare(alt)
+            # An alternative that needs a shot but has none (unresolved ref) is dropped, never fatal.
+            alts = [a for a in alts
+                    if a.get("action") not in ("capture_shot", "retry_shot") or isinstance(a.get("shot"), dict)]
+            data["candidates"] = [copy.deepcopy(decision), *alts] if alts else []
         # director_state.last_decision may embed a shot with a model id too.
         ds = data.get("director_state")
         if isinstance(ds, dict):
@@ -387,6 +453,11 @@ class RealStoryDirectorEngine:
                 old = ld["shot"].get("id")
                 ld["shot"]["id"] = shot_id_map.get(old, str(uuid4())) if isinstance(old, str) else str(uuid4())
                 ld["shot"].pop(REFERENCE_QUERY_KEY, None)   # state echo: drop, never surfaced
+            if isinstance(ld, dict):
+                ld.pop(PLAN_SHOT_REF_KEY, None)
+            elif isinstance(decision, dict):
+                # v3: the model no longer writes last_decision; it is the decision just made.
+                ds["last_decision"] = copy.deepcopy(decision)
         data["shot_reference_queries"] = ref_queries
         return data
 
@@ -469,5 +540,6 @@ class MockStoryDirectorEngine:
 __all__ = [
     "PROMPT_VERSION", "SCHEMA_VERSION", "TASK_INIT", "TASK_NEXT",
     "REFERENCE_QUERY_KEY", "sanitize_reference_query",
+    "PLAN_SHOT_REF_KEY", "ALTERNATIVES_KEY", "MAX_ALTERNATIVES",
     "DirectorOutput", "StoryDirectorEngine", "RealStoryDirectorEngine", "MockStoryDirectorEngine",
 ]
