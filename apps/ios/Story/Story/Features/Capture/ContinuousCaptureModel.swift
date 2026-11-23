@@ -120,7 +120,20 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         case ideas                    // one or more shot ideas available (and shown)
         case failed(String)           // AI failed/throttled — recording still works
     }
-    @Published var aiState: AIState = .off
+    @Published var aiState: AIState = .off {
+        didSet { syncInteractiveHold() }
+    }
+    /// Held while the scan + Director are in flight so background AU / upload jobs don't share the uplink.
+    private var interactiveHold: UUID?
+    private func syncInteractiveHold() {
+        let waiting = aiState == .scanning || aiState == .thinking
+        if waiting, interactiveHold == nil {
+            interactiveHold = InteractiveAIHold.begin()
+        } else if !waiting, let hold = interactiveHold {
+            interactiveHold = nil
+            InteractiveAIHold.end(hold)
+        }
+    }
     @Published var ideaIndex = 0                       // which cached idea is shown (preserved)
     @Published var ideasCollapsed = false              // full card hidden but ideas retained (chip reopens)
     @Published var recordingElapsed: TimeInterval = 0  // live REC timer (Phase 2)

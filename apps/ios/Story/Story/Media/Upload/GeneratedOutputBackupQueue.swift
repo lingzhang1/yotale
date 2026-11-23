@@ -113,10 +113,11 @@ final class GeneratedOutputBackupQueue {
     func drain(maxJobs: Int = 25) async {
         if draining { return }
         guard let owner = activeOwner() else { return }
+        guard !InteractiveAIHold.isHeld else { return }   // AI Ideas is waiting; onRelease re-drains
         draining = true
         defer { draining = false }
         var processed = 0
-        while processed < maxJobs, let job = nextEligibleJob(owner: owner) {
+        while processed < maxJobs, !InteractiveAIHold.isHeld, let job = nextEligibleJob(owner: owner) {
             processed += 1
             await run(job)
         }

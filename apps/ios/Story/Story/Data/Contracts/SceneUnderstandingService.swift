@@ -26,7 +26,7 @@ enum SceneUnderstandingServiceError: Error, LocalizedError {
 
 struct SceneUnderstandingService {
     var baseURL: URL = StoryBackend.baseURL
-    var session: URLSession = StoryBackend.backgroundSession
+    var session: URLSession = StoryBackend.sceneScanSession   // own pool: never queues behind AU/media uploads
 
     func analyze(frames: [Data],
                  captureSessionId: UUID,

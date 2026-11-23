@@ -195,6 +195,8 @@ final class AssetUnderstandingQueue {
         }
         guard isAuthed() else { AULog.queue.notice("au drain skip=signed_out"); return }   // defer silently until authenticated
         guard Self.sharedIsOnline() else { AULog.queue.notice("au drain skip=offline"); return }   // resume on reconnect
+        // AI Ideas is waiting on the uplink: start nothing now; InteractiveAIHold.onRelease re-drains.
+        guard !InteractiveAIHold.isHeld else { AULog.queue.notice("au drain skip=interactive_hold"); return }
         Self.drainInFlight = true
         Self.drainStartedAt = Date()
         AUDiag.record("drain begin app=\(Self.backgroundState())")
@@ -238,6 +240,8 @@ final class AssetUnderstandingQueue {
         while !r.stopped, r.processed < r.maxJobs, r.shouldContinue(), !Self.stopGate.isSet, !Task.isCancelled {
             if index == 0 { Self.kickParallel() }
             if index > 0, !Self.parallelWorkersEnabled { break }
+            // Between jobs only: the job just finished was never interrupted. Pending jobs wait for the release.
+            if InteractiveAIHold.isHeld { AULog.queue.notice("au drain stop=interactive_hold"); break }
             guard let job = nextEligibleJob(excluding: r.skipped) else { break }
             // R7-F: do NOT analyze a Moment while its Story's cloud state is still hydrating — a restore may
             // be about to supply a reusable understanding (restore first, regenerate only if missing).

@@ -50,6 +50,7 @@ struct SceneScanFlowView: View {
     @State private var planningLine = L10n.t("Looking at your scene…")
     @State private var planningTimer: Timer?
     @State private var sceneFrame: UIImage?   // sharpest scanned frame, backs the Idea card
+    @State private var interactiveHold: UUID? // InteractiveAIHold token while the scan/Director run
 
     // C4-Lite capture integrity (Milestone C4-Lite). SAVE does not interrupt (brief
     // "Moment added" confirmation only); only FAIL interrupts with a physical reason.
@@ -125,6 +126,26 @@ struct SceneScanFlowView: View {
             }
         }
         .cloudAuthGate(cloudGate)   // P0 Phase 4: Start Scan runs the Director (Bedrock) — gate it behind sign-in
+        // Hold background AU / upload jobs while the scan + Director are in flight (shared uplink).
+        .onChange(of: isWaitingOnAI) { _, waiting in
+            if waiting, interactiveHold == nil {
+                interactiveHold = InteractiveAIHold.begin()
+            } else if !waiting {
+                InteractiveAIHold.end(interactiveHold)
+                interactiveHold = nil
+            }
+        }
+        .onDisappear {
+            InteractiveAIHold.end(interactiveHold)
+            interactiveHold = nil
+        }
+    }
+
+    private var isWaitingOnAI: Bool {
+        switch state {
+        case .scanning, .analyzing, .planning: return true
+        default: return false
+        }
     }
 
     private var integrityFailBinding: Binding<Bool> {
