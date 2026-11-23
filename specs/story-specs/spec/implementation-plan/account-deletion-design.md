@@ -430,7 +430,7 @@ dev, then beta, then prod; each deploy needs Ling's explicit approval. Beta CDK 
 * **8.7** Local wipe: all local data on the requesting device. Recommended.
 * **8.8** Confirmation email: none in v1; completion is confirmed in-app (5.7).
 * **8.9** Provider copies: verify retention (OpenAI, Google, Unsplash, Bedrock logging) before publishing the policy text.
-* **8.10 (changed)** Apple revocation: no longer gates the deletion release (section 6). Recommended: run appendix A when Apple sign-in is planned; ship the TN3194 fallback in the same build as Apple sign-in if A fails.
+* **8.10 (changed)** Apple revocation: no longer gates the deletion release (section 6). Beta (2026-11-23) ships the TN3194 fallback with the notification endpoint; appendix A (automatic revocation) is deferred to before the App Store release.
 * **8.11** Grace period: none.
 * **8.12 (changed)** Approvals: D1 (inert code) through a normal PR. Separately: the new table, Lambda, role and rule (D2); the API routes and guards G1/G2 (D3); each environment deploy; the first run on a non-test account; privacy text.
 * **8.13** Keep the identity claim as a tombstone. Recommended (a).
@@ -481,6 +481,12 @@ Bracketed values are unverified. "Pseudonymous" replaces revision 1's "no longer
 **D6.** Trial marker (8.3), payment record (8.4): only if chosen; not v1.
 
 **D7.** Apple re-auth and revocation (appendix A), before or with the build that enables Apple sign-in.
+* **Status (2026-11-23): done via the TN3194 fallback; Apple sign-in enabled on beta.** The section 6 release rule allows either automatic revocation (appendix A passed) or the TN3194 fallback with the server-to-server notification endpoint. Built the fallback:
+  * `POST /v1/auth/apple-signin-notifications` (public, `apps/api/app/apple_signin_notifications.py`): verifies Apple's JWT (Apple JWKS, issuer `https://appleid.apple.com`, `aud` = the environment's Services ID from `STORY_APPLE_SIGNIN_AUDIENCE`); `consent-revoked` and `account-delete` run `AdminUserGlobalSignOut` on `SignInWithApple_<sub>` (refresh tokens revoked, the app signs out at its next refresh); `email-*` acknowledged; unknown user acknowledged; bad payload 400; Cognito failure 503 so Apple retries. No data is deleted by a notification. Logs carry the event type, outcome and a 12-hex hash of the Apple sub only. API role gets `cognito-idp:AdminUserGlobalSignOut` on its pool only.
+  * In-app manual revocation step for Apple accounts (lock and completion screens) shipped in D5; the "being deleted" sign-in message now also covers Apple and Google sign-in.
+  * Beta: `YoTale-Apple-SignIn-Beta` copied from dev into beta 224033508028 (Ling's 2026-11-22 decision; checked by shape: four fields, 10-character key and team ids, PEM header, copy equals source; never printed). `story-beta-auth` diff showed only `AppleIdp` added and the client gaining `SignInWithApple` (no drift otherwise); deployed 2026-11-23 19:20 JST; the hosted authorize redirects to Apple with `com.lingzhang.story.signin.beta`. Apple's authorize page accepts the beta return URL (`story-beta-auth.../oauth2/idpresponse`; a wrong URL gets 403). `Beta.xcconfig` `STORY_FEDERATED_PROVIDERS = SignInWithApple` (Google stays off on beta).
+  * **Ling's step:** register `https://<beta API host>/v1/auth/apple-signin-notifications` as the Server-to-Server Notification Endpoint in the Sign in with Apple configuration of the primary App ID `com.lingzhang.story` (Apple Developer portal). One endpoint serves every Services ID grouped under that App ID; events whose `aud` is not this environment's Services ID are rejected (400), so dev events are not processed on beta.
+  * **Automatic revocation (appendix A) deferred.** It needs the Sign in with Apple entitlement in a build and a device test (A3, A8). Revisit before the App Store release; it would replace the manual step for users who complete the native re-auth.
 
 **D8.** Privacy text and guideline 5.1.1(v) quote, when D5 is in App Review.
 

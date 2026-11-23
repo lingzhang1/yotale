@@ -142,6 +142,12 @@ final class AuthStore: NSObject {
         do {
             let t = try await hostedProviderTokens(provider, failure: failure)
             try await finishSignIn(with: t)
+        } catch where AccountDeletionFiles.pendingRequest() != nil {
+            // Cognito disables the user while its deletion runs: say so instead of the generic failure.
+            state = .signedOut
+            let msg = L10n.t("This account is being deleted. After deletion finishes, this email can create a new account.")
+            lastError = msg
+            throw CognitoAuthError.service(msg)
         } catch { state = .signedOut; lastError = (error as? LocalizedError)?.errorDescription; throw error }
     }
 

@@ -157,3 +157,28 @@ describe("deploy role (release gate)", () => {
     expect(st.Resource).toBe("arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_AzfHOEdA5");
   });
 });
+
+describe("Sign in with Apple notifications (D7)", () => {
+  const envVars = (t: Template) => {
+    const svc = Object.values(t.findResources("AWS::AppRunner::Service"))[0] as any;
+    return (svc.Properties.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables as
+      Array<{ Name: string; Value: unknown }>);
+  };
+  const betaCtx = { imageDigest: "sha256:abc", cognitoUserPoolId: "us-east-1_beta", cognitoAppClientId: "client",
+                    allowNoObservability: "true" };
+
+  test("beta gets its Services ID as the audience and a sign-out-only grant on its pool", () => {
+    const beta = synth("beta", betaCtx);
+    expect(envVars(beta).find((e) => e.Name === "STORY_APPLE_SIGNIN_AUDIENCE")?.Value)
+      .toBe("com.lingzhang.story.signin.beta");
+    const st = (Object.values(beta.findResources("AWS::IAM::Policy")) as any[])
+      .flatMap((p) => p.Properties.PolicyDocument.Statement).find((s: any) => s.Sid === "AppleSignInRevocation");
+    expect(st.Action).toBe("cognito-idp:AdminUserGlobalSignOut");
+    expect(st.Resource).toBe("arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_beta");
+  });
+
+  test("an environment without a Services ID gets neither", () => {
+    const t = synth("test");
+    expect(envVars(t).some((e) => e.Name === "STORY_APPLE_SIGNIN_AUDIENCE")).toBe(false);
+  });
+});
