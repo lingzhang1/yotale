@@ -542,6 +542,27 @@ Order: D1 -> D2 -> D3 -> D5 -> 7.3 -> D8. D7 is independent of the deletion rele
 | 30 | Re-auth with a different email | prevented: email locked; `sub` mismatch stops submission | 5.1 |
 | 31 | Re-registered user restores an active subscription | `app_account_token_mismatch`; known v1 limitation, verified in 7.3 | 4 |
 
+## 13. Status at session close and open action items (2026-11-24)
+
+**Done and live.** D1 to D3 (PRs #154, #156, #159, #160) and D5 (#161, menu fix #162) on dev and beta; beta rollout (#164: request table, worker, alarms, operator role, WAF rule for the status route); D7 TN3194 fallback and Apple sign-in on beta (#166). Device-accepted on dev by Ling (Apple account deleted 2026-11-23; request `completed`, 0 failures). Beta deploys `git-c4a0aca5ccbc` then `git-a8de3f92426b`, both with post-deploy verification passing.
+
+**Not complete.** Each item names its owner and what blocks it.
+
+| # | Item | Owner | Blocks |
+|---|---|---|---|
+| O1 | Register `https://asxtxgjiis.us-east-1.awsapprunner.com/v1/auth/apple-signin-notifications` as the Sign in with Apple Server-to-Server Notification Endpoint on App ID `com.lingzhang.story` (Apple Developer portal) | Ling | Revocation notices reaching beta |
+| O2 | Upload a beta (TestFlight) build from master so testers get Delete Account and Apple sign-in | Ling | Beta testers using either feature |
+| O3 | Automatic Apple token revocation (appendix A): Sign in with Apple entitlement in a dev build, steps A1-A9 on a device, then implement if A3 and A8 pass | Kiro + Ling (device) | App Store release (manual TN3194 step is the interim) |
+| O4 | D8: verify provider retention (OpenAI, Google, Bedrock invocation logging, Unsplash) (8.9) | Kiro (research) | Publishing the privacy text |
+| O5 | D8: fetch and quote the current App Store guideline 5.1.1(v) text in section 4 | Kiro | App Store review |
+| O6 | D8: counsel review of the section 9 privacy text; publish when the deleting build is in App Review (8.5) | Ling / counsel | App Store release |
+| O7 | Production rollout: add `production` to `ACCOUNT_DELETION_ENVIRONMENTS` (CDK) and `AccountDeletionAvailability` (iOS), prod Apple Services ID and secret, prod WAF rule, diffs, deploys | Ling (decision) + Kiro | Production |
+| O8 | Keep `STORY_EVIDENCE_PERSIST_ENABLED` OFF in gamma/prod until O6 and O7 are live there (8.16) | Ling (decision) | — (standing rule) |
+| O9 | Free-trial marker (8.3, counsel) and payment-record retention (8.4, accountant); outside v1 | Ling | — |
+| O10 | DynamoDB Local tests for `packages/account_deletion` (today: expression-evaluating fake only) | Kiro | — |
+| O11 | Three iOS tests that already fail on master: `ReleaseConfigDefaultsTests.test_appleSignIn_isBakedAndOffUntilTheIdpExists` (reads the renamed Info.plist key), `AppLanguageTests.test_L10n_translatesGlossaryTerms_inBothLanguages` (expects 片段, app says 瞬间), `AuthGatingTests.test_au_resumes_when_authed` | Kiro | — |
+| O12 | Unverified on a device: `auth_time` presence for email, Apple and Google re-auth on beta (the route answers `reauth_required` without it) | Ling (device) | — (dev email/Apple path accepted) |
+
 ## Appendix A. Focused test: native Apple re-auth and revocation
 
 **Finding first (updated 2026-11-22).** A Cognito-linked Apple account now exists on dev (Ling's, 1 federated user, `SignInWithApple` provider live). Preconditions 1-2 below are done (sign-in plan A1-A3). Still needed: precondition 3's Sign in with Apple entitlement for the native sheet (the hosted-UI flow does not need it), and precondition 4's key in Secrets Manager for the token exchange.
