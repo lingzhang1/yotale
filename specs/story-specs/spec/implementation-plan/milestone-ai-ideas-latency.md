@@ -1,8 +1,7 @@
 # Milestone: AI Ideas latency (scene scan + Director)
 
-Status: implemented on `perf/ai-ideas-latency` (2026-11-23). Backend tests green (1079 passed, 47 skipped).
-iOS changes are parse-checked only; Ling's device Xcode build is the real check. Dev deploy pending at the
-time of writing; see section 6.
+Status: merged (PR #163, `ceb62e0`), deployed to dev and device-tested on dev (2026-11-23). Results in section 6.
+Ling's device build ran the iOS changes on dev. Beta deploy follows this doc update.
 
 ## 1. Baseline (beta, 2026-11-23 04:42 UTC, one run)
 
@@ -94,6 +93,30 @@ Director model, temperature, scene-understanding prompt and model, frame count (
 Run AI Ideas on dev with the new build and backend. The Director handler logs output tokens and model time;
 the WAF and access logs give scan arrival and response times. Compare with section 1. Record results here.
 
-## 6. Results
+## 6. Results (dev, 2026-11-23, `ceb62e0`, Ling's device)
 
-Pending: dev deploy and Ling's device run.
+Server times from the dev API logs. Upload time is not measurable on dev (no WAF log), so each total starts
+when the scan upload was fully received (`resolved` time minus handler `latency_ms`).
+
+| Run (UTC) | Scan frames / bytes | Scan model | Director model | Director tokens in / out | Scan received → idea |
+|---|---|---|---|---|---|
+| Beta baseline 04:42 | 5 / 576 KB | 7.5 s | 28.3 s | 6.1k / 2.0k | 37.1 s |
+| Dev 09:42 | 4 / 106 KB | 4.8 s | 6.9 s | 5.6k / 786 | 12.9 s |
+| Dev 09:55:04 (AU running) | 3 / 74 KB | 4.1 s | 6.6 s | 5.5k / 731 | 11.7 s |
+| Dev 09:55:52 (AU running) | 4 / 117 KB | 4.7 s | 5.8 s | 5.6k / 666 | 11.5 s |
+
+Ling confirmed the idea card still offered alternatives ("Try another idea").
+
+**Upload hold, checked against AU arrival times.** AU upload-complete time = response time minus handler
+`latency_ms`; the AU queue ran two workers.
+
+- Run at 09:55:04 (hold about 09:54:58 to 09:55:15.9): AU jobs already in flight finished (one at 09:55:09,
+  inside the hold). No AU upload arrived between 09:54:47.8 and 09:55:35.5.
+- Run at 09:55:52 (hold about 09:55:46 to 09:56:03.8): the in-flight AU job finished at 09:55:51.3. The next
+  two AU uploads arrived at 09:56:06.9 and 09:56:07.3, about 3 s after the Director returned, and none arrived
+  in between. Without the hold the queue would have picked the next job right after 09:55:51.3.
+
+Conclusion: during the hold no new AU job started, in-flight jobs finished, and the release re-drained both
+workers. Media upload and output backup holds were not exercised in these runs (no upload traffic).
+
+Not measured: phone-side scan upload time, and the effect of 768 px frames on scan quality.
