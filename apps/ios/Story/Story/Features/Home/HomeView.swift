@@ -103,29 +103,41 @@ struct HomeView: View {
             // Account affordance in the Home header — the ONLY entry point to sign in WITHOUT first triggering a
             // gated AI action (Start a Story / music search / capture AI). Beta testers can sign in here to see
             // their account's Stories and to (re-)test the OTP flow.
-            //   • Signed in  -> a menu showing a short id + Sign Out (AuthStore exposes only storyUserId, never
-            //                   the email, by design).
+            //   • Signed in  -> a menu: how the user is signed in (provider, or the email for code sign-in; read
+            //                   from the id token as a display hint only), YoTale Plus with its status, Sign Out,
+            //                   and Delete Account in its own section.
             //   • Signed out -> a "Sign In" button that presents the shared SignInView as a sheet. No Story is
             //                   created and no AI is triggered; local content stays visible either way.
             if auth.isSignedIn {
                 Menu {
-                    if let uid = auth.storyUserId {
-                        Text("Signed in · \(String(uid.prefix(8)))")
-                    } else {
-                        Text("Signed in")
+                    Section {
+                        Text(signedInDescription)
+                        Button { showPlus = true } label: {
+                            Text("YoTale Plus")
+                            if let plusStatus { Text(plusStatus) }
+                            Image(systemName: "sparkles")
+                        }
+                        // Not destructive: signing out keeps everything on this iPhone.
+                        Button { confirmSignOut = true } label: {
+                            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
                     }
-                    Button { showPlus = true } label: { Label("YoTale Plus", systemImage: "sparkles") }
-                    Button("Sign Out", role: .destructive) { confirmSignOut = true }
                     if AccountDeletionAvailability.offered {
-                        Button(role: .destructive) { showDeleteAccount = true } label: {
-                            Label(L10n.t("Delete Account"), systemImage: "trash")
+                        // Own section, so it is separated from Sign Out by a divider.
+                        Section {
+                            Button(role: .destructive) { showDeleteAccount = true } label: {
+                                Label { Text(L10n.t("Delete Account")) } icon: { Self.redSymbol("trash") }
+                            }
                         }
                     }
                 } label: {
-                    Image(systemName: "person.crop.circle")
+                    // Filled when signed in (the signed-out state is the labelled "Sign In" button below).
+                    Image(systemName: "person.crop.circle.fill")
                         .font(.system(size: 20))
                         .foregroundStyle(StoryTheme.cream.opacity(0.7))
                 }
+                .accessibilityLabel(Text(L10n.t("Account")))
+                .accessibilityValue(Text(signedInDescription))
             } else {
                 Button { showSignIn = true } label: {
                     Label("Sign In", systemImage: "person.crop.circle")
@@ -136,11 +148,11 @@ struct HomeView: View {
             }
         }
         .padding(.top, 32).padding(.bottom, 22)
-        .confirmationDialog("Sign out of Story?", isPresented: $confirmSignOut, titleVisibility: .visible) {
-            Button("Sign Out", role: .destructive) { billing.reset(); auth.signOut() }
+        .confirmationDialog(L10n.t("Sign out of YoTale?"), isPresented: $confirmSignOut, titleVisibility: .visible) {
+            Button("Sign Out") { billing.reset(); auth.signOut() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Your Moments and Stories stay on this device. You'll sign in again to use Story's AI.")
+            Text(L10n.t("Your Moments and Stories stay on this iPhone. Sign in again to use YoTale's AI features."))
         }
         .sheet(isPresented: $showPlus) { PlusSubscriptionView() }
         .sheet(isPresented: $showDeleteAccount) { DeleteAccountView() }
@@ -151,6 +163,36 @@ struct HomeView: View {
                        onSignedIn: { showSignIn = false },
                        onCancel: { showSignIn = false })
         }
+    }
+
+    /// How the user is signed in, for the account menu. Display hint from the UNVERIFIED id token; never identity.
+    private var signedInDescription: String {
+        let hint = auth.accountHint
+        switch hint?.federatedProvider {
+        case StoryAuthConfig.appleProviderName?: return L10n.t("Signed in with Apple")
+        case StoryAuthConfig.googleProviderName?: return L10n.t("Signed in with Google")
+        default:
+            if let email = hint?.email, !email.isEmpty { return L10n.t("Signed in as \(email)") }
+            return L10n.t("Signed in")
+        }
+    }
+
+    /// YoTale Plus status on the menu row; nil while the entitlement is unknown (not loaded or failed).
+    private var plusStatus: String? {
+        if billing.isPlus { return L10n.t("Subscribed") }
+        if billing.canOfferSubscribe { return L10n.t("Subscribe") }
+        return nil
+    }
+
+    /// A menu icon that keeps its own colour: menus render SF Symbols with the app's gold tint, which made the
+    /// destructive Delete Account icon gold next to red text.
+    static func redSymbol(_ name: String) -> Image {
+        #if canImport(UIKit)
+        if let ui = UIImage(systemName: name)?.withTintColor(.systemRed, renderingMode: .alwaysOriginal) {
+            return Image(uiImage: ui)
+        }
+        #endif
+        return Image(systemName: name)
     }
 
     // Language picker — ALWAYS visible (signed in or out). Endonyms are never translated.
