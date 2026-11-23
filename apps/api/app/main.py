@@ -848,6 +848,32 @@ def create_app() -> FastAPI:
         except billing_gate.BillingStoreError:
             return billing_gate.store_unavailable_response()
 
+    @app.post("/v1/auth/apple-signin-notifications", status_code=200)
+    def apple_signin_notifications(body: dict):
+        """Sign in with Apple server-to-server notifications (D7, TN3194). PUBLIC at the auth boundary: trust comes only
+        from Apple's signature (Apple JWKS), issuer and our Services ID as audience. consent-revoked / account-delete
+        sign the federated Cognito user out everywhere; other types are acknowledged. Bad payload -> 400; a Cognito
+        failure -> 503 so Apple retries."""
+        from app import apple_signin_notifications as asn
+        token = body.get("payload")
+        if not isinstance(token, str) or not token:
+            raise HTTPException(status_code=400, detail="payload required")
+        try:
+            events = asn.verify(token, audience=asn.audiences())
+        except asn.InvalidNotification as e:
+            log.warning("apple_signin_notification_rejected", extra={"reason": str(e)[:60]})
+            raise HTTPException(status_code=400, detail="invalid notification")
+        cognito = getattr(app.state, "_apple_signin_cognito_override", None) or asn.cognito_client()
+        try:
+            outcome = asn.handle(events, cognito=cognito,
+                                 user_pool_id=os.environ.get("STORY_COGNITO_USER_POOL_ID", ""))
+        except Exception as e:  # noqa: BLE001
+            log.warning("apple_signin_notification_error", extra={"error": type(e).__name__})
+            return JSONResponse(status_code=503, content={"error": "retry"})
+        log.info("apple_signin_notification", extra={"type": str(events.get("type"))[:32], "outcome": outcome,
+                                                     "apple_sub_hash": asn.sub_hash(events)})
+        return {"outcome": outcome}
+
     @app.post("/v1/billing/apple-notifications", status_code=200)
     def billing_apple_notifications(request: Request, body: dict):
         """App Store Server Notifications V2. PUBLIC at the auth boundary (Apple cannot hold a Cognito token): trust comes only

@@ -395,6 +395,8 @@ PUBLIC_ROUTES = frozenset({
     # Account deletion receipt status (design 5.3): no token (it must work after Cognito disables the user); reveals
     # state only to the holder of the 256-bit receipt secret, and the same 404 for unknown id and wrong secret.
     ("POST", "/v1/account/deletion/status"),
+    # Sign in with Apple server-to-server notifications (D7): signature-verified against Apple's JWKS.
+    ("POST", "/v1/auth/apple-signin-notifications"),
 })
 
 # Account deletion (design 5.3, review F3): the ONLY routes on which an account in `deleting` is admitted.

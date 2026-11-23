@@ -70,7 +70,7 @@ WORKER_REQUIRED: dict[str, str] = {
 WORKER_NON_STORY_ALLOWED = {"PYTHONPATH"}
 # Infrastructure wiring present only where the resource exists (not required everywhere). Account deletion's request
 # table is deployed per environment as it is approved (account-deletion-design.md 7.5); the API fails closed (503) without it.
-SERVICE_OPTIONAL: dict[str, str] = {"STORY_ACCOUNT_DELETIONS_TABLE": "B"}
+SERVICE_OPTIONAL: dict[str, str] = {"STORY_ACCOUNT_DELETIONS_TABLE": "B", "STORY_APPLE_SIGNIN_AUDIENCE": "I"}
 BILLING_MODES = {"off", "observe", "enforce"}
 # Present ONLY as an approved emergency rollback (release.json approved_overrides); never in normal deploys.
 OVERRIDE_ONLY = {"STORY_EDIT_PLAN_VERSION"}

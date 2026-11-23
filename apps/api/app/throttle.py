@@ -117,6 +117,7 @@ ROUTE_CLASS: dict[tuple[str, str], str] = {
     ("POST", "/v1/account/deletion"): "account_deletion",
     ("GET", "/v1/account/deletion"): "read",
     ("POST", "/v1/account/deletion/status"): "read",
+    ("POST", "/v1/auth/apple-signin-notifications"): "read",   # public, Apple-signed (D7)
     ("GET", "/v1/stories"): "read",
     ("GET", "/v1/stories/{story_id}"): "read",
     ("GET", "/v1/media"): "read",

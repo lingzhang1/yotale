@@ -131,7 +131,8 @@ def test_every_non_public_route_is_denied_without_a_token_in_beta():
 def test_public_routes_are_exactly_the_apple_webhook():
     # plus the account-deletion receipt status (design 5.3): it must work after Cognito disables the user and is
     # authenticated by the 256-bit receipt secret instead of a token.
-    assert PUBLIC_ROUTES == {("POST", "/v1/billing/apple-notifications"), ("POST", "/v1/account/deletion/status")}
+    assert PUBLIC_ROUTES == {("POST", "/v1/billing/apple-notifications"), ("POST", "/v1/account/deletion/status"),
+                             ("POST", "/v1/auth/apple-signin-notifications")}
     c = TestClient(_app(env="beta"))
     # reaches the handler without a token (not a 401 from the boundary); an unsigned body is then rejected by the handler
     assert c.post("/v1/billing/apple-notifications", json={}).status_code != 401

@@ -58,6 +58,13 @@ export class StoryApiStack extends cdk.Stack {
     // Account deletion (design 7.5, 8.12): environments where the request table, worker and routes exist. Beta added
     // 2026-11-23 (Ling: "rollout to beta"). Production stays a separate decision.
     const ACCOUNT_DELETION_ENVIRONMENTS = ["development", "test", "beta"];
+    // Sign in with Apple Services ID per environment (not secret; the key lives in Secrets Manager). The API checks
+    // it as the `aud` of Apple's server-to-server notifications (D7). Unset -> the route rejects every payload.
+    const APPLE_SIGNIN_SERVICES_ID: Record<string, string> = {
+      development: "com.lingzhang.story.signin.dev",
+      beta: "com.lingzhang.story.signin.beta",
+    };
+    const appleServicesId = APPLE_SIGNIN_SERVICES_ID[environment];
 
     // Immutable deploy: the pipeline passes `-c imageDigest=sha256:...` so App Runner is pinned to an
     // exact digest (auto-deploy off). Absent (legacy/local synth) -> mutable :latest fallback.
@@ -528,6 +535,7 @@ export class StoryApiStack extends cdk.Stack {
               // Unset elsewhere, so the deletion routes fail closed with 503.
               ...(ACCOUNT_DELETION_ENVIRONMENTS.includes(environment)
                 ? [{ name: "STORY_ACCOUNT_DELETIONS_TABLE", value: `story-${environment}-account-deletions` }] : []),
+              ...(appleServicesId ? [{ name: "STORY_APPLE_SIGNIN_AUDIENCE", value: appleServicesId }] : []),
               { name: "STORY_THROTTLE_MODE", value: throttleMode },
               // P0 Beta Security Phase 4: AI quota + spend protection. STORY_USER_USAGE_TABLE points the
               // reserve/settle/release at the (auth-stack-owned) durable UserUsage table; STORY_QUOTA_MODE
@@ -874,6 +882,14 @@ export class StoryApiStack extends cdk.Stack {
         sid: "AccountDeletionAccept", effect: iam.Effect.ALLOW,
         actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
         resources: [deletion.table.tableArn],
+      }));
+    }
+    if (appleServicesId) {
+      // D7: an Apple consent-revoked / account-delete notification signs the federated user out everywhere.
+      instanceRole.addToPolicy(new iam.PolicyStatement({
+        sid: "AppleSignInRevocation", effect: iam.Effect.ALLOW,
+        actions: ["cognito-idp:AdminUserGlobalSignOut"],
+        resources: [`arn:aws:cognito-idp:${this.region}:${this.account}:userpool/${cognitoUserPoolId ?? "us-east-1_AzfHOEdA5"}`],
       }));
     }
   }
