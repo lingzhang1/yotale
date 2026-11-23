@@ -82,10 +82,34 @@ describe("Account deletion (D2)", () => {
     for (const s of st) expect(JSON.stringify(s.Resource)).not.toBe('"*"');
   });
 
-  test("not created outside the approved environments", () => {
+  test("created for beta with the beta pool; not for production", () => {
     const beta = synth("beta", { imageDigest: "sha256:abc", cognitoUserPoolId: "us-east-1_beta",
                                  cognitoAppClientId: "client", allowNoObservability: "true" });
-    beta.resourcePropertiesCountIs("AWS::DynamoDB::Table", { TableName: "story-beta-account-deletions" }, 0);
+    beta.resourcePropertiesCountIs("AWS::DynamoDB::Table", { TableName: "story-beta-account-deletions" }, 1);
+    beta.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "story-beta-account-deletion",
+      Environment: { Variables: Match.objectLike({ STORY_COGNITO_USER_POOL_ID: "us-east-1_beta" }) },
+    });
+    const prod = synth("production", { imageDigest: "sha256:abc", cognitoUserPoolId: "us-east-1_prod",
+                                       cognitoAppClientId: "client", allowNoObservability: "true" });
+    prod.resourcePropertiesCountIs("AWS::DynamoDB::Table", { TableName: "story-production-account-deletions" }, 0);
+  });
+
+  test("operator role: account principals only, 1 h, worker grants plus restored-table replay", () => {
+    t.hasResourceProperties("AWS::IAM::Role", {
+      RoleName: "story-test-account-deletion-operator", MaxSessionDuration: 3600,
+      AssumeRolePolicyDocument: Match.objectLike({ Statement: [Match.objectLike({
+        Principal: { AWS: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::123456789012:root"]] } } })] }),
+    });
+    const policies = Object.values(t.findResources("AWS::IAM::Policy")) as any[];
+    const op = policies.filter((p) => p.Properties.Roles.some((r: any) => JSON.stringify(r).includes("OperatorRole")))
+      .flatMap((p) => p.Properties.PolicyDocument.Statement);
+    const sids = op.map((s: any) => s.Sid);
+    expect(sids).toEqual(expect.arrayContaining(["DeletionRequests", "UsersTombstone", "CognitoAccountDeletion",
+                                                 "RestoreReplay"]));
+    expect(op.find((s: any) => s.Sid === "RestoreReplay").Resource)
+      .toBe("arn:aws:dynamodb:us-east-1:123456789012:table/story-test-*-restored*");
+    expect(JSON.stringify(op)).not.toContain("sqs:");
   });
 
   test("alarms exist with observability", () => {
@@ -112,7 +136,7 @@ describe("Account deletion (D3) API wiring", () => {
     expect(dev?.Value).toBe("story-test-account-deletions");
     const beta = synth("beta", { imageDigest: "sha256:abc", cognitoUserPoolId: "us-east-1_beta",
                                  cognitoAppClientId: "client", allowNoObservability: "true" });
-    expect(envVars(beta).some((e) => e.Name === "STORY_ACCOUNT_DELETIONS_TABLE")).toBe(false);
+    expect(envVars(beta).find((e) => e.Name === "STORY_ACCOUNT_DELETIONS_TABLE")?.Value).toBe("story-beta-account-deletions");
   });
 
   test("the API may only accept and read requests (no UpdateItem or DeleteItem on the table)", () => {

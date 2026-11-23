@@ -46,6 +46,18 @@ describe("StoryBetaWafStack (P0 Beta Security Phase 2)", () => {
     expect(byName.BodySizeOver2MB.Action).toEqual({ Count: {} });
   });
 
+  test("account-deletion status route: per-IP 60 / 5 min, Block, scoped to that path only", () => {
+    const acl = Object.values(t.findResources("AWS::WAFv2::WebACL"))[0] as any;
+    const r = acl.Properties.Rules.find((x: any) => x.Name === "AccountDeletionStatusRatePerIp");
+    expect(r.Priority).toBe(5);
+    expect(r.Action).toEqual({ Block: {} });
+    expect(r.Statement.RateBasedStatement.Limit).toBe(60);
+    const bm = r.Statement.RateBasedStatement.ScopeDownStatement.ByteMatchStatement;
+    expect(bm.SearchString).toBe("/v1/account/deletion/status");
+    expect(bm.PositionalConstraint).toBe("EXACTLY");
+    expect(bm.FieldToMatch).toEqual({ UriPath: {} });
+  });
+
   test("rateBlock=true flips the RATE rule to Block; CRS STAYS Count (owner GO 2026-10-22)", () => {
     const app = new cdk.App();
     const stack = new StoryBetaWafStack(app, "story-beta-waf-block", {

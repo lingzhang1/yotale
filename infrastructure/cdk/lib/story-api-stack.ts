@@ -55,9 +55,9 @@ export class StoryApiStack extends cdk.Stack {
     super(scope, id, props);
 
     const { environment } = props;
-    // Account deletion (design 7.5, 8.12): environments where the request table, worker and routes exist. Adding
-    // "beta" is the reviewed change that rolls it out there.
-    const ACCOUNT_DELETION_ENVIRONMENTS = ["development", "test"];
+    // Account deletion (design 7.5, 8.12): environments where the request table, worker and routes exist. Beta added
+    // 2026-11-23 (Ling: "rollout to beta"). Production stays a separate decision.
+    const ACCOUNT_DELETION_ENVIRONMENTS = ["development", "test", "beta"];
 
     // Immutable deploy: the pipeline passes `-c imageDigest=sha256:...` so App Runner is pinned to an
     // exact digest (auto-deploy off). Absent (legacy/local synth) -> mutable :latest fallback.
