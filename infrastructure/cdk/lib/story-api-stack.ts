@@ -559,7 +559,8 @@ export class StoryApiStack extends cdk.Stack {
               // even if an authed client sends a content_sha256 claim. DURABLE in CDK (an App Runner env is a
               // full-replace on every deploy, so a manual console/CLI set is wiped by the next `cdk deploy`).
               // ON in EVERY environment (owner 2026-11-24: no stage drift; production persists evidence like beta/dev).
-              // NOTE: account deletion must delete this evidence (design-only for production as of this change).
+              // Account deletion removes this evidence (worker: media-table rows incl. evidence# manifests + evidence/<uid>/ blobs),
+              // but ACCOUNT_DELETION_ENVIRONMENTS does not yet include production: add it before production goes live.
               // Override a given env with `-c evidencePersist=0` to roll back. This is an OPERATIONAL PRIVACY
               // KILL-SWITCH, not a product-feature flag: cache reuse (always on in the iOS client since PR #102)
               // gracefully falls back to full re-analysis when persistence is off. Turning it off is a degraded
