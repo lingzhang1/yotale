@@ -192,6 +192,32 @@ def _today():
     return datetime.date.today()
 
 
+def check_stage_parity(manifest: dict) -> list[Violation]:
+    """Stages must not drift. Settings that are product behavior (the planner version, evidence persistence) are the
+    same in every environment of the manifest. The ONLY allowed difference is a per-environment planner pin that has an
+    approved_overrides entry carrying an `expires` date (a time-boxed evaluation). A missing value counts as drift."""
+    v: list[Violation] = []
+    envs = manifest.get("environments", {}) or {}
+    vals = {e: (p or {}).get("evidence_persist") for e, p in envs.items()}
+    for e, val in sorted(vals.items()):
+        if val is None:
+            v.append(Violation("stage_parity", f"environments.{e}.evidence_persist is not declared; every stage must "
+                                               f"declare it so production cannot silently differ"))
+    if len({x for x in vals.values() if x is not None}) > 1:
+        v.append(Violation("stage_parity", "evidence_persist differs between environments: "
+                                           + ", ".join(f"{e}={x}" for e, x in sorted(vals.items()))))
+    pl = manifest.get("planner", {}) or {}
+    for e, ver in sorted((pl.get("environment_overrides") or {}).items()):
+        if not ver:
+            continue
+        ok = any((o.get("setting"), o.get("env"), str(o.get("value"))) == ("STORY_EDIT_PLAN_VERSION", e, str(ver))
+                 and o.get("expires") for o in manifest.get("approved_overrides", []))
+        if not ok:
+            v.append(Violation("stage_parity", f"planner pin {ver} for {e} differs from the other stages and has no "
+                                               f"approved_overrides entry with an expires date"))
+    return v
+
+
 def check_snapshot(snap: Snapshot, manifest: dict, repo: Path = REPO) -> tuple[list[Violation], list[str]]:
     v: list[Violation] = []
     warn: list[str] = []
@@ -200,6 +226,7 @@ def check_snapshot(snap: Snapshot, manifest: dict, repo: Path = REPO) -> tuple[l
     if pol is None:
         return [Violation("unknown_environment", f"'{env}' is not defined in release/release.json")], warn
 
+    v.extend(check_stage_parity(manifest))
     names = [n for n, _ in snap.service]
     svc: dict[str, str | None] = dict(snap.service)
     wrk = snap.worker
