@@ -59,8 +59,9 @@ export class StoryApiStack extends cdk.Stack {
     // until a person turns termination protection off. The stack holds the live data tables.
     if (environment === "production") this.terminationProtection = true;
     // Account deletion (design 7.5, 8.12): environments where the request table, worker and routes exist. Beta added
-    // 2026-11-23 (Ling: "rollout to beta"). Production stays a separate decision.
-    const ACCOUNT_DELETION_ENVIRONMENTS = ["development", "test", "beta"];
+    // 2026-11-23 (Ling: "rollout to beta"). Production added 2026-11-24 (production release plan step 10: App Store
+    // guideline 5.1.1(v), and evidence persistence is on in production). Gamma is not a deployed stage.
+    const ACCOUNT_DELETION_ENVIRONMENTS = ["development", "test", "beta", "production"];
     // Sign in with Apple Services ID per environment (not secret; the key lives in Secrets Manager). The API checks
     // it as the `aud` of Apple's server-to-server notifications (D7). Unset -> the route rejects every payload.
     const APPLE_SIGNIN_SERVICES_ID: Record<string, string> = {
@@ -562,8 +563,8 @@ export class StoryApiStack extends cdk.Stack {
               // even if an authed client sends a content_sha256 claim. DURABLE in CDK (an App Runner env is a
               // full-replace on every deploy, so a manual console/CLI set is wiped by the next `cdk deploy`).
               // ON in EVERY environment (owner 2026-11-24: no stage drift; production persists evidence like beta/dev).
-              // Account deletion removes this evidence (worker: media-table rows incl. evidence# manifests + evidence/<uid>/ blobs),
-              // but ACCOUNT_DELETION_ENVIRONMENTS does not yet include production: add it before production goes live.
+              // Account deletion removes this evidence (worker: media-table rows incl. evidence# manifests + evidence/<uid>/
+              // blobs) in every environment that persists it, production included (ACCOUNT_DELETION_ENVIRONMENTS).
               // Override a given env with `-c evidencePersist=0` to roll back. This is an OPERATIONAL PRIVACY
               // KILL-SWITCH, not a product-feature flag: cache reuse (always on in the iOS client since PR #102)
               // gracefully falls back to full re-analysis when persistence is off. Turning it off is a degraded
@@ -871,9 +872,8 @@ export class StoryApiStack extends cdk.Stack {
         createBudget: props.createBudget,
       }) : undefined;
 
-    // Account deletion D2 (design 5.2, 5.4, 5.11): request table + scheduled worker + its role. DEVELOPMENT ONLY
-    // until Ling approves beta (design 7.5, 8.12): extending this list to "beta" is that reviewed change. Inert
-    // until D3 adds the routes: only the operator CLI can create a request.
+    // Account deletion D2 (design 5.2, 5.4, 5.11): request table + scheduled worker + its role, in every environment
+    // listed in ACCOUNT_DELETION_ENVIRONMENTS (development, test, beta, production).
     if (ACCOUNT_DELETION_ENVIRONMENTS.includes(environment)) {
       const deletion = new AccountDeletion(this, "AccountDeletion", {
         environment,
