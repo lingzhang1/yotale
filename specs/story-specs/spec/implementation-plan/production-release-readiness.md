@@ -9,7 +9,7 @@ owner approval; each "Ling" step needs credentials or a decision only the owner 
 | Area | State | Source |
 |---|---|---|
 | Environments deployed | development (989088054552), beta (224033508028) | `deploy-dev.yml`, `deploy-beta.yml` |
-| Production account / profile | None. Local profiles: default (dev), yotale-mgmt, yotale-beta | `aws configure list-profiles` |
+| Production account / profile | **Created 2026-11-24:** `YoTale-Production` 854689494157 (root `prod@yotale.ai`), in OU Workloads (region-lock + protect-security SCPs, same as beta), Ling's SSO user has AdministratorAccess. ECR `story-production-api` created (IMMUTABLE tags, scan on push). Profile `yotale-prod` is added by Ling | Organizations, Identity Center |
 | Production deploy workflow | None | `.github/workflows` |
 | Production iOS config | None. Only `Development.xcconfig`, `Beta.xcconfig`; schemes `Story`, `Story (Beta)` | `apps/ios/Story/Config` |
 | Stage parity | Every stage runs planner 5.6 (code default) with evidence persistence on. `check_stage_parity` rejects drift; a per-stage planner pin needs a time-boxed approval | PR #170, `scripts/release_config_gate.py` |
@@ -24,12 +24,12 @@ owner approval; each "Ling" step needs credentials or a decision only the owner 
 2. Merge PR #84 (OIDC trust). Code now equals the live dev/beta roles, so a production role is born with the right trust.
 
 ### Phase 1: production AWS account (Ling)
-3. Create the production member account in the YoTale organization (from `yotale-mgmt`).
+3. ~~Create the production member account~~ DONE: 854689494157, OU Workloads, SSO assignment.
 4. Create an SSO profile on Ling's machine (for example `yotale-prod`, via `aws configure sso`).
 5. Provision secrets out of band, never through CI or chat: `YoTale-OpenAI-API-Key`, `YoTale-Gemini-API-Key`,
    `Unsplash-API-Key`, `story-epidemic-key`, `epidemic-mcp-api-key`. `scripts/verify-required-secrets.sh production`
    checks presence only and blocks a deploy on any missing key.
-6. Create ECR repository `story-production-api` (the stack references it by name and does not create it).
+6. ~~Create ECR repository `story-production-api`~~ DONE (IMMUTABLE, scan on push).
 7. Confirm OpenAI and Gemini rate limits on the production keys fit expected traffic.
 
 ### Phase 2: production code (Kiro, one PR each, owner approval)
