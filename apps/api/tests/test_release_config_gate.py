@@ -109,8 +109,8 @@ def test_correct_configuration_is_accepted(env):
 
 
 def test_manifest_and_code_default_agree_and_prompt_exists():
-    assert gate.code_default_planner_version() == MANIFEST["planner"]["version"] == "5.3"
-    assert (REPO / "prompts/edit_plan/5.3/system.md").is_file()
+    assert gate.code_default_planner_version() == MANIFEST["planner"]["version"] == "5.6"
+    assert (REPO / "prompts/edit_plan/5.6/system.md").is_file()
 
 
 def test_tracked_ios_configuration_is_accepted():
@@ -140,8 +140,8 @@ def test_N01_api_5_3_worker_5_2_is_rejected():
     assert "planner_mismatch" in _codes(s)
 
 
-def test_N02_required_5_3_prompt_missing_is_rejected(tmp_repo):
-    shutil.rmtree(tmp_repo / "prompts/edit_plan/5.3")
+def test_N02_required_5_6_prompt_missing_is_rejected(tmp_repo):
+    shutil.rmtree(tmp_repo / "prompts/edit_plan/5.6")
     assert "prompt_missing" in _codes(_snapshot("beta"), repo=tmp_repo)
     # ...and the worker ASSET check rejects a zip root lacking the bundled prompt.
     asset = tmp_repo / "asset"
@@ -244,38 +244,35 @@ def test_N13_unapproved_emergency_rollback_override_is_rejected_and_approval_unb
     assert "prompt_missing" in _codes(s9, manifest=ok9)
 
 
-def test_committed_manifest_only_carries_time_boxed_dev_and_beta_planner_pins():
-    """Strengthened guard. The committed manifest may carry ONLY time-boxed, owner-approved, per-environment planner pins
-    for development and beta (evaluations). It never pins gamma/production, never carries a GLOBAL emergency rollback,
-    and no degradation is approved."""
+def test_committed_manifest_has_no_stage_drift():
+    """Stage parity guard. Every stage runs the same planner (the default) and declares the same evidence persistence. The
+    committed manifest carries no per-environment planner pin and no global rollback; any future pin must be time-boxed."""
     pl = COMMITTED["planner"]
     assert pl["emergency_override"] is None, "no GLOBAL planner override may be committed"
-    pinned = pl.get("environment_overrides") or {}
-    assert set(pinned) <= {"development", "beta"}, f"only development and beta may be pinned, got {sorted(pinned)}"
-    for env in ("gamma", "production"):
+    assert not (pl.get("environment_overrides") or {}), "no per-environment planner pin may be committed"
+    for env in COMMITTED["environments"]:
         assert gate.manifest_planner_override(COMMITTED, env) is None, env
-    approved = COMMITTED["approved_overrides"]
-    planner_approved = [o for o in approved if o["setting"] == "STORY_EDIT_PLAN_VERSION"]
-    assert {(o["setting"], o["env"], str(o["value"])) for o in planner_approved} == \
-        {("STORY_EDIT_PLAN_VERSION", env, str(v)) for env, v in pinned.items()}, \
-        "every committed approval must match a pin, and every pin must be approved"
-    # the only other approval allowed is the time-boxed, development-only billing enforce window (Billing V2 device test)
-    others = [o for o in approved if o["setting"] != "STORY_EDIT_PLAN_VERSION"]
-    assert all((o["setting"], o["env"], o["value"]) == ("STORY_BILLING_MODE", "development", "enforce") for o in others)
-    for o in approved:
+    assert gate.check_stage_parity(COMMITTED) == []
+    assert {p.get("evidence_persist") for p in COMMITTED["environments"].values()} == {"1"}
+    for o in COMMITTED["approved_overrides"]:
         assert o["env"] in ("development", "beta")
         assert o.get("approved_by") and o.get("reason") and o.get("expires"), "an approval must name who, why and when it ends"
     assert COMMITTED["approved_degradations"] == []
 
 
-def test_committed_beta_pin_is_accepted_for_beta_and_does_not_leak_to_development():
-    beta_pin = gate.manifest_planner_override(COMMITTED, "beta")
-    if beta_pin is None:
-        pytest.skip("no beta pin committed")
-    beta = _with(_snapshot("beta"), svc={"STORY_EDIT_PLAN_VERSION": beta_pin}, wrk={"STORY_EDIT_PLAN_VERSION": beta_pin})
-    assert _codes(beta, manifest=COMMITTED) == set()
-    assert "rollback_not_applied" in _codes(_snapshot("beta"), manifest=COMMITTED), "a beta deploy must not drop the pin"
-    assert gate.manifest_planner_override(COMMITTED, "gamma") is None
+def test_stage_parity_rejects_drift():
+    prod_off = {**COMMITTED, "environments": {**COMMITTED["environments"],
+                "production": {**COMMITTED["environments"]["production"], "evidence_persist": "0"}}}
+    assert "stage_parity" in {x.code for x in gate.check_stage_parity(prod_off)}
+    missing = {**COMMITTED, "environments": {**COMMITTED["environments"],
+               "production": {k: x for k, x in COMMITTED["environments"]["production"].items() if k != "evidence_persist"}}}
+    assert "stage_parity" in {x.code for x in gate.check_stage_parity(missing)}
+    pinned = {**COMMITTED, "planner": {**COMMITTED["planner"], "environment_overrides": {"beta": "5.5"}}}
+    assert "stage_parity" in {x.code for x in gate.check_stage_parity(pinned)}, "a pin without a time-boxed approval is drift"
+    ok = {**pinned, "approved_overrides": [{"setting": "STORY_EDIT_PLAN_VERSION", "env": "beta", "value": "5.5",
+                                            "approved_by": "owner", "reason": "eval", "expires": "2099-01-01"}]}
+    assert gate.check_stage_parity(ok) == []
+    assert "stage_parity" in _codes(_snapshot("beta"), manifest=prod_off), "the deploy gate itself must fail on drift"
 
 
 def test_manifest_planner_override_resolution():
@@ -341,7 +338,7 @@ def test_environment_overrides_must_name_a_defined_environment():
 
 def test_planner_default_drift_from_manifest_is_rejected(tmp_repo):
     p = tmp_repo / "packages/edit_planner/__init__.py"
-    p.write_text(p.read_text().replace('_EDIT_PLAN_DEFAULT = "5.3"', '_EDIT_PLAN_DEFAULT = "5"'))
+    p.write_text(p.read_text().replace('_EDIT_PLAN_DEFAULT = "5.6"', '_EDIT_PLAN_DEFAULT = "5"'))
     assert "planner_default_mismatch" in _codes(_snapshot("beta"), repo=tmp_repo)
 
 
@@ -415,7 +412,7 @@ def _live(env="beta", *, sha="abc123def456", digest="sha256:" + "a" * 64, status
     return gate.LiveInfo(
         snapshot or _snapshot(env), status, f"123.dkr.ecr.us-east-1.amazonaws.com/story-{env}-api@{digest}",
         tags if tags is not None else [f"git-{sha}"], worker_sha if worker_sha is not None else sha,
-        files if files is not None else {"BUILD_SHA", "prompts/edit_plan/5.3/system.md"}, missing_idps)
+        files if files is not None else {"BUILD_SHA", "prompts/edit_plan/5.6/system.md"}, missing_idps)
 
 
 def _live_codes(info, sha="abc123def456", digest="sha256:" + "a" * 64, manifest=MANIFEST):
@@ -431,7 +428,7 @@ def test_N10_incorrect_worker_build_sha_is_rejected():
     assert "worker_build_sha_mismatch" in _live_codes(_live(worker_sha="deadbeef0000"))
     assert "worker_build_sha_mismatch" in _live_codes(_live(worker_sha="abc123def456-dirty"))
     no_sha = gate.LiveInfo(_snapshot("beta"), "RUNNING", "r@sha256:" + "a" * 64, ["git-abc123def456"], None,
-                           {"prompts/edit_plan/5.3/system.md"})
+                           {"prompts/edit_plan/5.6/system.md"})
     assert "worker_build_sha_missing" in _live_codes(no_sha)
 
 
@@ -474,7 +471,7 @@ def test_collect_live_reads_worker_build_sha_and_prompts_from_the_deployed_zip()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("BUILD_SHA", "abc123def456")
-        z.writestr("prompts/edit_plan/5.3/system.md", "x")
+        z.writestr("prompts/edit_plan/5.6/system.md", "x")
     calls = []
 
     def aws(args):
@@ -493,7 +490,7 @@ def test_collect_live_reads_worker_build_sha_and_prompts_from_the_deployed_zip()
         raise AssertionError(args)
 
     info = gate.collect_live("beta", aws, fetch=lambda url: buf.getvalue())
-    assert info.worker_build_sha == "abc123def456" and "prompts/edit_plan/5.3/system.md" in info.worker_files
+    assert info.worker_build_sha == "abc123def456" and "prompts/edit_plan/5.6/system.md" in info.worker_files
     assert info.image_tags == ["git-abc123def456"] and info.service_status == "RUNNING"
     assert all(c[0] in ("apprunner", "lambda", "ecr") for c in calls)      # read-only service families only
 
@@ -565,10 +562,10 @@ def _probe(code: str, **env) -> str:
     return (r.stdout + r.stderr).strip()
 
 
-def test_runtime_normal_deploy_selects_v53_and_direct_providers_with_no_env():
+def test_runtime_normal_deploy_selects_v56_and_direct_providers_with_no_env():
     out = _probe("import edit_planner as e; from model_gateway.provider import provider_mode as m;"
                  "print(e.PROMPT_VERSION, e._v53_active(), m())")
-    assert out.splitlines()[-1] == "edit_plan/5.3 True direct"
+    assert out.splitlines()[-1] == "edit_plan/5.6 True direct"
 
 
 def test_runtime_emergency_rollback_selects_v52_and_strips_v53_evidence():
