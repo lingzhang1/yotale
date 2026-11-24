@@ -82,7 +82,7 @@ describe("Account deletion (D2)", () => {
     for (const s of st) expect(JSON.stringify(s.Resource)).not.toBe('"*"');
   });
 
-  test("created for beta with the beta pool; not for production", () => {
+  test("created for beta and production, each with its own pool", () => {
     const beta = synth("beta", { imageDigest: "sha256:abc", cognitoUserPoolId: "us-east-1_beta",
                                  cognitoAppClientId: "client", allowNoObservability: "true" });
     beta.resourcePropertiesCountIs("AWS::DynamoDB::Table", { TableName: "story-beta-account-deletions" }, 1);
@@ -92,7 +92,14 @@ describe("Account deletion (D2)", () => {
     });
     const prod = synth("production", { imageDigest: "sha256:abc", cognitoUserPoolId: "us-east-1_prod",
                                        cognitoAppClientId: "client", allowNoObservability: "true" });
-    prod.resourcePropertiesCountIs("AWS::DynamoDB::Table", { TableName: "story-production-account-deletions" }, 0);
+    prod.resourcePropertiesCountIs("AWS::DynamoDB::Table", { TableName: "story-production-account-deletions" }, 1);
+    prod.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "story-production-account-deletion",
+      Environment: { Variables: Match.objectLike({ STORY_COGNITO_USER_POOL_ID: "us-east-1_prod" }) },
+    });
+    const prodTables = JSON.stringify(prod.findResources("AWS::DynamoDB::Table"));
+    expect(prodTables).not.toContain("story-beta-");
+    expect(prodTables).not.toContain("story-development-");
   });
 
   test("operator role: account principals only, 1 h, worker grants plus restored-table replay", () => {
