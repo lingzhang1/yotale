@@ -43,6 +43,9 @@ export class StoryAuthStack extends cdk.Stack {
     super(scope, id, props);
     const env = props.environment;
     const isProd = env === "production";
+    // Production: the pool and the identity tables hold every real account. CloudFormation refuses to delete the stack
+    // until a person turns termination protection off, and Cognito refuses DeleteUserPool while deletion protection is on.
+    if (isProd) this.terminationProtection = true;
 
     // ---- Cognito User Pool ----------------------------------------------------------------------------
     this.userPool = new cognito.UserPool(this, "StoryUserPool", {
@@ -55,6 +58,7 @@ export class StoryAuthStack extends cdk.Stack {
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       // Short-lived access/id tokens; rotating refresh handled on the app client below.
       removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.RETAIN, // RETAIN in all envs: a pool holds real users.
+      ...(isProd ? { deletionProtection: true } : {}),
     });
 
     const cfnPool = this.userPool.node.defaultChild as cognito.CfnUserPool;
