@@ -587,3 +587,64 @@ def test_r7p4_04_cross_account_ai_artifact_download_denied(ctx):
     client.post(f"/v1/media/{cmid}/complete", headers=_auth("alice"))
     # bob cannot reach alice's externalized plan.
     assert client.get(f"/v1/media/{cmid}/download", headers=_auth("bob")).status_code == 404
+
+
+# --- parts/uploaded must never 500 on a completed/expired MPU (dev: NoSuchUpload on a verified backup) ------
+class _GoneUpload(Exception):
+    def __init__(self):
+        super().__init__("NoSuchUpload")
+        self.response = {"Error": {"Code": "NoSuchUpload"}}
+
+
+def _make_completed_uploads_vanish(s3):
+    """Real S3: after CompleteMultipartUpload the upload id no longer exists and ListParts raises NoSuchUpload."""
+    gone = set()
+    orig_complete, orig_pag = s3.complete_multipart_upload, s3.get_paginator
+
+    def complete(**kw):
+        out = orig_complete(**kw); gone.add(kw["UploadId"]); return out
+
+    def paginator(name):
+        inner = orig_pag(name)
+
+        class _P:
+            def paginate(self, Bucket, Key, UploadId):
+                if UploadId in gone:
+                    raise _GoneUpload()
+                yield from inner.paginate(Bucket=Bucket, Key=Key, UploadId=UploadId)
+        return _P()
+    s3.complete_multipart_upload, s3.get_paginator = complete, paginator
+    return gone
+
+
+def test_mp_reinitiated_verified_backup_reconciles_200_and_completes_idempotently(mpuctx):
+    client, s3, store = mpuctx
+    _make_completed_uploads_vanish(s3)
+    p1, p2 = b"X"*1000, b"Y"*500
+    shas = [_psha(p1), _psha(p2)]
+    body = {"content_sha256": "a"*64, "size_bytes": 1500, "part_shas": shas, "media_kind": "generated"}
+    r = client.post("/v1/media/multipart/initiate", headers=_auth("alice"), json=body)
+    cmid, uid = r.json()["cloud_media_id"], r.json()["upload_id"]
+    s3.put_part(uid, 1, p1, shas[0]); s3.put_part(uid, 2, p2, shas[1])
+    assert client.post(f"/v1/media/{cmid}/multipart/complete", headers=_auth("alice")).json()["state"] == "cloud_verified"
+    # the backup queue runs again for the same output: re-initiate -> reconcile -> complete
+    r2 = client.post("/v1/media/multipart/initiate", headers=_auth("alice"), json=body)
+    assert r2.status_code == 200 and r2.json()["created"] is False
+    up = client.get(f"/v1/media/{cmid}/parts/uploaded", headers=_auth("alice"))
+    assert up.status_code == 200, up.text                         # was an unhandled 500
+    assert [p["part_number"] for p in up.json()["uploaded_parts"]] == [1, 2]   # client PUTs nothing
+    c = client.post(f"/v1/media/{cmid}/multipart/complete", headers=_auth("alice"))
+    assert c.status_code == 200 and c.json()["state"] == "cloud_verified"
+
+
+def test_mp_expired_upload_reconcile_is_409_not_500(mpuctx):
+    client, s3, store = mpuctx
+    gone = _make_completed_uploads_vanish(s3)
+    shas = [_psha(b"X"*1000)]
+    r = client.post("/v1/media/multipart/initiate", headers=_auth("alice"),
+                    json={"content_sha256": "b"*64, "size_bytes": 1000, "part_shas": shas})
+    cmid, uid = r.json()["cloud_media_id"], r.json()["upload_id"]
+    gone.add(uid)                                                  # S3 aborted/expired the upload
+    up = client.get(f"/v1/media/{cmid}/parts/uploaded", headers=_auth("alice"))
+    assert up.status_code == 409 and "no longer exists" in up.text
+    assert store.get("story-alice", cmid)["state"] == "uploading"  # never marked verified

@@ -34,7 +34,7 @@ enum StoryBackend {
         return URLSession(configuration: cfg)
     }()
 
-    /// A SEPARATE session for BACKGROUND model inference (asset/scene understanding). Isolating it from the
+    /// A SEPARATE session for BACKGROUND model inference (asset understanding) and media transfer. Isolating it from the
     /// interactive `longSession` means a Story's 20-25 large multipart AU uploads cannot occupy the connection
     /// pool that interactive requests (creative-intent, guide, director) need — so starting/working on Story B
     /// stays responsive while Story A analyzes. Per-host connections are capped so the client itself bounds how
@@ -46,6 +46,46 @@ enum StoryBackend {
         cfg.timeoutIntervalForResource = 300
         cfg.waitsForConnectivity = true
         cfg.httpMaximumConnectionsPerHost = 2   // bound background upload concurrency at the transport layer
+        return URLSession(configuration: cfg)
+    }()
+
+    /// A DEDICATED session for the AI Ideas scene scan (POST /v1/scene-understanding). The user is waiting on the
+    /// camera for this call, so it must not queue behind AU, media upload or media download traffic on
+    /// `backgroundSession` (2 connections per host). Beta 2026-11-23: the 576 KB scan took 20.2 s to arrive while
+    /// an AU upload was in flight, against a 7.5 s model call. Same generous timeouts as before (the model call
+    /// has been slow on some providers); only the connection pool changes.
+    static let sceneScanSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 180
+        cfg.timeoutIntervalForResource = 300
+        cfg.waitsForConnectivity = true
+        return URLSession(configuration: cfg)
+    }()
+
+    /// A SEPARATE, FAIL-FAST session for the P1-F evidence-cache lookup (manifest GET + packed-frame download).
+    /// The lookup is an optional shortcut: any failure is a cache miss and planning falls back to restore +
+    /// extract. It must therefore never queue behind in-flight AU uploads on `backgroundSession` (2 connections
+    /// per host) and never wait for connectivity. An 8 s idle timeout fails a stalled request fast; the 60 s
+    /// resource cap still lets a slow connection finish one ~2-3 MB frame package (giving up would fall back to
+    /// downloading the far larger original video).
+    static let evidenceSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 8
+        cfg.timeoutIntervalForResource = 60
+        cfg.waitsForConnectivity = false      // offline -> immediate miss, not a stall
+        return URLSession(configuration: cfg)
+    }()
+
+    /// Async EditPlan JOB calls (submit + status poll). The job API answers immediately (the worker does the
+    /// slow part), so a call that goes quiet is a LOST REPLY, not a slow server: fail fast so the caller's
+    /// same-operation_id retry (idempotent server-side: same deterministic job, never a second inference) runs
+    /// within seconds. The longSession's 180s/300s + waitsForConnectivity turned one dropped 202 into a 5-minute
+    /// spinner (dev 2026-11-12). The 120s resource ceiling still allows a ~3 MB sheet upload on a slow link.
+    static let jobSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 30
+        cfg.timeoutIntervalForResource = 120
+        cfg.waitsForConnectivity = false
         return URLSession(configuration: cfg)
     }()
 
@@ -85,10 +125,10 @@ enum CreativeIntentServiceError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach Story. Check your connection and try again."
-        case .unavailable: return "Story's director is busy. Please try again."
-        case .badStatus(let c): return "Unexpected response (\(c)). Please try again."
-        case .decoding: return "Story returned something unexpected. Please try again."
+        case .transport: return L10n.t("Couldn't reach Story. Check your connection and try again.")
+        case .unavailable: return L10n.t("Story's director is busy. Please try again.")
+        case .badStatus(let c): return L10n.t("Unexpected response (\(c)). Please try again.")
+        case .decoding: return L10n.t("Story returned something unexpected. Please try again.")
         }
     }
 }

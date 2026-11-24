@@ -10,6 +10,7 @@ dependencies = [
     "boto3",
     "python-multipart",
     "pyjwt[crypto]>=2.8,<3",
+    "app-store-server-library==3.1.2",
 ]
 
 [project.optional-dependencies]

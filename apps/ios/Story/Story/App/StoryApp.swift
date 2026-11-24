@@ -11,15 +11,22 @@ struct StoryApp: App {
     // P0 Beta Auth Increment 4: the shared session layer. Restored on launch; adopts anonymous local content
     // on first sign-in. Views read it from the environment; the networking seam gets its token via AuthStore.
     @State private var auth = AuthStore()
+    @State private var billing = BillingStore()   // Billing V1 / B3: server-authoritative entitlement + StoreKit purchase flow
+    // App language (English | 简体中文 | follow iPhone). One store, injected below; see AppLanguage.swift.
+    @State private var languageStore = AppLanguageStore.shared
 
     init() {
-        // Durable backend/auth selection (P0 Beta Security Phase 4 follow-up): persist any config env vars
-        // present on THIS launch so a later DETACHED / TestFlight launch (where ProcessInfo.environment is
-        // empty) keeps the same backend instead of reverting to the dev defaults. MUST run before any
-        // StoryAuthConfig / StoryBackend value is read.
-        StoryLaunchConfig.captureLaunchOverrides()
-        // Visible one-line resolved-backend banner: what account/API this launch will ACTUALLY use.
-        print("STORY_ACTIVE_BACKEND pool=\(StoryAuthConfig.userPoolId) domain=\(StoryAuthConfig.domainPrefix) api=\(StoryBackend.baseURL.absoluteString)")
+        // Account deletion (design 5.7): if a deletion was accepted, wipe local data NOW, before any ModelContainer
+        // exists, so no file of an open store is ever deleted. On failure the marker stays and the app runs on an
+        // in-memory store behind the deletion lock screen (nothing touches disk until a retry succeeds).
+        let wipe = LocalWipe.runIfPending()
+        if wipe != .nothingPending { print("ACCOUNT_DELETION local wipe: \(wipe)") }
+        // Backend selection: the build's xcconfig decides (Story = dev, Story (Beta) = beta). Delete backend
+        // values older builds persisted (they made a Debug build stick to a past scheme's backend), then log ONE
+        // line with what this launch ACTUALLY uses. Runs before any StoryAuthConfig / StoryBackend value is read.
+        let cleared = StoryLaunchConfig.clearLegacyOverrides()
+        if cleared > 0 { print("STORY_ENVIRONMENT cleared \(cleared) legacy saved backend values") }
+        print(StoryEnvironment.launchSummary())
         let schema = Schema([
             StoryModel.self, MomentModel.self, StoryMomentLink.self,
             AssetModel.self, GeneratedOutputModel.self,
@@ -40,6 +47,10 @@ struct StoryApp: App {
             GeneratedOutputBackupJobModel.self   // R7-D: persistent generated-MP4 backup queue state
         ])
         let storeURL = URL.applicationSupportDirectory.appending(path: "default.store")
+        if case .failed = wipe {
+            // swiftlint:disable:next force_try
+            container = try! ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        } else {
         do {
             // Default store location (unchanged) so existing on-device Stories keep loading.
             container = try ModelContainer(for: schema)
@@ -64,6 +75,8 @@ struct StoryApp: App {
                 fatalError("Failed to create fallback ModelContainer (original store preserved at \(preservedPath)): \(error)")
             }
         }
+        }
+        AccountDeletionCoordinator.shared.bootstrap(wipe: wipe)
         MediaStore.shared.ensureMediaDirectory()
         MediaStore.shared.purgeDownloadTemps()   // R6: discard partial downloads from a prior run (whole-file retry)
         RenderOutputStore.shared.purgeDownloadTemps()   // R7-D: discard partial generated-MP4 restores (whole-file retry)
@@ -83,13 +96,44 @@ struct StoryApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HomeView()
+            AccountDeletionRootView { HomeView() }
+                // Rebuild the view tree when the EFFECTIVE app language changes so String-valued text computed in
+                // view bodies (L10n.t) refreshes too. Stories, Moments and GeneratedOutputs live in SwiftData and
+                // are untouched; only navigation state resets to Home.
+                .id(languageStore.effective)
+                .environment(\.locale, languageStore.locale)
+                .environment(languageStore)
                 .environment(auth)
+                .environment(billing)
                 .task {
+                    billing.start()   // StoreKit transaction listener + product load; no entitlement is decided on the device
                     // Gate paid Asset Understanding on an authenticated session (Phase 4): the AU queue drains
                     // only when this returns true. In dev optional-auth a restored/real session reports true;
                     // signed out, AU jobs stay PENDING and resume on sign-in (no model call meanwhile).
                     AssetUnderstandingQueue.sharedIsAuthed = { [weak auth] in auth?.isSignedIn ?? false }
+                    // AU background continuity: refresh the token BEFORE each paid request (the captured
+                    // authTokenProvider snapshot goes stale while backgrounded), know the live network path, and
+                    // resume the queue when the network returns.
+                    AssetUnderstandingQueue.sharedEnsureFreshToken = { [weak auth] in
+                        guard let auth else { return false }
+                        return await auth.validAccessToken() != nil
+                    }
+                    AssetUnderstandingQueue.sharedIsOnline = { NetworkReachability.shared.isSatisfied }
+                    AUDiag.printAtLaunch()   // the previous run's AU/background-task events, incl. how it ended
+                    AUDiag.record("launch app=\(AssetUnderstandingQueue.backgroundState())")
+                    NetworkReachability.shared.onBecameSatisfied = {
+                        let q = AssetUnderstandingQueue(context: container.mainContext)
+                        Task { await q.drain() }
+                    }
+                    // AI Ideas held background uploads while the user waited; resume all three queues now.
+                    InteractiveAIHold.onRelease = {
+                        let q = AssetUnderstandingQueue(context: container.mainContext)
+                        Task { await q.drain() }
+                        let uq = makeUploadQueue()
+                        Task { await uq.drain() }
+                        let obq = makeOutputBackupQueue()
+                        Task { await obq.drain() }
+                    }
                     // P1-E (AU durability): push a completed understanding to the account store as soon as it
                     // is produced (AU drain) OR as soon as its media becomes cloud-backed (upload verified),
                     // instead of only on the next foreground/sign-in. Bound here to the live AuthStore +
@@ -162,7 +206,11 @@ struct StoryApp: App {
                     // On sign-in, resume any deferred background AU (Phase 4): jobs enqueued while signed out
                     // are still PENDING; the existing idempotent upsert + orphan recovery process each exactly
                     // once under the now-authenticated account — never a duplicate understanding row.
+                    if newState != .signedIn { billing.reset() }   // R2: account-bound billing state never outlives the session
                     if newState == .signedIn {
+                        // Billing V1 / B3 + V2: read the server's entitlement for this account, and re-post any Plus purchase whose
+                        // earlier post failed (401 / offline) so a paying user is never left on Subscribe.
+                        Task { await billing.recoverPendingTransactions() }
                         let q = AssetUnderstandingQueue(context: container.mainContext)
                         Task { await q.drain() }
                         // R1: edit-plan recovery is account-scoped and runs on sign-in — resumes ONLY the
@@ -213,6 +261,7 @@ struct StoryApp: App {
             // Opportunistic AU drain when the app becomes active (network may now be up,
             // or pending jobs may have been enqueued last session).
             if phase == .active {
+                AssetUnderstandingQueue.stopGate.clear()   // a prior system expiration only paused the drain
                 let q = AssetUnderstandingQueue(context: container.mainContext)
                 Task { await q.drain() }
                 // P0 Phase 2 + R1: on every foreground, resume any unfinished edit-plan operation whose poll was
@@ -231,6 +280,7 @@ struct StoryApp: App {
                 // R6: reconcile cloud-state from the server on foreground too, so an ALREADY-signed-in relaunch
                 // (the sign-in onChange does not fire) still restores backup badges after a store migration.
                 if auth.isSignedIn {
+                    Task { await billing.recoverPendingTransactions() }   // Billing V2: retry unfinished Plus transactions
                     let ctx = container.mainContext
                     let owner = auth.storyUserId
                     Task { await MediaResolver.shared.reconcileCloudState(

@@ -321,3 +321,32 @@ def test_rest_search_page_short_page_ends(monkeypatch):
     monkeypatch.setattr(rest, "_call", lambda *a, **k: (200, {"tracks": [{"id": "t0", "title": "T", "length": 60}]}))
     tracks, nxt = rest.search_page("guitar", page_size=5)
     assert len(tracks) == 1 and nxt is None  # short page -> no more
+
+
+def _raw_client(monkeypatch, envelope):
+    """A real _tool (not stubbed) over a faked transport: no network, no secrets."""
+    monkeypatch.setenv(mp.FLAG_ENV, "prototyping")
+    c = EpidemicMCPClient(key="epidemic_live_fake")
+    monkeypatch.setattr(c, "_ensure_session", lambda: None)
+    monkeypatch.setattr(c, "_post", lambda *a, **k: (200, None, "data: " + json.dumps(envelope)))
+    return c
+
+
+def test_tool_error_keeps_provider_message(monkeypatch):
+    """isError results used to surface as a bare 'mcp_tool_error', hiding WHY (quota vs key vs track)."""
+    env = {"jsonrpc": "2.0", "id": 3, "result": {"isError": True, "content": [
+        {"type": "text", "text": "Download limit\nreached for this plan " + "x" * 400}]}}
+    c = _raw_client(monkeypatch, env)
+    with pytest.raises(mp.EpidemicProviderError) as ei:
+        c.download_link("tid")
+    s = str(ei.value)
+    assert s.startswith("mcp_tool_error: Download limit reached for this plan")
+    assert "\n" not in s and len(s) <= len("mcp_tool_error: ") + 200
+    assert "epidemic_live_fake" not in s
+
+
+def test_tool_error_without_text_stays_bare_label(monkeypatch):
+    c = _raw_client(monkeypatch, {"jsonrpc": "2.0", "id": 3, "result": {"isError": True, "content": []}})
+    with pytest.raises(mp.EpidemicProviderError) as ei:
+        c.download_link("tid")
+    assert str(ei.value) == "mcp_tool_error"

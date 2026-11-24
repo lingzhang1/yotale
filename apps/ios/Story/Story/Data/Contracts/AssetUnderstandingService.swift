@@ -157,6 +157,7 @@ enum AssetUnderstandingServiceError: Error, LocalizedError {
                                          // after Retry-After (the server's ai_sync 20/min window).
     case quotaExhausted(scope: String)   // 429 error:"quota_exceeded" — an ALLOWANCE is spent (daily gens /
                                          // monthly USD / global). PERMANENT for the period: do NOT auto-retry.
+    case unauthorized(Int)         // 401/403 — token expired/rejected; the job waits for a refresh, never fails
     case badStatus(Int)
     case decoding(Error)
 
@@ -165,7 +166,7 @@ enum AssetUnderstandingServiceError: Error, LocalizedError {
     /// NOT (retrying an exhausted daily cap just burns attempts and never succeeds until the period resets).
     var isRetryable: Bool {
         switch self {
-        case .transport, .unavailableRetryable, .rateLimited: return true
+        case .transport, .unavailableRetryable, .rateLimited, .unauthorized: return true
         case .quotaExhausted, .badStatus, .decoding: return false
         }
     }
@@ -179,12 +180,13 @@ enum AssetUnderstandingServiceError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach Story for Moment analysis."
-        case .unavailableRetryable: return "Moment analysis is busy; will retry."
-        case .rateLimited: return "Moment analysis is rate-limited; will retry shortly."
-        case .quotaExhausted(let s): return "Moment analysis paused — usage limit reached (\(s))."
-        case .badStatus(let c): return "Unexpected analysis response (\(c))."
-        case .decoding: return "Analysis returned an unexpected shape."
+        case .transport: return L10n.t("Couldn't reach Story for Moment analysis.")
+        case .unavailableRetryable: return L10n.t("Moment analysis is busy; will retry.")
+        case .rateLimited: return L10n.t("Moment analysis is rate-limited; will retry shortly.")
+        case .quotaExhausted(let s): return L10n.t("Moment analysis paused — usage limit reached (\(s)).")
+        case .unauthorized: return L10n.t("Sign-in expired; Moment analysis will continue after you reopen YoTale.")
+        case .badStatus(let c): return L10n.t("Unexpected analysis response (\(c)).")
+        case .decoding: return L10n.t("Analysis returned an unexpected shape.")
         }
     }
 }
@@ -245,6 +247,13 @@ struct AssetUnderstandingService: AUAnalyzing {
             throw AssetUnderstandingServiceError.badStatus(-1)
         }
         if http.statusCode == 503 { throw AssetUnderstandingServiceError.unavailableRetryable }
+        if http.statusCode == 402 {
+            // Billing V1: the plan's new-Moment analysis allowance (or the free starter) is spent. The footage is NOT lost: it is
+            // saved locally and this job is parked PENDING by the existing allowance path (no attempt burned) until the allowance
+            // changes. A 402 is never retried in a loop; the typed code names the cause.
+            let denial = BillingDenial.parse(data)
+            throw AssetUnderstandingServiceError.quotaExhausted(scope: "billing_\(denial.code.rawValue)")
+        }
         if http.statusCode == 429 {
             // Two distinct 429s share the status but mean opposite things for retry (see throttle.py /
             // quota_gate.py): error:"rate_limited" is a TEMPORARY per-user rate cap (retry after the window);
@@ -254,12 +263,18 @@ struct AssetUnderstandingService: AUAnalyzing {
             let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap { Int($0) }
             let err = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             let kind = (err?["error"] as? String) ?? ""
-            if kind == "rate_limited" {
-                throw AssetUnderstandingServiceError.rateLimited(retryAfter: retryAfter)
+            // Billing V2: `busy: true` marks TEMPORARY capacity (active jobs, the shared breaker, the rate limit). Retry later;
+            // never park the footage as if an allowance were spent.
+            if kind == "rate_limited" || (err?["busy"] as? Bool) == true {
+                let ra = retryAfter ?? (err?["retry_after_seconds"] as? Int)
+                throw AssetUnderstandingServiceError.rateLimited(retryAfter: ra)
             }
             // quota_exceeded (or an unrecognized 429): treat as a permanent allowance stop — no auto-retry.
             let scope = (err?["scope"] as? String) ?? (err?["class"] as? String) ?? "quota"
             throw AssetUnderstandingServiceError.quotaExhausted(scope: scope)
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            throw AssetUnderstandingServiceError.unauthorized(http.statusCode)
         }
         guard http.statusCode == 200 else {
             throw AssetUnderstandingServiceError.badStatus(http.statusCode)

@@ -24,15 +24,15 @@ from typing import Any
 
 from . import ModelGateway, FallbackModelGateway
 
-# Capability -> (primary_provider, fallback_provider). Overridable per capability via
-# STORY_ROUTE_<CAP>="primary:fallback" (e.g. STORY_ROUTE_ASSET_UNDERSTANDING="openai:gemini").
+# Capability -> (primary_provider, fallback_provider). This table is the ONE routing definition; it is not
+# overridable from the environment (no per-capability STORY_ROUTE_* overrides).
 _DEFAULT_ROUTES: dict[str, tuple[str, str | None]] = {
     "asset_understanding": ("gemini", "openai"),
     # scene_understanding: OpenAI primary. Gemini (gemini-3.8-flash) is pathologically slow on THIS
     # capability specifically — 50–132s for 1–3 frames vs 12–23s for 24-frame asset_understanding —
     # which timed the on-device "AI Ideas" flow out (the scene step precedes the Director call). OpenAI
-    # returns the same contract in ~2–3s. AU stays Gemini-primary (fast there). Override via
-    # STORY_ROUTE_SCENE_UNDERSTANDING if the Gemini latency regression is resolved.
+    # returns the same contract in ~2–3s. AU stays Gemini-primary (fast there). Change this table
+    # (code review) if the Gemini latency regression is resolved.
     "scene_understanding": ("openai", "gemini"),
     "creative_intent":     ("openai", "gemini"),
     "story_guide":         ("openai", "gemini"),
@@ -49,7 +49,6 @@ _DEFAULT_ROUTES: dict[str, tuple[str, str | None]] = {
 _MODEL_ENV = {
     "openai": "STORY_OPENAI_MODEL",
     "gemini": "STORY_GEMINI_MODEL",
-    "bedrock": "STORY_BEDROCK_ROUTED_MODEL",
 }
 # Phase-A placeholders (documented as provisional; override via env). Chosen as capable GA vision +
 # structured-output families; EXACT ids verified in Phase D.
@@ -58,21 +57,7 @@ _MODEL_DEFAULT = {
     "gemini": "gemini-1.5-pro",
 }
 
-_ANTHROPIC_MARKERS = ("anthropic", "claude")
-
-
-def _looks_anthropic(model_id: str) -> bool:
-    m = (model_id or "").lower()
-    return any(k in m for k in _ANTHROPIC_MARKERS)
-
-
 def _route_for(capability: str) -> tuple[str, str | None]:
-    override = os.environ.get(f"STORY_ROUTE_{capability.upper()}")
-    if override:
-        parts = override.split(":", 1)
-        primary = parts[0].strip()
-        fallback = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
-        return primary, fallback
     return _DEFAULT_ROUTES.get(capability, ("openai", "gemini"))
 
 
@@ -86,8 +71,8 @@ def _model_for(provider: str) -> str:
 
 def _make_adapter(provider: str, **kw: Any) -> ModelGateway:
     provider = (provider or "").lower()
-    if provider in ("anthropic", "bedrock-anthropic"):
-        raise ValueError("Anthropic routing is disabled (access restricted); no capability may target it")
+    if provider in ("anthropic", "bedrock-anthropic", "bedrock"):
+        raise ValueError("Anthropic/Bedrock routing is disabled (access restricted); no capability may target it")
     model = _model_for(provider)
     if provider == "openai":
         from .openai_gateway import OpenAIModelGateway
@@ -95,11 +80,6 @@ def _make_adapter(provider: str, **kw: Any) -> ModelGateway:
     if provider == "gemini":
         from .gemini_gateway import GeminiModelGateway
         return GeminiModelGateway(model_id=model, **kw)
-    if provider == "bedrock":
-        if _looks_anthropic(model):
-            raise ValueError(f"refusing Bedrock route to an Anthropic model id '{model}' (restricted)")
-        from . import BedrockModelGateway
-        return BedrockModelGateway(model_id=model)
     raise ValueError(f"unknown provider '{provider}'")
 
 
@@ -132,3 +112,30 @@ def active_routes() -> dict[str, dict[str, str | None]]:
                 fm = None
         out[cap] = {"primary": p, "primary_model": pm, "fallback": f, "fallback_model": fm}
     return out
+
+
+# Provider mode. STORY_MODEL_PROVIDER defaults to "direct": every capability routes to OpenAI/Gemini through the
+# table above, which refuses Anthropic/Bedrock. "bedrock" is an EXPLICIT, non-release opt-in (one Bedrock model,
+# NO Anthropic fallback chain); the release gate rejects it. Any other value FAILS EXPLICITLY rather than
+# silently routing somewhere else. API (apps/api/app/deps.py) and worker share this ONE implementation.
+PROVIDER_MODES = ("direct", "bedrock")
+
+
+def provider_mode() -> str:
+    mode = (os.environ.get("STORY_MODEL_PROVIDER", "direct") or "direct").strip().lower()
+    if mode not in PROVIDER_MODES:
+        raise ValueError(f"unsupported STORY_MODEL_PROVIDER '{mode}' (expected one of {PROVIDER_MODES})")
+    return mode
+
+
+def routed_gateway(capability: str, bedrock_model: str) -> ModelGateway:
+    if provider_mode() == "direct":
+        return make_gateway(capability)
+    from . import BedrockModelGateway
+    return BedrockModelGateway(model_id=bedrock_model)   # explicit opt-in only; no fallback chain
+
+
+def served_model_ids(capability: str) -> tuple[str | None, str | None]:
+    """(primary_model, fallback_model) the router would actually serve for a capability, for diagnostics."""
+    r = active_routes().get(capability) or {}
+    return r.get("primary_model"), r.get("fallback_model")

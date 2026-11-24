@@ -21,6 +21,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from contracts.schemas.ai_contracts import StoryCoverageContract
+from language_policy import apply_language_suffix
 from model_gateway import (
     ModelGateway,
     ProviderError,
@@ -68,6 +69,7 @@ class CoverageInput:
     scope: dict[str, Any]                       # {target_duration_seconds?, format?}
     moment_understandings: list[dict[str, Any]]  # each: {moment_id, observed{...}, story_context{...}}
     pending_count: int = 0
+    content_language: str | None = None          # 'en' | 'zh-Hans' | None (None => prompt unchanged)
 
 
 class CoverageUnavailableError(RuntimeError):
@@ -112,10 +114,11 @@ class RealStoryCoverageEngine:
             "pending_count": inp.pending_count,
             "moments": [self._compact_moment(m) for m in inp.moment_understandings],
         }
-        user = ("Derive the StoryCoverage for THIS Story. STORY INPUT:\n" + _json.dumps(payload)
+        user = ("Derive the StoryCoverage for THIS Story. STORY INPUT:\n" + _json.dumps(payload, ensure_ascii=False)
                 + "\n\nReturn ONLY the StoryCoverage via the tool.")
         return StructuredRequest(
-            task=TASK, schema=self._schema, prompt_version=PROMPT_VERSION, system=self._system,
+            task=TASK, schema=self._schema, prompt_version=PROMPT_VERSION,
+            system=apply_language_suffix(self._system, inp.content_language),
             user_content=user, max_repair_attempts=2,
             max_tokens=COVERAGE_MAX_TOKENS, temperature=COVERAGE_TEMPERATURE,
         )

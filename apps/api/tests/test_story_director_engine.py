@@ -81,9 +81,17 @@ def test_shot_missing_purpose_or_instruction_rejected():
 
 
 def test_capture_shot_without_shot_rejected():
-    bad = _good(); bad["decision"] = {"action": "capture_shot"}
+    # No plan shot to fall back to -> still an integrity failure.
+    bad = _good(); bad["decision"] = {"action": "capture_shot"}; bad["plan"]["shots"] = []
     with pytest.raises(StructuredOutputError):
         RealStoryDirectorEngine(FakeModelGateway(response=bad)).initialize(_CI, _SU)
+
+
+def test_capture_shot_without_shot_falls_back_to_plan_shot():
+    # v3: a shot-bearing decision with no (or an unresolvable) shot uses the plan shot instead of failing.
+    r = _good(); r["decision"] = {"action": "capture_shot", "plan_shot_id": "no-such-shot"}
+    out = RealStoryDirectorEngine(FakeModelGateway(response=r)).initialize(_CI, _SU)
+    assert str(out.decision.shot.id) == str(out.plan.shots[0].id)
 
 
 def test_create_now_with_shot_rejected():
@@ -173,3 +181,209 @@ def test_unsafe_candidate_is_rejected():
     ]
     with pytest.raises(StructuredOutputError):
         RealStoryDirectorEngine(FakeModelGateway(response=r)).initialize(_CI, _SU)
+
+
+# ---- Phase 1A: per-shot visual_reference_query (story_director/v2) ---------
+
+from story_director import (  # noqa: E402
+    PROMPT_VERSION as _PV,
+    REFERENCE_QUERY_KEY,
+    SCHEMA_VERSION as _SV,
+    sanitize_reference_query,
+)
+
+
+def _with_queries():
+    r = _good()
+    r["plan"]["shots"][0][REFERENCE_QUERY_KEY] = "close up backpack by door"
+    r["decision"]["shot"][REFERENCE_QUERY_KEY] = "close up backpack by door"
+    alt = _cand("altA", "Film your hands zipping the bag.")
+    alt["shot"][REFERENCE_QUERY_KEY] = "Hands Zipping   Backpack Close Up"
+    bad = _cand("altB", "Film the window light on the bag.")
+    bad["shot"][REFERENCE_QUERY_KEY] = "https://example.com 42 !!!"   # nothing usable after normalizing
+    r["candidates"] = [{"action": "capture_shot", "shot": dict(r["decision"]["shot"])}, alt, bad]
+    r["director_state"]["last_decision"] = {"action": "capture_shot", "shot": dict(r["decision"]["shot"])}
+    return r
+
+
+def test_v2_prompt_and_schema_versions():
+    assert _PV == "story_director/v3" and _SV == "story_director.envelope/3"
+    gw = FakeModelGateway(response=_good())
+    RealStoryDirectorEngine(gw).initialize(_CI, _SU)
+    req = gw.calls[0]
+    assert req.prompt_version == "story_director/v3"
+    assert "VISUAL REFERENCE QUERY" in req.system
+
+
+def test_model_facing_schema_offers_optional_shot_query_but_not_the_map():
+    schema = RealStoryDirectorEngine(FakeModelGateway(response=_good()))._schema
+    shot = schema["$defs"]["ShotContract"]
+    assert REFERENCE_QUERY_KEY in shot["properties"]
+    assert REFERENCE_QUERY_KEY not in shot.get("required", [])
+    assert "shot_reference_queries" not in schema["properties"]   # server-computed only
+
+
+def test_canonical_shot_contract_is_unchanged():
+    # The FROZEN canonical ShotContract must not grow the field; it lives only on the envelope.
+    from contracts.schemas.ai_contracts import ShotContract
+    assert REFERENCE_QUERY_KEY not in ShotContract.model_fields
+    assert "visual_reference_query" not in DirectorOutput.model_json_schema()["$defs"]["ShotContract"]["properties"]
+
+
+def test_reference_queries_keyed_by_minted_ids_and_sanitized():
+    out = RealStoryDirectorEngine(FakeModelGateway(response=_with_queries())).initialize(_CI, _SU)
+    q = out.shot_reference_queries
+    # primary decision shot (same UUID as the plan shot and candidates[0])
+    assert q[str(out.decision.shot.id)] == "close up backpack by door"
+    assert str(out.candidates[0].shot.id) == str(out.decision.shot.id)
+    # alt candidate: whitespace-collapsed + lowercased
+    assert q[str(out.candidates[1].shot.id)] == "hands zipping backpack close up"
+    # query with no usable words after normalization => no entry => text-only card for that idea
+    assert str(out.candidates[2].shot.id) not in q
+    # every key is a real minted shot id
+    ids = {str(s.id) for s in out.plan.shots} | {str(c.shot.id) for c in out.candidates if c.shot}
+    assert set(q) <= ids
+
+
+def test_missing_queries_yield_empty_map_and_old_shape_still_validates():
+    out = RealStoryDirectorEngine(FakeModelGateway(response=_good())).initialize(_CI, _SU)
+    assert out.shot_reference_queries == {}
+
+
+def test_model_authored_map_is_ignored():
+    r = _good()
+    r["shot_reference_queries"] = {"forged-id": "anything goes"}
+    out = RealStoryDirectorEngine(FakeModelGateway(response=r)).initialize(_CI, _SU)
+    assert out.shot_reference_queries == {}
+
+
+def test_reference_query_does_not_leak_into_validated_shots():
+    out = RealStoryDirectorEngine(FakeModelGateway(response=_with_queries())).initialize(_CI, _SU)
+    dumped = out.model_dump(mode="json")
+    blob = str(dumped["plan"]) + str(dumped["decision"]) + str(dumped["candidates"]) + str(dumped["director_state"])
+    assert REFERENCE_QUERY_KEY not in blob
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("close up acoustic guitar bookshelf", "close up acoustic guitar bookshelf"),
+    # Owner rule: never withhold a query for FORMAT — normalize instead.
+    ("  Person resting on sofa,  wide shot ", "person resting on sofa wide shot"),   # punctuation stripped
+    ("guitar", "guitar"),                                                            # one word is fine
+    # Real gpt-5.1 output (10 words) previously REJECTED -> no photo on device; now kept.
+    ("slow pan medium wide shot guitar bookcase desk window night",
+     "slow pan medium wide shot guitar bookcase desk window night"),
+    ("a b c d e f g h i j k l m n", "a b c d e f g h i j k l"),                       # truncated to 12
+    ("photo of sarah@example.com desk", "photo of desk"),                            # email token removed
+    ("see https://example.com/x desk lamp", "see desk lamp"),                        # url token removed
+    ("www.example.com desk", "desk"),
+    ("shot 4 seconds desk", "shot seconds desk"),                                    # digits stripped
+    ("x" * 90, "x" * 90),
+    (None, None), (123, None), ("", None), ("   ", None), ("!!! 42 ...", None),     # nothing usable left
+    ("office aisle leading lines person", "office aisle leading lines person"),
+    ("over-the-shoulder laptop typing", "over-the-shoulder laptop typing"),
+])
+def test_sanitize_reference_query(raw, expected):
+    assert sanitize_reference_query(raw) == expected
+
+
+def test_long_model_queries_are_kept_for_every_shot():
+    # Device regression (Nov 4): 2 of 3 ideas showed no photo because 9-10 word queries were rejected.
+    r = _good()
+    long_q = "slow pan medium wide shot guitar bookcase desk window night"
+    r["plan"]["shots"][0][REFERENCE_QUERY_KEY] = long_q
+    r["decision"]["shot"][REFERENCE_QUERY_KEY] = long_q
+    alt = _cand("altA", "Frame the guitar by the bookcase.")
+    alt["shot"][REFERENCE_QUERY_KEY] = "medium shot acoustic guitar leaning on bookcase indoor night"
+    r["candidates"] = [{"action": "capture_shot", "shot": dict(r["decision"]["shot"])}, alt]
+    out = RealStoryDirectorEngine(FakeModelGateway(response=r)).initialize(_CI, _SU)
+    for c in out.candidates:
+        assert str(c.shot.id) in out.shot_reference_queries, "every shot with a query must keep it"
+
+
+# ---- v3 lean output: each shot written once; server rebuilds the old wire shape ----
+
+from story_director import ALTERNATIVES_KEY, PLAN_SHOT_REF_KEY  # noqa: E402
+
+
+def _lean():
+    """What a v3 model writes: decision references the plan shot, alternatives exclude the decision,
+    no last_decision, no candidates."""
+    r = _good()
+    r["plan"]["shots"][0][REFERENCE_QUERY_KEY] = "close up backpack by door"
+    r["decision"] = {"action": "capture_shot", PLAN_SHOT_REF_KEY: "shot1", "reason": "Packing shows intent."}
+    alt = _cand("altA", "Film your hands zipping the bag.")
+    alt["shot"][REFERENCE_QUERY_KEY] = "close up hands zipping backpack"
+    r[ALTERNATIVES_KEY] = [alt, _cand("altB", "Film yourself pausing at the doorway.")]
+    return r
+
+
+def test_lean_schema_drops_duplicated_fields():
+    schema = RealStoryDirectorEngine(FakeModelGateway(response=_good()))._schema
+    assert "candidates" not in schema["properties"]
+    assert schema["properties"][ALTERNATIVES_KEY]["maxItems"] == 2
+    assert PLAN_SHOT_REF_KEY in schema["$defs"]["DirectorDecision"]["properties"]
+    assert "last_decision" not in schema["$defs"]["DirectorState"]["properties"]
+    assert "rationale" not in schema["$defs"]["StoryConceptContract"]["properties"]
+    # The wire contract is unchanged.
+    wire = DirectorOutput.model_json_schema()
+    assert "candidates" in wire["properties"] and ALTERNATIVES_KEY not in wire["properties"]
+
+
+def test_lean_output_rebuilds_full_wire_shape():
+    out = RealStoryDirectorEngine(FakeModelGateway(response=_lean())).initialize(_CI, _SU)
+    plan_shot = out.plan.shots[0]
+    # decision shot is a full copy of the referenced plan shot (same minted UUID)
+    assert out.decision.shot is not None and str(out.decision.shot.id) == str(plan_shot.id)
+    assert out.decision.shot.instruction == plan_shot.instruction
+    # candidates = [decision, *alternatives]
+    assert len(out.candidates) == 3
+    assert out.candidates[0] == out.decision
+    assert [c.shot.instruction for c in out.candidates[1:]] == [
+        "Film your hands zipping the bag.", "Film yourself pausing at the doorway."]
+    # last_decision is filled server-side with the decision just made
+    assert out.director_state.last_decision == out.decision
+    # reference queries keyed by minted ids; the decision shares the plan shot's query
+    q = out.shot_reference_queries
+    assert q[str(plan_shot.id)] == "close up backpack by door"
+    assert q[str(out.candidates[1].shot.id)] == "close up hands zipping backpack"
+    # no model-facing key leaks into the validated output
+    blob = str(out.model_dump(mode="json"))
+    assert PLAN_SHOT_REF_KEY not in blob and ALTERNATIVES_KEY not in blob and REFERENCE_QUERY_KEY not in blob
+
+
+def test_lean_output_without_alternatives_has_no_candidates():
+    r = _lean(); r.pop(ALTERNATIVES_KEY)
+    out = RealStoryDirectorEngine(FakeModelGateway(response=r)).initialize(_CI, _SU)
+    assert out.candidates == []          # iOS shows [decision] when candidates is empty
+
+
+def test_lean_alternatives_capped_and_unresolvable_dropped():
+    r = _lean()
+    r[ALTERNATIVES_KEY] = [
+        {"action": "capture_shot", PLAN_SHOT_REF_KEY: "missing"},   # no shot, bad ref -> dropped
+        _cand("altA", "Film your hands zipping the bag."),
+        _cand("altB", "Film the doorway."),                         # third item -> beyond the cap of 2
+    ]
+    out = RealStoryDirectorEngine(FakeModelGateway(response=r)).initialize(_CI, _SU)
+    assert [c.shot.instruction for c in out.candidates[1:]] == ["Film your hands zipping the bag."]
+
+
+def test_lean_unsafe_alternative_still_rejected():
+    r = _lean()
+    r[ALTERNATIVES_KEY] = [_cand("altA", "Walk backward toward the edge while filming.")]
+    with pytest.raises(StructuredOutputError):
+        RealStoryDirectorEngine(FakeModelGateway(response=r)).initialize(_CI, _SU)
+
+
+def test_lean_request_asks_for_alternatives_not_candidates():
+    gw = FakeModelGateway(response=_lean())
+    RealStoryDirectorEngine(gw).initialize(_CI, _SU)
+    req = gw.calls[0]
+    assert "`alternatives`" in req.user_content and "Do NOT repeat `decision`" in req.user_content
+    assert "plan_shot_id" in req.system and "WRITE EACH THING ONCE" in req.system
+
+
+def test_legacy_v2_shaped_output_still_validates():
+    # A model that ignores the lean rules (full decision shot, candidates, last_decision) still works.
+    out = RealStoryDirectorEngine(FakeModelGateway(response=_with_queries())).initialize(_CI, _SU)
+    assert len(out.candidates) == 3 and str(out.candidates[0].shot.id) == str(out.decision.shot.id)

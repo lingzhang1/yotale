@@ -115,12 +115,26 @@ final class StoryModel {
     // Never overwritten during retries, recreation, or version generation (only acceptCustomize sets it).
     var editingApproachExplicit: String?
 
+    // How the user chose the length on Customize: "recommended" or "custom". Every create persists its length
+    // in intentTargetDurationSeconds — a Recommended pick included — so the target alone cannot say whether
+    // the user typed it. Reopening reads this to seed Recommended vs Custom, so an old Recommended number is
+    // never resent as a typed Custom length. Additive migration (optional, nil = older Story => inferred).
+    var durationChoiceExplicit: String?
     // Explicit Moment References (MVP): resolved HARD directives captured in Creative Direction, as the encoded
     // backend contract {must_include/exclude/opening/ending} of STABLE Moment UUIDs — NEVER display numbers.
     // Additive migration (optional + defaulted nil); nil = no explicit references => behavior unchanged. Persists
     // the user's resolved instruction across the hop from setup to generation and across version re-creation.
     // Set only when the user adds references in Creative Direction; never overwritten by inference/retry.
     var creativeDirectivesJSON: String?
+
+    // Customize UX v2 (owner 2026-11-06) — the user's arranged visual-storyboard SEQUENCE: the encoded
+    // MomentSequence {orderedIds, policy}. Distinct from creativeDirectivesJSON: the sequence's INCLUSION +
+    // RELATIVE ORDER are ALSO folded into creativeDirectivesJSON (must_include + order_after, so the planner
+    // and all existing directive paths see them unchanged). This field additionally preserves the chosen
+    // POLICY so a Policy-B ("use only selected") run can restrict the planner's moments[] via the eligibility
+    // mechanism — a concern the directive wire shape alone cannot express. Additive migration (optional +
+    // defaulted nil); nil = no arranged sequence => full AI editorial freedom, behavior unchanged.
+    var momentSequenceJSON: String?
 
     // Stage 2 Creative Direction SOFT preferences — the user's free-text creative direction captured on the
     // Customize screen ("make the cuts faster", "use the most visually striking footage first"). DRAFT TEXT:
@@ -976,9 +990,10 @@ final class PendingOperationModel {
     var editorialTypeRaw: String?
     var requestFingerprint: String?  // included-Moments fingerprint at submit time (drift detection; advisory)
 
-    // Lifecycle. `phase` tracks the exactly-once pipeline: submitted -> planning -> plan_ready -> rendering ->
-    // saved. `status` mirrors the last observed backend job status (queued|running|completed|failed|...).
-    var phase: String                // submitted|planning|plan_ready|rendering|saved|abandoned
+    // Lifecycle. `phase` tracks the exactly-once pipeline: preparing -> submitting -> planning -> plan_ready ->
+    // rendering -> saved. `status` mirrors the last observed backend job status (queued|running|completed|...).
+    // "preparing" = recorded at create start, BEFORE on-device evidence preparation; nothing sent or billed yet.
+    var phase: String                // preparing|submitting|submitted|planning|plan_ready|rendering|saved|abandoned
     var jobStatus: String?           // last observed backend status (advisory)
     var failureCategory: String?     // backend failure_category when phase ended in failure
 
@@ -995,6 +1010,13 @@ final class PendingOperationModel {
     var nativeAudioPriority: String?
     var outputFormat: String?
     var targetSeconds: Double?
+
+    // Resume-from-"preparing" inputs: an attempt killed BEFORE submit must rebuild the SAME request, so it needs
+    // what a post-submit resume never did (the server already held it). Additive, optional (nil default => no
+    // migration; nil = legacy row, which resumes exactly as before).
+    var revisionContextJSON: String? = nil   // Explore/Revise context exactly as built (directives, soft ask, base plan)
+    var directedByCustomize: Bool? = nil     // Explore launched from Customize (folds the Story's creative direction)
+    var musicPlanJSON: String? = nil         // the MusicPlan this attempt plans with (music-aware planning on resume)
 
     var createdAt: Date
     var updatedAt: Date

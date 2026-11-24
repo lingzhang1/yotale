@@ -189,7 +189,6 @@ def test_secret_never_surfaced_in_result():
 
 # 12 — routing by capability + Anthropic refusal
 def test_routing_table(monkeypatch):
-    monkeypatch.delenv("STORY_ROUTE_ASSET_UNDERSTANDING", raising=False)
     monkeypatch.setenv("STORY_OPENAI_MODEL", "gpt-x")
     monkeypatch.setenv("STORY_GEMINI_MODEL", "gem-x")
     routes = prov.active_routes()
@@ -200,14 +199,29 @@ def test_routing_table(monkeypatch):
     assert routes["scene_understanding"]["fallback"] == "gemini"
     assert routes["story_guide"]["primary"] == "openai"
 def test_router_refuses_anthropic(monkeypatch):
+    monkeypatch.setitem(prov._DEFAULT_ROUTES, "story_guide", ("anthropic", "openai"))
+    with pytest.raises(ValueError):
+        prov.make_gateway("story_guide")
+def test_router_refuses_bedrock_route(monkeypatch):
+    monkeypatch.setitem(prov._DEFAULT_ROUTES, "story_guide", ("bedrock", None))
+    with pytest.raises(ValueError):
+        prov.make_gateway("story_guide")
+def test_route_table_not_overridable_from_env(monkeypatch):
     monkeypatch.setenv("STORY_ROUTE_STORY_GUIDE", "anthropic:openai")
+    monkeypatch.setenv("STORY_OPENAI_MODEL", "gpt-x"); monkeypatch.setenv("STORY_GEMINI_MODEL", "gem-x")
+    assert prov._route_for("story_guide") == ("openai", "gemini")
+def test_provider_mode_defaults_to_direct_and_rejects_unknown(monkeypatch):
+    monkeypatch.delenv("STORY_MODEL_PROVIDER", raising=False)
+    assert prov.provider_mode() == "direct"
+    monkeypatch.setenv("STORY_MODEL_PROVIDER", "anthropic")
     with pytest.raises(ValueError):
-        prov.make_gateway("story_guide")
-def test_router_refuses_bedrock_anthropic_model(monkeypatch):
-    monkeypatch.setenv("STORY_ROUTE_STORY_GUIDE", "bedrock:")
-    monkeypatch.setenv("STORY_BEDROCK_ROUTED_MODEL", "us.anthropic.claude-opus-4-6-v1")
-    with pytest.raises(ValueError):
-        prov.make_gateway("story_guide")
+        prov.provider_mode()
+def test_default_routing_never_builds_bedrock_or_anthropic(monkeypatch):
+    monkeypatch.delenv("STORY_MODEL_PROVIDER", raising=False)
+    monkeypatch.setenv("STORY_OPENAI_MODEL", "gpt-x"); monkeypatch.setenv("STORY_GEMINI_MODEL", "gem-x")
+    from app import deps
+    gw = deps.routed_gateway("story_guide", "us.anthropic.claude-opus-4-6-v1")
+    assert isinstance(gw, FallbackModelGateway)
 
 # Regression (2026-10-24): director + duration were NOT in the route table and their deps factories
 # constructed a raw Bedrock gateway, so STORY_MODEL_PROVIDER=direct never reached them -> they kept

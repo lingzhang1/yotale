@@ -184,7 +184,8 @@ defense in depth.
 - **D. Reinstall** — sign in again with the same email; cloud-owned data re-associates with the same
   `story_user_id`.
 - **E. Beta build** — after wiring the Beta configuration (§7e), install a **Beta-configured** build and
-  confirm `STORY_ACTIVE_BACKEND` logs the beta pool/API **without any attached Xcode scheme**, and
+  confirm the `STORY_ENVIRONMENT` launch line reports `kind=beta build=release source=baked` with the beta
+  pool/API **without any attached Xcode scheme**, and
   `verify_beta_archive.sh` passes on the archive. Do NOT create a live beta test user until separately
   authorized.
 

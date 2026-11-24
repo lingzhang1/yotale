@@ -113,10 +113,11 @@ final class GeneratedOutputBackupQueue {
     func drain(maxJobs: Int = 25) async {
         if draining { return }
         guard let owner = activeOwner() else { return }
+        guard !InteractiveAIHold.isHeld else { return }   // AI Ideas is waiting; onRelease re-drains
         draining = true
         defer { draining = false }
         var processed = 0
-        while processed < maxJobs, let job = nextEligibleJob(owner: owner) {
+        while processed < maxJobs, !InteractiveAIHold.isHeld, let job = nextEligibleJob(owner: owner) {
             processed += 1
             await run(job)
         }
@@ -243,6 +244,11 @@ final class GeneratedOutputBackupQueue {
         guard outputOwner == nil || outputOwner == job.ownerAccountId else { return }
         output.cloudMediaId = cmid
         output.cloudVerifiedAt = .now
+        // Performance timeline: cloud backup is NOT on the user's critical path (the video was playable at
+        // create_total). Logged so "local playable" and "backed up" can be told apart.
+        RenderTiming.emit(stage: "output_backup_verified",
+                          ms: Int(Date().timeIntervalSince(output.createdAt) * 1000),
+                          detail: "since_output_created=true")
         if output.ownerAccountId == nil { output.ownerAccountId = job.ownerAccountId }
     }
 

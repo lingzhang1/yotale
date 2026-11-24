@@ -34,6 +34,9 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private lazy var recordButton = UIButton(type: .system)
     private var isRecording = false
+    private var camera: AVCaptureDevice?
+    /// Keeps the display on while this one-shot camera is open/recording (shared ScreenAwake ownership).
+    private let screenAwake = CaptureScreenAwake()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -44,6 +47,7 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        screenAwake.appear()
         Task.detached { [session] in
             if !session.isRunning { session.startRunning() }
         }
@@ -51,6 +55,7 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        screenAwake.disappear()
         if session.isRunning { session.stopRunning() }
     }
 
@@ -63,6 +68,7 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
            let videoInput = try? AVCaptureDeviceInput(device: camera),
            session.canAddInput(videoInput) {
             session.addInput(videoInput)
+            self.camera = camera
         }
         if let mic = AVCaptureDevice.default(for: .audio),
            let audioInput = try? AVCaptureDeviceInput(device: mic),
@@ -78,12 +84,15 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
         preview.videoGravity = .resizeAspectFill
         preview.frame = view.bounds
         view.layer.addSublayer(preview)
+        // Same stabilization policy as the continuous camera (recorded file + low-latency preview).
+        CaptureStabilization.applyRecording(to: movieOutput.connection(with: .video), device: camera)
+        CaptureStabilization.applyPreview(to: preview.connection, device: camera)
         self.previewLayer = preview
     }
 
     private func configureUI() {
         recordButton.translatesAutoresizingMaskIntoConstraints = false
-        recordButton.setTitle("Record", for: .normal)
+        recordButton.setTitle(L10n.t("Record"), for: .normal)
         recordButton.setTitleColor(.white, for: .normal)
         recordButton.titleLabel?.font = .boldSystemFont(ofSize: 20)
         recordButton.backgroundColor = UIColor(red: 0.83, green: 0.66, blue: 0.33, alpha: 1)
@@ -93,7 +102,7 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
 
         let cancel = UIButton(type: .system)
         cancel.translatesAutoresizingMaskIntoConstraints = false
-        cancel.setTitle("Cancel", for: .normal)
+        cancel.setTitle(L10n.t("Cancel"), for: .normal)
         cancel.setTitleColor(.white, for: .normal)
         cancel.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         view.addSubview(cancel)
@@ -122,7 +131,8 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
                 .appendingPathExtension("mov")
             movieOutput.startRecording(to: tempURL, recordingDelegate: self)
             isRecording = true
-            recordButton.setTitle("Stop", for: .normal)
+            screenAwake.recordingChanged(true)
+            recordButton.setTitle(L10n.t("Stop"), for: .normal)
             recordButton.backgroundColor = .systemRed
         }
     }
@@ -134,7 +144,8 @@ final class CameraCaptureController: UIViewController, AVCaptureFileOutputRecord
                     from connections: [AVCaptureConnection],
                     error: Error?) {
         isRecording = false
-        recordButton.setTitle("Record", for: .normal)
+        screenAwake.recordingChanged(false)
+        recordButton.setTitle(L10n.t("Record"), for: .normal)
         let asset = AVURLAsset(url: outputFileURL)
         let duration = CMTimeGetSeconds(asset.duration)
         onFinish?(outputFileURL, duration.isFinite ? duration : 0)

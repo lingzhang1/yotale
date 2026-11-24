@@ -53,6 +53,8 @@ struct StoryHomeView: View {
     @State private var coverageLoading = false
     // One scene-image service for the whole screen (its metadata cache is shared across scene cards).
     private let sceneImages = SceneImageService()
+    // Phase 1B: one scene-video service for the screen (video mode only; no-ops in image mode).
+    private let sceneVideos = SceneVideoService()
 
     private var coverageEngine: StoryCoverageEngine {
         StoryCoverageEngine(context: context)
@@ -84,7 +86,7 @@ struct StoryHomeView: View {
                     .accessibilityLabel("Back")
                     VStack(alignment: .leading, spacing: 3) {
                         Text(story.title.displayTitle).font(StoryTheme.display(22)).foregroundStyle(StoryTheme.cream)
-                        Text(story.status == .completed ? "Completed" : "Active")
+                        Text(story.status == .completed ? L10n.t("Completed") : L10n.t("Active"))
                             .font(StoryTheme.body(11)).tracking(0.5)
                             .foregroundStyle(story.status == .completed ? StoryTheme.gold : StoryTheme.cream.opacity(0.22))
                     }
@@ -130,9 +132,10 @@ struct StoryHomeView: View {
                         .disabled(!readiness.isPlannable)
                         .accessibilityHint(readiness.isPlannable ? "" : readiness.copy)
                         // Honest status line — never a generic "coming later".
-                        Text(readiness.copy)
-                            .font(StoryTheme.body(11))
-                            .foregroundStyle(readiness.isPlannable ? StoryTheme.cream.opacity(0.3) : StoryTheme.textMuted)
+                        AUProgressStatusView(
+                            momentIds: Set(story.moments.map(\.id)),
+                            fallback: readiness.copy,
+                            foreground: readiness.isPlannable ? StoryTheme.cream.opacity(0.3) : StoryTheme.textMuted)
                     }
                 }
                 .padding(.top, 20)
@@ -194,7 +197,7 @@ struct StoryHomeView: View {
                 // Story Guide — the persistent StoryGuide creative map (renders as soon as the
                 // Guide exists, independent of Coverage) + optional Coverage/2 overlay (state tags +
                 // represented-possibility affordances). Advisory, never a checklist.
-                if StoryGuideFeatures.guideV2Enabled, guideV2 != nil {
+                if guideV2 != nil {
                     // AI shooting script (story_guide/2): cinematic scene cards with lazy reference images.
                     StoryGuideV2Section(
                         guide: guideV2, coverage: coverage, isLoading: coverageLoading,
@@ -212,6 +215,27 @@ struct StoryHomeView: View {
                             return await sceneImages.fetch(query: q, storyId: story.id, sceneId: scene.id)
                         },
                         trackImageUse: { img in await sceneImages.track(downloadLocation: img.downloadLocation) },
+                        fetchVideo: { scene in
+                            // Phase 1B: reuse the scene's server-authored visual_reference_query as the video
+                            // search, and the how-to-shoot text as the technique hint (no new model call).
+                            // nil in image mode (referenceVideoEnabled is false) or on no-match => image hero.
+                            guard let q = scene.visualReferenceQuery else { return nil }
+                            return await sceneVideos.fetch(query: q, technique: scene.howToShoot)
+                        },
+                        loadVideoPoster: { video in
+                            guard !video.posterURL.isEmpty,
+                                  let body = sceneVideos.posterBody(for: video.posterURL) else { return nil }
+                            var req = URLRequest(url: sceneVideos.posterRequestURL())
+                            StoryBackend.authorize(&req)
+                            req.httpMethod = "POST"
+                            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                            req.timeoutInterval = 6
+                            req.httpBody = body
+                            guard let (data, resp) = try? await URLSession.shared.data(for: req),
+                                  let http = resp as? HTTPURLResponse, http.statusCode == 200,
+                                  !data.isEmpty else { return nil }
+                            return data
+                        },
                         onUpdateGuide: { instruction in
                             // Guide v2.1 refinement: async, non-blocking; current script stays until a valid
                             // refined one replaces it. Returns a short summary, or nil on a recoverable failure.
@@ -226,10 +250,10 @@ struct StoryHomeView: View {
                                 let improved = outcome.changes.filter { $0.disposition == "improved" }.count
                                 let archived = outcome.archivedSceneIds.count
                                 var parts: [String] = []
-                                if added > 0 { parts.append("\(added) added") }
-                                if improved > 0 { parts.append("\(improved) improved") }
-                                if archived > 0 { parts.append("\(archived) archived") }
-                                return parts.isEmpty ? "Guide updated." : "Updated · " + parts.joined(separator: " · ")
+                                if added > 0 { parts.append(L10n.t("\(added) added")) }
+                                if improved > 0 { parts.append(L10n.t("\(improved) improved")) }
+                                if archived > 0 { parts.append(L10n.t("\(archived) archived")) }
+                                return parts.isEmpty ? L10n.t("Guide updated.") : L10n.t("Updated · \(parts.joined(separator: " · "))")
                             } catch {
                                 return nil   // current guide untouched; the section shows a recoverable error
                             }
@@ -313,6 +337,9 @@ struct StoryHomeView: View {
             // success/partial-failure line is briefly visible, then falls away.
             importProgress = p.finished && p.done == 0 && p.failed == 0 ? nil : p
             if p.finished {
+                // Refresh Guide/Coverage ONCE per import, not once per 3-video batch (each batch changes the
+                // Moment set, so per-batch refreshes would recompute coverage and poll repeatedly).
+                if p.done > 0 { Task { await refreshAfterCapture() } }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                     if importProgress?.finished == true { importProgress = nil }
                 }
@@ -325,8 +352,11 @@ struct StoryHomeView: View {
             if !created.isEmpty {
                 let auQueue = AssetUnderstandingQueue(context: context)
                 auQueue.enqueueImportedVideos(created)
-                Task { await auQueue.drain() }        // opportunistic; failures leave the job PENDING
-                Task { await refreshAfterCapture() }  // reuse the capture poll: AU lands -> Coverage/Idea update
+                // Foreground drain now; on iOS 26+ also asks the system to keep going if the user leaves.
+                AUContinuedProcessing.startAfterImport(queue: auQueue, context: context, momentIds: Set(created.map(\.id)))
+                // Auto Backup: back up each imported Moment when the account has it ON (no-op otherwise).
+                for m in created { MediaUploadQueue.sharedAutoEnroll(m) }
+                // Coverage/Idea refresh runs once when the whole import finishes (see onProgress above).
             }
         }
         .sheet(isPresented: $showMenu) {
@@ -416,10 +446,10 @@ struct StoryHomeView: View {
         let coordinator = StoryGuideCoordinator(context: context)
         if let existing = coordinator.guide(for: story.id) { guide = existing }  // show at once if present
         coverageLoading = (guide == nil)
-        // Guide v2 (AI shooting script): when enabled, prefer the scene-based Guide. It persists into the SAME
-        // model row, so Coverage fingerprinting + R7 sync are unchanged. A v2 failure (incl. the backend route
-        // gated off) falls back to the v1 creative-map path below — never a fabricated Guide.
-        if StoryGuideFeatures.guideV2Enabled {
+        // Guide v2 (AI shooting script) is the standard path: prefer the scene-based Guide. It persists into the
+        // SAME model row, so Coverage fingerprinting + R7 sync are unchanged. A v2 failure falls back to the v1
+        // creative-map path below — never a fabricated Guide.
+        do {
             if let existingV2 = coordinator.guideV2(for: story.id) { guideV2 = existingV2 }
             coverageLoading = (guideV2 == nil && guide == nil)
             if let gv2 = await coordinator.ensureGuideV2(for: story) {
@@ -542,9 +572,9 @@ struct StoryHomeView: View {
     }
 
     private var stateLine: String {
-        if story.status == .completed { return "Everything from your Story, in one place." }
-        if story.moments.isEmpty { return "Your Story is ready to begin." }
-        return "Your Story is taking shape."
+        if story.status == .completed { return L10n.t("Everything from your Story, in one place.") }
+        if story.moments.isEmpty { return L10n.t("Your Story is ready to begin.") }
+        return L10n.t("Your Story is taking shape.")
     }
 }
 
@@ -567,7 +597,7 @@ private struct StoryOptionsSheet: View {
 
             if confirming {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(isActive ? "Complete this Story?" : "Reopen this Story?")
+                    Text(isActive ? L10n.t("Complete this Story?") : L10n.t("Reopen this Story?"))
                         .font(StoryTheme.display(22)).foregroundStyle(StoryTheme.cream)
                     Text(isActive
                          ? "This Story moves out of your active Stories. You can still view Moments, create videos, or reopen it anytime."
@@ -604,7 +634,7 @@ private struct StoryOptionsSheet: View {
                           disabled: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack {
-                Text(title).font(StoryTheme.body(15))
+                Text(LocalizedStringKey(title)).font(StoryTheme.body(15))
                     .foregroundStyle(disabled ? StoryTheme.cream.opacity(0.28) : tint)
                 Spacer()
                 if disabled {
@@ -617,7 +647,7 @@ private struct StoryOptionsSheet: View {
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .accessibilityHint(disabled ? "Not available yet" : "")
+        .accessibilityHint(disabled ? L10n.t("Not available yet") : "")
     }
 }
 
@@ -677,7 +707,7 @@ private struct MomentTile: View {
                 if let n = countOverlay {
                     LinearGradient(colors: [.clear, StoryTheme.ink.opacity(0.68)],
                                    startPoint: .center, endPoint: .bottom)
-                    Text("\(n) moment\(n == 1 ? "" : "s") →")
+                    Text("\(n) moments →")
                         .font(StoryTheme.body(12, .medium)).foregroundStyle(StoryTheme.cream.opacity(0.9))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                         .padding(8)

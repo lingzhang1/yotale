@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.auth import CognitoConfig, CognitoJwtVerifier, IdentityStore, is_public_path
+from app.auth import CognitoConfig, CognitoJwtVerifier, IdentityStore, is_public_path, PUBLIC_ROUTES
 
 REGION = "us-east-1"
 POOL = "us-east-1_TESTPOOL"
@@ -75,7 +75,6 @@ class CountingIdentityStore(IdentityStore):
 
 def _app(env="beta", require="0"):
     import os
-    os.environ["STORY_JOBS_API_ENABLED"] = "1"
     os.environ["STORY_ENVIRONMENT"] = env
     os.environ["STORY_REQUIRE_AUTH"] = require
     os.environ["STORY_EPIDEMIC_MODE"] = "prototyping"
@@ -92,7 +91,7 @@ def _restore_env():
     """Snapshot/restore the env vars these tests mutate so running this module does not leak
     STORY_ENVIRONMENT=beta (etc.) into sibling test modules (order-independent suite)."""
     import os
-    keys = ["STORY_ENVIRONMENT", "STORY_REQUIRE_AUTH", "STORY_JOBS_API_ENABLED",
+    keys = ["STORY_ENVIRONMENT", "STORY_REQUIRE_AUTH", 
             "STORY_EPIDEMIC_MODE", "STORY_COGNITO_USER_POOL_ID", "STORY_COGNITO_APP_CLIENT_ID",
             "STORY_DOCS_PUBLIC"]
     saved = {k: os.environ.get(k) for k in keys}
@@ -121,10 +120,25 @@ def test_every_non_public_route_is_denied_without_a_token_in_beta():
             continue
         concrete = re.sub(r"\{[^}]+\}", "x", path) if "{" in path else path
         for method in (r.methods - {"HEAD", "OPTIONS"}):
+            if (method, path) in PUBLIC_ROUTES:
+                continue          # signature-authenticated webhook; asserted exactly by test_public_routes_are_exactly_the_apple_webhook
             resp = client.request(method, concrete, json={})
             if resp.status_code != 401:
                 offenders.append(f"{method} {path} -> {resp.status_code}")
     assert not offenders, f"non-public routes NOT denied unauthenticated in beta: {offenders}"
+
+
+def test_public_routes_are_exactly_the_apple_webhook():
+    # plus the account-deletion receipt status (design 5.3): it must work after Cognito disables the user and is
+    # authenticated by the 256-bit receipt secret instead of a token.
+    assert PUBLIC_ROUTES == {("POST", "/v1/billing/apple-notifications"), ("POST", "/v1/account/deletion/status"),
+                             ("POST", "/v1/auth/apple-signin-notifications")}
+    c = TestClient(_app(env="beta"))
+    # reaches the handler without a token (not a 401 from the boundary); an unsigned body is then rejected by the handler
+    assert c.post("/v1/billing/apple-notifications", json={}).status_code != 401
+    # GET on the same path and every sibling billing route stay protected
+    assert c.get("/v1/billing/apple-notifications").status_code in (401, 405)
+    assert c.post("/v1/billing/transactions", json={}).status_code == 401
 
 
 # --- req 5: the two previously-unauthenticated routes are now closed -------------------------------------
@@ -145,10 +159,13 @@ def test_real_envs_fail_closed_even_with_require_auth_0(env):
     assert c.get("/v1/stories").status_code == 401
 
 
-def test_development_optional_window_allows_missing_token():
+def test_development_optional_window_allows_missing_token(monkeypatch):
+    # Hermetic: the explicit mock engine, never a live provider (this test is about AUTH, not inference).
+    monkeypatch.setenv("STORY_CREATIVE_INTENT_MOCK", "1")
     c = TestClient(_app(env="development", require="0"))
     r = c.post("/v1/creative-intent", json={"raw_text": "x"})
     assert r.status_code != 401
+    assert r.status_code == 200, r.text
 
 
 def test_development_require_auth_1_fails_closed():

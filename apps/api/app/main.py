@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from contracts.schemas.ai_contracts import (
@@ -66,6 +68,7 @@ from story_coverage import (
 )
 from story_guide import GuideInput, GuideUnavailableError, RefineInput, StoryGuideEngine
 from music_direction import MusicDirectionEngine
+from language_policy import normalize_content_language as _norm_lang
 from edit_planner import (
     EditPlannerEngine,
     EditPlanInputs,
@@ -82,6 +85,12 @@ from understanding_store import music_favorites as _music_favorites  # P1-E: sav
 import evidence_store as _evidence  # P1-F: reusable AU visual-evidence packages (provisional at AU, verified at retrieval)
 
 
+def _api_build_sha() -> str:
+    """Code revision baked into this API image at build time (Dockerfile BUILD_SHA arg); "unknown" if none."""
+    from observability import build_sha
+    return build_sha()
+
+
 def _edit_planner_prompt_version() -> str:
     """The edit-plan prompt version actually in effect (reflects STORY_EDIT_PLAN_VERSION). Logged on each
     plan so a device render can PROVE which prompt (edit_plan/4 vs the v5 candidate) produced it."""
@@ -95,6 +104,7 @@ from duration_planner import (
 from music_plan import MusicPlanEngine, MusicPlanInputs
 import music_provider as _mp
 import scene_image as _scene_image
+import scene_video as _scene_video
 from story_coverage_v2 import (
     CoverageV2Input,
     CoverageUnavailableError as CoverageV2UnavailableError,
@@ -128,6 +138,9 @@ from app.store import InMemoryStoryStore
 from app.auth import (  # P0 Beta Auth: trusted-identity dependencies + central deny-by-default boundary
     optional_user, require_user, Principal, auth_boundary, _docs_public,
 )
+from model_gateway import set_call_context as _set_cost_ctx  # B0: attribute model calls to a story
+from app import billing_gate  # Billing V1: entitlement meters (off|observe|enforce)
+from app.cost_context import cost_context_middleware  # B0: per-call cost attribution context
 from app.throttle import throttle_middleware  # P0 Beta Security Phase 3: per-user rate limiting
 from app import quota_gate  # P0 Beta Security Phase 4: per-user AI quota + spend protection
 
@@ -167,6 +180,10 @@ _MM_EDIT_ALLOWED_TYPES = {"image/jpeg", "image/jpg"}
 
 # MVP application-level creative brief (VERSIONED). Injected into the Edit Planner USER message only — the
 # frozen v5.2 system body is never touched. Owner-authored 2026-10-13. Bump the version suffix on any edit.
+# LEGACY (edit_plan <= 5.3) one-size creative brief, mirrored by the iOS client, which sends it as the `creative_brief`
+# form field on every multimodal create. Under edit_plan >= 5.5 the planner IGNORES the client's brief text when an
+# `editorial_type` is present and uses the server-owned, type-aware briefs in `edit_planner._V55_BRIEFS`, so an older
+# client can never feed Full Story this Highlights-style brief. The client field still gates the optional critique pass.
 MM_CREATIVE_BRIEF_VERSION = "shortform_mvp/1"
 MM_CREATIVE_BRIEF = (
     "When user intent does not require chronology, prioritize visually engaging and meaningful footage. "
@@ -174,6 +191,21 @@ MM_CREATIVE_BRIEF = (
     "payoffs, and choose shot durations appropriate to the material. Do not force a conventional "
     "travel-diary structure."
 )
+
+
+class AccountDeletionRequest(BaseModel):
+    """POST /v1/account/deletion (design 5.3). The client generates request_id (UUIDv4) and a 256-bit receipt
+    secret, persists both BEFORE sending, and sends only the secret's SHA-256."""
+    model_config = ConfigDict(extra="forbid")
+    confirm: str
+    request_id: str
+    receipt_hash: str
+
+
+class AccountDeletionStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: str
+    receipt_secret: str
 
 
 class MediaInitiateRequest(BaseModel):
@@ -285,6 +317,11 @@ class StoryCoverageRequest(BaseModel):
     moment_understandings: list[dict] = Field(default_factory=list,
         description="completed MomentUnderstanding records (observed + story_context)")
     pending_count: int = Field(default=0, ge=0)
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class StoryGuideRequest(BaseModel):
@@ -296,6 +333,11 @@ class StoryGuideRequest(BaseModel):
     creative_intent: dict = Field(..., description="the resolved CreativeIntent (compact)")
     scope: dict = Field(default_factory=dict, description="{target_duration_seconds?, format?}")
     source_creative_intent_version: str | None = Field(default=None)
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class StoryGuideRefineRequest(BaseModel):
@@ -317,6 +359,11 @@ class StoryGuideRefineRequest(BaseModel):
     user_instruction: str | None = Field(default=None, description="one-time Update Guide instruction")
     event_context: str | None = Field(default=None, description="persistent editable event context")
     source_creative_intent_version: str | None = Field(default=None)
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class SceneImageRequest(BaseModel):
@@ -335,6 +382,27 @@ class SceneImageTrackRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     download_location: str = Field(..., description="the Unsplash download_location URL from a prior result")
+
+
+class SceneVideoRequest(BaseModel):
+    """POST /v1/scene-video body (Phase 1B). ONE Pixabay reference video for a Shooting Idea / Guide scene.
+    `query` is the generic reference query (same source as scene-image). `technique_text` is the shot's
+    framing/camera-motion/instruction text used ONLY to classify the requested camera technique server-side
+    (no new model call). story_id/scene_id are provenance only — never sent to the provider."""
+
+    model_config = ConfigDict(extra="forbid")
+    query: str = Field(..., description="generic scene/composition phrase (normalized + bounded server-side)")
+    technique_text: str | None = Field(default=None, description="generic shot framing/motion text (no PII)")
+    story_id: UUID | None = Field(default=None)
+    scene_id: str | None = Field(default=None)
+
+
+class SceneVideoPosterRequest(BaseModel):
+    """POST /v1/scene-video/poster body. Pixabay forbids image hotlinking, so the app asks the backend to
+    fetch ONE poster .jpg (SSRF-bounded to cdn.pixabay.com) from a prior scene-video result."""
+
+    model_config = ConfigDict(extra="forbid")
+    poster_url: str = Field(..., description="a cdn.pixabay.com poster URL returned by /v1/scene-video")
 
 
 class MusicDirectionRequest(BaseModel):
@@ -411,6 +479,11 @@ class DurationRecommendationRequest(BaseModel):
     story_guide: dict = Field(default_factory=dict)
     story_coverage: dict = Field(default_factory=dict)
     requested_scope: str | None = Field(default=None, description="'highlights' | 'complete' | None")
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class MusicPlanRequest(BaseModel):
@@ -471,6 +544,11 @@ class StoryCoverageV2Request(BaseModel):
     scope: dict = Field(default_factory=dict)
     moment_understandings: list[dict] = Field(default_factory=list)
     pending_count: int = Field(default=0, ge=0)
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class ResolveCreativeIntentRequest(BaseModel):
@@ -479,6 +557,11 @@ class ResolveCreativeIntentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     raw_text: str = Field(min_length=1, description="User's free-form creative direction")
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class DirectorInitializeRequest(BaseModel):
@@ -498,6 +581,11 @@ class DirectorInitializeRequest(BaseModel):
                     "(Story Idea -> Show me, or Guide possibility -> Shoot). Shape: "
                     "{story_guide_dimension_id?, label, purpose, capture_possibility_label?}. null = "
                     "unchanged Director behavior. Semantic WHAT, never a literal shot/constraint.")
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 
 class DirectorNextRequest(BaseModel):
@@ -506,6 +594,11 @@ class DirectorNextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prior: dict = Field(..., description="Prior concept/plan/director_state + progress descriptors")
+    content_language: str | None = Field(
+        default=None,
+        description="OPTIONAL output language for Story-specific human-readable text: 'en' | 'zh-Hans' "
+                    "(variants like 'zh', 'zh-CN', 'zh_Hans', 'en-US' are normalized). Unknown/absent => today's "
+                    "behaviour; never an error. JSON keys/ids/enums and search-query fields stay as specified.")
 
 SERVICE_NAME = "story-api"
 SERVICE_VERSION = "0.1.0"  # Milestone A
@@ -538,9 +631,38 @@ def _scene_image_client():
     return _SCENE_IMAGE_CLIENT
 
 
+# Scene-VIDEO seams (Phase 1B, mirror the scene-image pattern). 24h cache per Pixabay's caching rule.
+_SCENE_VIDEO_CACHE = None
+_SCENE_VIDEO_CLIENT = None
+_SCENE_VIDEO_CLIENT_FACTORY = None  # type: ignore[var-annotated]
+
+
+def _scene_video_cache():
+    global _SCENE_VIDEO_CACHE
+    if _SCENE_VIDEO_CACHE is None:
+        _SCENE_VIDEO_CACHE = _scene_image.MetadataCache(ttl_seconds=86_400.0)  # Pixabay: cache 24h
+    return _SCENE_VIDEO_CACHE
+
+
+def _scene_video_client():
+    """Return a cached Pixabay client. Builds it from the Secrets Manager key on first use (raising
+    SceneVideoAuthError if the key cannot be read). A test factory, when set, wins and bypasses the key."""
+    global _SCENE_VIDEO_CLIENT
+    if _SCENE_VIDEO_CLIENT_FACTORY is not None:
+        return _SCENE_VIDEO_CLIENT_FACTORY()
+    if _SCENE_VIDEO_CLIENT is None:
+        key = _scene_video.load_key()  # SceneVideoAuthError if missing/denied/empty
+        _SCENE_VIDEO_CLIENT = _scene_video.PixabayClient(key)
+    return _SCENE_VIDEO_CLIENT
+
+
 def create_app() -> FastAPI:
     """Construct the FastAPI app. A factory so tests get a fresh instance
     (and a fresh in-memory store) per app."""
+    # Billing V1: an invalid STORY_BILLING_MODE (or the removed STORY_BILLING_PLANS_JSON) must stop the service from
+    # starting, so a deploy with a mistyped posture fails its health check instead of running with billing silently
+    # disabled or wrongly enabled. Unset means off.
+    billing_gate.validate_startup()
     # Docs endpoints (/docs, /redoc, /openapi.json) are PUBLIC only in development (or with an explicit
     # STORY_DOCS_PUBLIC=1 opt-in); in beta/gamma/prod they are disabled so the schema is not exposed
     # unauthenticated (req 4). Disabling at construction time means FastAPI never registers the routes.
@@ -563,6 +685,8 @@ def create_app() -> FastAPI:
     # handler), throttle next, and auth LAST (outermost). Auth resolves request.state.principal first; then
     # throttle (rate per minute); then quota (cumulative AI spend/allowance + active-job slots). P0 Beta
     # Security Phases 3 (throttle) + 4 (quota).
+    app.middleware("http")(cost_context_middleware)   # innermost: attribution for model_call_usage
+    app.middleware("http")(billing_gate.billing_middleware)   # Billing V1: sync video routes (inside quota)
     app.middleware("http")(quota_gate.quota_middleware)
     app.middleware("http")(throttle_middleware)
     app.middleware("http")(auth_boundary)
@@ -606,6 +730,205 @@ def create_app() -> FastAPI:
         return {"story_user_id": principal.story_user_id}
 
     # ========================================================================================================
+    # ACCOUNT DELETION (D3; design specs/story-specs/spec/implementation-plan/account-deletion-design.md 5.3).
+    # Acceptance is ONE transaction (request item + receipt pointer + users active -> deleting); nothing is
+    # enqueued after it, so a 202 means accepted and a 503 means "unknown, ask the status route". The scheduled
+    # worker (D2) does the rest. Fails closed (503) where the request table is not wired.
+    # ========================================================================================================
+    _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+    _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+    _REAUTH_WINDOW_S = 300
+
+    def _deletion_store():
+        ov = getattr(app.state, "_deletion_store_override", None)
+        if ov is not None:
+            return ov
+        table = os.environ.get("STORY_ACCOUNT_DELETIONS_TABLE", "")
+        if not table:
+            return None
+        st = getattr(app.state, "_deletion_store", None)
+        if st is None:
+            import types
+            import boto3
+            from account_deletion import RequestStore
+            cfg = types.SimpleNamespace(requests_table=table,
+                                        users_table=os.environ.get("STORY_USERS_TABLE", ""))
+            st = app.state._deletion_store = RequestStore(
+                boto3.client("dynamodb", region_name=os.environ.get("AWS_REGION", "us-east-1")), cfg)
+        return st
+
+    def _deletion_err(status: int, code: str) -> JSONResponse:
+        return JSONResponse(status_code=status, content={"error": code})
+
+    @app.post("/v1/account/deletion", status_code=202)
+    def account_deletion_request(body: AccountDeletionRequest, principal: Principal = Depends(require_user)):
+        """Request deletion of the CALLER's account (uid only from the verified token). Requires a sign-in within
+        the last 5 minutes (access-token auth_time; a refresh keeps the original auth_time) and confirm="DELETE".
+        Reachable while the account is `deleting` (DELETION_ROUTES), so a retry with the same request_id is
+        idempotent."""
+        store = _deletion_store()
+        if store is None:
+            return _deletion_err(503, "deletion_unavailable")
+        if body.confirm != "DELETE":
+            return _deletion_err(400, "confirm_required")
+        rid, rh = body.request_id.strip().lower(), body.receipt_hash.strip().lower()
+        if not _UUID_RE.match(rid) or not _HEX64_RE.match(rh):
+            return _deletion_err(422, "invalid_request_id_or_receipt")
+        at = principal.auth_time
+        if at is None or int(time.time()) - int(at) > _REAUTH_WINDOW_S:
+            return _deletion_err(401, "reauth_required")
+        try:
+            res = store.accept(principal.story_user_id, rid, rh, int(time.time()))
+        except Exception as e:  # noqa: BLE001 — the outcome is unknown to the client; it resolves via the receipt
+            log.warning("account_deletion_accept_error", extra={"error": type(e).__name__})
+            return _deletion_err(503, "deletion_outcome_unknown")
+        if res.outcome in ("accepted", "idempotent"):
+            from account_deletion import public_view
+            log.info("account_deletion_accepted", extra={"outcome": res.outcome, "request_id": rid})
+            return JSONResponse(status_code=202, content={**public_view(res.request or {}), "request_id": rid})
+        if res.outcome == "already_requested":
+            return _deletion_err(409, "deletion_already_requested")
+        return _deletion_err(403, "account_not_active")
+
+    @app.get("/v1/account/deletion", status_code=200)
+    def account_deletion_get(principal: Principal = Depends(require_user)):
+        """The caller's own request, while their token still works (DELETION_ROUTES admits `deleting`)."""
+        store = _deletion_store()
+        if store is None:
+            return _deletion_err(503, "deletion_unavailable")
+        req = store.get(principal.story_user_id)
+        if not req:
+            return _deletion_err(404, "not_found")
+        from account_deletion import public_view
+        return {**public_view(req), "request_id": req.get("request_id")}
+
+    @app.post("/v1/account/deletion/status", status_code=200)
+    def account_deletion_status(body: AccountDeletionStatusRequest):
+        """PUBLIC (no token): works after Cognito disables the user. Reveals state only to the holder of the
+        receipt secret; an unknown request_id and a wrong secret get the same 404."""
+        store = _deletion_store()
+        if store is None:
+            return _deletion_err(503, "deletion_unavailable")
+        rid, secret = body.request_id.strip().lower(), body.receipt_secret.strip().lower()
+        view = store.status_by_receipt(rid, secret) if (_UUID_RE.match(rid) and _HEX64_RE.match(secret)) else None
+        if view is None:
+            return _deletion_err(404, "not_found")
+        return view
+
+    # ========================================================================================================
+    # BILLING V1 — server-authoritative entitlement read model + controlled video-credit refund. The client never
+    # supplies plan, price, allowance or expiry; it only displays what the server says. See billing_gate.py.
+    # ========================================================================================================
+    @app.get("/v1/billing/entitlement", status_code=200)
+    def billing_entitlement(request: Request, principal: Principal = Depends(require_user)) -> dict:
+        """Authoritative plan, trial, period, allowances, remaining quantities and upgrade eligibility (contract v1).
+        `billing_mode` tells the app whether limits are actually enforced yet."""
+        return billing_gate.entitlement_payload(request, principal.story_user_id)
+
+    @app.post("/v1/billing/transactions", status_code=200)
+    def billing_transactions(request: Request, body: dict, principal: Principal = Depends(require_user)):
+        """The app posts the StoreKit 2 transaction JWS after a purchase / on restore. The server verifies Apple's signature,
+        bundle, environment and product, requires the transaction's appAccountToken to be THIS account's token, binds the
+        original transaction to this account only, and then grants Plus from Apple's signed dates. Plan names, prices,
+        credits and expiry sent by the client are ignored. 409 if another account already owns the transaction."""
+        signed = body.get("signed_transaction")
+        if not isinstance(signed, str) or not signed:
+            raise HTTPException(status_code=422, detail="signed_transaction required")
+        svc = billing_gate.apple_service(request)
+        if svc is None:
+            return JSONResponse(status_code=503, content={"error": "apple_not_configured"})
+        try:
+            result = svc.submit_transaction(principal.story_user_id, signed)
+            # The app decodes `entitlement` with the SAME model as GET /v1/billing/entitlement, so it must have the SAME shape
+            # (billing_mode, enforced, offer, apple_app_account_token...). The ledger's bare view lacks those, which made the
+            # shipped client's decode fail after a successful purchase.
+            return {**result, "entitlement": billing_gate.entitlement_payload(request, principal.story_user_id)}
+        except billing_gate.AppleError as e:
+            return billing_gate.apple_error_response(e)
+        except billing_gate.BillingStoreError:
+            return billing_gate.store_unavailable_response()
+
+    @app.post("/v1/auth/apple-signin-notifications", status_code=200)
+    def apple_signin_notifications(body: dict):
+        """Sign in with Apple server-to-server notifications (D7, TN3194). PUBLIC at the auth boundary: trust comes only
+        from Apple's signature (Apple JWKS), issuer and our Services ID as audience. consent-revoked / account-delete
+        sign the federated Cognito user out everywhere; other types are acknowledged. Bad payload -> 400; a Cognito
+        failure -> 503 so Apple retries."""
+        from app import apple_signin_notifications as asn
+        token = body.get("payload")
+        if not isinstance(token, str) or not token:
+            raise HTTPException(status_code=400, detail="payload required")
+        try:
+            events = asn.verify(token, audience=asn.audiences())
+        except asn.InvalidNotification as e:
+            log.warning("apple_signin_notification_rejected", extra={"reason": str(e)[:60]})
+            raise HTTPException(status_code=400, detail="invalid notification")
+        cognito = getattr(app.state, "_apple_signin_cognito_override", None) or asn.cognito_client()
+        try:
+            outcome = asn.handle(events, cognito=cognito,
+                                 user_pool_id=os.environ.get("STORY_COGNITO_USER_POOL_ID", ""))
+        except Exception as e:  # noqa: BLE001
+            log.warning("apple_signin_notification_error", extra={"error": type(e).__name__})
+            return JSONResponse(status_code=503, content={"error": "retry"})
+        log.info("apple_signin_notification", extra={"type": str(events.get("type"))[:32], "outcome": outcome,
+                                                     "apple_sub_hash": asn.sub_hash(events)})
+        return {"outcome": outcome}
+
+    @app.post("/v1/billing/apple-notifications", status_code=200)
+    def billing_apple_notifications(request: Request, body: dict):
+        """App Store Server Notifications V2. PUBLIC at the auth boundary (Apple cannot hold a Cognito token): trust comes only
+        from Apple's cryptographic signature, verified against pinned Apple roots, bundle id and environment. Bad signature ->
+        4xx; a store failure -> 503 so Apple retries; duplicates are acknowledged and ignored."""
+        signed = body.get("signedPayload")
+        if not isinstance(signed, str) or not signed:
+            raise HTTPException(status_code=422, detail="signedPayload required")
+        svc = billing_gate.apple_service(request)
+        if svc is None:
+            return JSONResponse(status_code=503, content={"error": "apple_not_configured"})
+        try:
+            return svc.handle_notification(signed)
+        except billing_gate.AppleError as e:
+            return billing_gate.apple_error_response(e)
+        except billing_gate.BillingStoreError:
+            return billing_gate.store_unavailable_response()
+
+    @app.post("/v1/billing/video-refund", status_code=200)
+    def billing_video_refund(request: Request, body: dict, principal: Principal = Depends(require_user)) -> dict:
+        """Ask for ONE settled video credit back after a persistent on-device render/export failure. Safety model:
+        * authenticated; the job must be the caller's own COMPLETED job (404 otherwise: never confirms another account's job);
+        * the operation must hold a SETTLED credit in the caller's ledger (an unbilled/unlimited/foreign operation has none);
+        * evidence: `reason` from a closed vocabulary and `render_attempts` >= 2 (the stored plan was re-rendered before the
+          claim: a plan is re-renderable with NO new AI work, so a single failure is retried, not refunded); optional `client_build`;
+        * once per operation, within 24h of settlement, same period, capped (Free starter 1, Plus 3 per period);
+        * it only returns the credit. The generated plan/output is never deleted or invalidated, so the user keeps the video and can
+          re-render it (the bounded cost of a false claim is at most the cap). Creative quality is never a refund reason.
+        The server cannot observe on-device rendering; the claim is untrusted and only ever bounded."""
+        op = str(body.get("operation_id", "")).strip()
+        reason = str(body.get("reason", "")).strip()
+        try:
+            attempts = int(body.get("render_attempts", 0))
+        except (TypeError, ValueError):
+            attempts = 0
+        if not op or reason not in billing_gate.REFUND_REASONS or attempts < 1:
+            raise HTTPException(status_code=422, detail=f"operation_id, reason in {sorted(billing_gate.REFUND_REASONS)} and "
+                                                        f"render_attempts (>=1) required")
+        led = billing_gate._ledger(request)
+        if led is None:
+            return {"result": "billing_off", "billing_mode": billing_gate.billing_mode()}
+        scoped = _scoped_op_id(principal, op)
+        job = _job_store().get(_jobs.job_id_for(scoped))
+        if not job or job.get("owner") != principal.story_user_id or job.get("status") != "completed":
+            raise HTTPException(status_code=404, detail="no completed generation for that operation")
+        try:
+            result = led.refund_video(principal.story_user_id, scoped, reason, render_attempts=attempts,
+                                      client_build=str(body.get("client_build", ""))[:40])
+        except billing_gate.BillingStoreError:
+            return billing_gate.store_unavailable_response()
+        log.info("billing_video_refund", extra={"result": result, "reason": reason, "render_attempts": attempts,
+                                                "story_user_id": principal.story_user_id})
+        return {"result": result, "entitlement": led.entitlement_view(principal.story_user_id)}
+
+    # ========================================================================================================
     # CLOUD MEDIA (R2/R3) — account-owned original-media storage. ALL endpoints use require_user (auth required
     # even in dev; the legacy `dev` principal can NEVER reach these). Ownership derives from the verified
     # story_user_id — no client-supplied owner. Bytes go DIRECT to S3 via presigned URLs (never proxied through
@@ -631,6 +954,8 @@ def create_app() -> FastAPI:
                 size_bytes=body.size_bytes, content_type=body.content_type,
                 device_asset_id=body.device_asset_id, source_moment_id=body.source_moment_id,
                 media_kind=body.media_kind, source_output_id=body.source_output_id)
+        except _media.SinglePutTooLarge as e:
+            raise HTTPException(status_code=413, detail=str(e))
         except _media.MediaOwnershipConflict as e:
             raise HTTPException(status_code=409, detail=str(e))
         presign = store.presign_upload(owner=principal.story_user_id, cloud_media_id=rec["cloud_media_id"])
@@ -801,7 +1126,18 @@ def create_app() -> FastAPI:
     @app.get("/v1/evidence/{moment_id}", status_code=200)
     def evidence_get(moment_id: str, frame_extraction_version: str = "au_extract/2",
                      principal: Principal = Depends(require_user)):
-        owner = principal.story_user_id
+        out = _evidence_lookup(moment_id, frame_extraction_version, principal.story_user_id)
+        # One privacy-safe line per lookup. The access log shows 200 for a hit AND a miss, so a cache hit was
+        # never observable; this records which it was and why. No frames, URLs or user content; the Moment id is
+        # the same opaque UUID already in the request path.
+        log.info("evidence_lookup", extra={
+            "operation": "evidence_lookup", "moment_id": _evidence.canonical_moment_id(moment_id),
+            "available": bool(out.get("available")), "reason": out.get("reason"),
+            "frame_count": (out.get("manifest") or {}).get("frame_count"),
+            "frame_extraction_version": frame_extraction_version})
+        return out
+
+    def _evidence_lookup(moment_id: str, frame_extraction_version: str, owner: str) -> dict:
         store = _evidence_store()
         manifest = store.get_manifest(owner=owner, moment_id=moment_id)
         if manifest is None:
@@ -811,8 +1147,13 @@ def create_app() -> FastAPI:
         # matches the package's claimed source sha. This is what promotes a provisional claim to usable — a
         # client SHA alone never does (R1 §2). list_for_owner is a PK query (account-scoped; no cross-account).
         media_recs = _media_store().list_for_owner(owner)
+        # Moment ids are UUIDs, which are case-insensitive. The device uploads source_moment_id in Swift's
+        # UPPERCASE uuidString but requests evidence lowercase, so an exact string match never verified (every
+        # real lookup missed as source_not_verified). Compare canonically; ownership stays enforced by the
+        # account-scoped list_for_owner query and the SHA check below.
+        want_mid = _evidence.canonical_moment_id(moment_id)
         verified = next((r for r in media_recs
-                         if r.get("source_moment_id") == moment_id
+                         if _evidence.canonical_moment_id(r.get("source_moment_id") or "") == want_mid
                          and r.get("state") == _media.STATE_CLOUD_VERIFIED
                          and r.get("media_kind", "moment") == _media.MEDIA_KIND_MOMENT), None)
         if verified is None:
@@ -914,6 +1255,8 @@ def create_app() -> FastAPI:
             parts = store.list_uploaded_parts(owner=principal.story_user_id, cloud_media_id=cloud_media_id)
         except _media.MediaNotFound:
             raise HTTPException(status_code=404, detail="media not found")
+        except _media.MultipartUploadGone:
+            raise HTTPException(status_code=409, detail="multipart upload no longer exists")
         except _media.MediaVerificationError as e:
             raise HTTPException(status_code=409, detail=str(e))
         return {"uploaded_parts": parts}
@@ -953,7 +1296,9 @@ def create_app() -> FastAPI:
             "input_chars": len(body.raw_text),
         }
         try:
-            intent = engine.resolve(body.raw_text)
+            _lang = _norm_lang(body.content_language)
+            # Only pass the kwarg when a language was requested, so engines/fakes without it are untouched.
+            intent = engine.resolve(body.raw_text) if _lang is None else engine.resolve(body.raw_text, content_language=_lang)
         except StructuredOutputError as e:
             log.warning(
                 "creative_intent_structured_output_failed",
@@ -1128,6 +1473,7 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/asset-understanding", response_model=MomentUnderstandingContract, status_code=200)
     async def asset_understanding(
+        request: Request,  # injected; excluded from the OpenAPI schema (needed for the billing gate)
         meta: str = Form(..., description="JSON: {moment_id, source_capture_id?, capture_context?}"),
         frames_meta: str = Form(..., description="JSON: [{t_ms}, ...] ordered, one per frame"),
         frames: list[UploadFile] = File(..., description="exactly 24 ordered JPEG timeline frames"),
@@ -1224,7 +1570,7 @@ def create_app() -> FastAPI:
         req_meta = AURequestMeta(
             moment_id=moment_id, source_capture_id=source_capture_id, capture_context=capture_context
         )
-        try:
+        async def _analyze():
             # OFFLOAD the blocking Bedrock call off the event loop. This handler is `async def`, so calling the
             # synchronous engine.analyze() directly froze the single-worker event loop for the full ~10-14s model
             # latency — serializing EVERY request behind each AU call and timing out interactive ones (the P0
@@ -1232,7 +1578,23 @@ def create_app() -> FastAPI:
             # thread so the loop stays free for interactive requests (creative-intent et al.). The semaphore
             # bounds concurrent AU so it never occupies the whole threadpool (interactive handlers don't take it).
             async with _AU_ADMISSION:
-                au = await run_in_threadpool(engine.analyze, au_frames, req_meta)
+                return await run_in_threadpool(engine.analyze, au_frames, req_meta)
+
+        # Billing V1: server-authoritative source binding + inference idempotency (packages/billing/analysis.py). The charge
+        # and any reuse are decided from the frames the SERVER accepted (fingerprint) and the account's own cloud-verified
+        # media, never from the client-chosen moment id alone. off: this is a plain analysis. observe: shadow accounting only,
+        # always analyses. enforce: identical completed input is reused (no model call), identical in-flight input coalesces,
+        # a new source is charged once, a failed analysis releases its allowance.
+        _bill_uid = billing_gate.principal_uid(request)
+        try:
+            if _bill_uid is None:
+                au, _reused, _bresp = await _analyze(), None, None
+            else:
+                au, _reused, _bresp = await billing_gate.run_analysis(
+                    request, _bill_uid, str(moment_id), frames=[(f.t_ms, f.data) for f in au_frames],
+                    claim_sha=claimed_sha, version=f"{AU_PROMPT_VERSION}|{AU_SCHEMA_VERSION}|{AU_FRAME_POLICY}",
+                    analyze=_analyze, to_json=lambda a: a.understanding.model_dump_json(),
+                    from_json=MomentUnderstandingContract.model_validate_json)
         except AURetryableError as e:
             log.warning(
                 "asset_understanding_retryable_failure",
@@ -1243,18 +1605,26 @@ def create_app() -> FastAPI:
                 status_code=503,
                 detail="asset_understanding_unavailable: analysis failed after retry; job stays pending",
             )
-        # Frames discarded here (not persisted) — ephemeral inference input.
-        log.info(
-            "asset_understanding_resolved",
-            extra={**base_fields, "latency_ms": round((time.monotonic() - started) * 1000),
-                   "success": True, "retried": au.retried, "attempts": au.attempts,
-                   "model": au.model, "input_tokens": au.usage_input_tokens,
-                   "output_tokens": au.usage_output_tokens,
-                   "requested_model": au.requested_model, "served_provider": au.served_provider,
-                   "used_fallback": au.used_fallback,
-                   "event_count": len(au.understanding.observed.events),
-                   "story_utility": au.understanding.story_context.story_utility.value},
-        )
+        if _bresp is not None:
+            return _bresp                       # 402 (entitlement) or 503 (billing store / identical analysis still running)
+        understanding = au.understanding if au is not None else _reused
+        if au is None:
+            log.info("asset_understanding_reused",
+                     extra={**base_fields, "latency_ms": round((time.monotonic() - started) * 1000), "success": True,
+                            "reused": True, "model_called": False})
+        else:
+            # Frames discarded here (not persisted) — ephemeral inference input.
+            log.info(
+                "asset_understanding_resolved",
+                extra={**base_fields, "latency_ms": round((time.monotonic() - started) * 1000),
+                       "success": True, "retried": au.retried, "attempts": au.attempts,
+                       "model": au.model, "input_tokens": au.usage_input_tokens,
+                       "output_tokens": au.usage_output_tokens,
+                       "requested_model": au.requested_model, "served_provider": au.served_provider,
+                       "used_fallback": au.used_fallback,
+                       "event_count": len(au.understanding.observed.events),
+                       "story_utility": au.understanding.story_context.story_utility.value},
+            )
 
         # P1-F (R1): best-effort PROVISIONAL evidence persistence from the EXACT accepted frames + timestamps.
         # Gated on: (0) a SERVER env flag STORY_EVIDENCE_PERSIST_ENABLED (DEFAULT OFF) — so NO durable personal-
@@ -1295,7 +1665,7 @@ def create_app() -> FastAPI:
                         "persist_enabled": _persist_enabled,
                         "sha_claim_present": claimed_sha is not None,
                         "authed": not getattr(principal, "is_legacy", True)})
-        return au.understanding
+        return understanding
 
     @app.post("/v1/story-coverage", response_model=StoryCoverageContract, status_code=200)
     def story_coverage(
@@ -1320,9 +1690,11 @@ def create_app() -> FastAPI:
             # NEVER log: raw understanding prose / summaries. Metadata only (06/E §privacy).
         }
         try:
+            _set_cost_ctx(story_id=body.story_id)  # B0 attribution
             cov = engine.compute(CoverageInput(
                 story_id=body.story_id, creative_intent=body.creative_intent, scope=body.scope,
                 moment_understandings=body.moment_understandings, pending_count=body.pending_count,
+                content_language=_norm_lang(body.content_language),
             ))
         except CoverageUnavailableError as e:
             log.warning("story_coverage_unavailable",
@@ -1367,9 +1739,11 @@ def create_app() -> FastAPI:
                 "task": "story_guide.generate_v2", "prompt_version": "story_guide/v2",
                 "schema_version": "story_guide/2"}
         try:
+            _set_cost_ctx(story_id=body.story_id)  # B0 attribution
             guide = engine.generate(GuideInput(
                 story_id=body.story_id, creative_intent=body.creative_intent, scope=body.scope,
-                source_creative_intent_version=body.source_creative_intent_version))
+                source_creative_intent_version=body.source_creative_intent_version,
+                content_language=_norm_lang(body.content_language)))
         except GuideUnavailableError as e:
             log.warning("story_guide_v2_unavailable",
                 extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
@@ -1395,7 +1769,7 @@ def create_app() -> FastAPI:
         (retired ids never reused), and dropped uncaptured+unpinned scenes are archived (recorded).
 
         ADDITIVE/versioned. v1 generation is retired (410); v2 is the sole guide path, so refine is always
-        available (no STORY_GUIDE_V2 gate). On failure: 503, preserve the CURRENT Guide, NO fabrication —
+        available (Guide v2 is the sole path). On failure: 503, preserve the CURRENT Guide, NO fabrication —
         the client keeps the existing shooting script and retries."""
         correlation_id = str(uuid4())
         started = time.monotonic()
@@ -1403,13 +1777,15 @@ def create_app() -> FastAPI:
                 "task": "story_guide.refine_v2", "prompt_version": "story_guide/refine-v1",
                 "schema_version": "story_guide/2"}
         try:
+            _set_cost_ctx(story_id=body.story_id)  # B0 attribution
             result = engine.refine(RefineInput(
                 story_id=body.story_id, creative_intent=body.creative_intent, scope=body.scope,
                 current_framing_summary=body.current_framing_summary,
                 current_scenes=body.current_scenes,
                 captured_scene_ids=body.captured_scene_ids, pinned_scene_ids=body.pinned_scene_ids,
                 user_instruction=body.user_instruction, event_context=body.event_context,
-                source_creative_intent_version=body.source_creative_intent_version))
+                source_creative_intent_version=body.source_creative_intent_version,
+                content_language=_norm_lang(body.content_language)))
         except GuideUnavailableError as e:
             log.warning("story_guide_refine_unavailable",
                 extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
@@ -1431,30 +1807,29 @@ def create_app() -> FastAPI:
     ):
         """BOUNDED Unsplash reference-image lookup for ONE StoryGuide/2 scene (backend proxy).
 
-        FEATURE-GATED by STORY_SCENE_IMAGES (404 when off). This is NOT a public image-search proxy:
-        the query is a GENERIC scene/composition phrase (originating from our own server-authored v2
-        `visual_reference_query`) which we RE-SANITIZE and hard-bound here (length cap, control-char
-        strip, URL/email reject) so no personal data / user media can be smuggled to the provider.
+        Always available (accepted feature, no gate). This is NOT a public image-search proxy:
+        the query is a GENERIC scene/composition phrase (originating from our own server-authored
+        `visual_reference_query`) which we NORMALIZE here (control-char/punctuation/digit strip, URL and
+        email tokens removed, word cap by truncation) so no personal data / user media reaches the
+        provider — but never reject a query for its format. On a no-match we broaden (bounded).
 
         Returns METADATA ONLY (photo id, hotlinked urls.*, attribution text + utm links, and the
         download_location tracking URL). Image bytes are NEVER fetched or re-hosted — the app hotlinks
         urls.* directly. The Unsplash key stays in Secrets Manager, read in-process, never logged.
 
-        FAIL-SOFT by contract: a disabled flag -> 404; any auth/provider/rate-limit/timeout/empty-match
+        FAIL-SOFT by contract: any auth/provider/rate-limit/timeout/empty-match
         -> 200 with {image: null, status: <reason>} so the client renders a text-only card. It MUST
         NEVER 5xx or block the Guide/UI. The download_location is returned but NOT triggered here —
         the client calls /v1/scene-image/track only when a photo is actually USED (Unsplash's rule)."""
-        if not _scene_image.enabled():
-            raise HTTPException(status_code=404, detail="scene_image not enabled")
         correlation_id = str(uuid4())
         started = time.monotonic()
         base = {"operation": "scene_image", "correlation_id": correlation_id, "provider": "unsplash"}
-        # 1) sanitize/bound the query — a query error is an honest text-only fallback, not a 4xx that
-        #    would surface as an error in the UI.
-        try:
-            q = _scene_image.sanitize_query(body.query)
-        except _scene_image.SceneImageQueryError as e:
-            log.info("scene_image_query_rejected", extra={**base, "success": False, "reason": str(e)[:120]})
+        # 1) NORMALIZE the query (owner rule: never withhold a photo because of query format). URL/email
+        #    tokens are removed (privacy), punctuation/digits stripped, long phrases truncated. Only a query
+        #    with no usable words left is a text-only fallback.
+        q = _scene_image.normalize_query(body.query)
+        if q is None:
+            log.info("scene_image_query_empty", extra={**base, "success": False})
             return {"image": None, "status": "invalid_query"}
         # 2) metadata cache (bounds provider calls; costs near-zero on repeat renders/re-opens).
         cache = _scene_image_cache()
@@ -1470,7 +1845,8 @@ def create_app() -> FastAPI:
             log.warning("scene_image_auth_unavailable", extra={**base, "success": False, "error": str(e)[:160]})
             return {"image": None, "status": "unavailable"}
         try:
-            img = client.search_one(q)
+            # Broaden on no-match (bounded) so the user sees a relevant photo instead of nothing.
+            img, matched, attempts = _scene_image.search_broadening(client, q)
         except _scene_image.SceneImageAuthError as e:
             log.warning("scene_image_auth_rejected", extra={**base, "success": False, "error": str(e)[:160]})
             return {"image": None, "status": "unavailable"}
@@ -1479,12 +1855,13 @@ def create_app() -> FastAPI:
             return {"image": None, "status": "provider_error"}
         if img is None:
             cache.put(q, _scene_image.MetadataCache._MISS)
-            log.info("scene_image_no_match", extra={**base, "success": True})
+            log.info("scene_image_no_match", extra={**base, "success": True, "attempts": attempts})
             return {"image": None, "status": "no_match"}
         cache.put(q, img)
         log.info("scene_image_resolved",
                  extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
-                        "success": True, "photo_id": img.photo_id})
+                        "success": True, "photo_id": img.photo_id, "attempts": attempts,
+                        "broadened": matched != q})
         return {"image": img.to_wire(), "status": "ok"}
 
     @app.post("/v1/scene-image/track", status_code=204)
@@ -1494,9 +1871,7 @@ def create_app() -> FastAPI:
     ):
         """Fire Unsplash's download-tracking endpoint when a reference photo is actually USED/selected
         as a scene reference (Unsplash's documented requirement — NOT fired on mere display). Best-effort
-        and always 204: tracking failure must never surface to the user. Gated by STORY_SCENE_IMAGES."""
-        if not _scene_image.enabled():
-            raise HTTPException(status_code=404, detail="scene_image not enabled")
+        and always 204: tracking failure must never surface to the user."""
         loc = (body.download_location or "").strip()
         # Only ever call back to the Unsplash tracking host — never an arbitrary caller-supplied URL (SSRF guard).
         if loc.startswith("https://api.unsplash.com/"):
@@ -1505,6 +1880,73 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
         return Response(status_code=204)
+
+    @app.post("/v1/scene-video", status_code=200)
+    def scene_video(
+        body: SceneVideoRequest,
+        principal: Principal = Depends(optional_user),
+    ):
+        """BOUNDED Pixabay reference-VIDEO lookup for ONE Shooting Idea / Guide scene (Phase 1B).
+
+        GATED by STORY_REFERENCE_MEDIA_MODE=video (404 otherwise, so image mode makes ZERO video calls).
+        `query` is normalized server-side (same rules as scene-image: punctuation/digit strip, URL/email
+        tokens removed — no personal data reaches Pixabay). `technique_text` classifies the requested camera
+        technique so the selection REJECTS movement conflicts (owner §5: a drone clip for a 'hold still' shot
+        is worse than no clip). Returns metadata only; the app streams preview_url (MP4 embedding is allowed)
+        and fetches poster_url via /v1/scene-video/poster (image hotlinking is not allowed). Responses cached
+        24h (Pixabay rule). FAIL-SOFT: disabled -> 404; any auth/provider/rate-limit/no-match -> 200 with
+        {video: null, status: ...} so the client falls back to the Unsplash image, then text."""
+        if not _scene_video.enabled():
+            raise HTTPException(status_code=404, detail="scene_video not enabled (STORY_REFERENCE_MEDIA_MODE != video)")
+        correlation_id = str(uuid4())
+        started = time.monotonic()
+        base = {"operation": "scene_video", "correlation_id": correlation_id, "provider": "pixabay"}
+        if _scene_image.normalize_query(body.query) is None:
+            log.info("scene_video_query_empty", extra={**base, "success": False})
+            return {"video": None, "status": "invalid_query"}
+        try:
+            client = _scene_video_client()
+        except _scene_video.SceneVideoAuthError as e:
+            log.warning("scene_video_auth_unavailable", extra={**base, "success": False, "error": str(e)[:160]})
+            return {"video": None, "status": "unavailable"}
+        try:
+            video = _scene_video.find_reference_video(
+                client, query=body.query, technique_text=body.technique_text, cache=_scene_video_cache())
+        except _scene_video.SceneVideoAuthError as e:
+            log.warning("scene_video_auth_rejected", extra={**base, "success": False, "error": str(e)[:160]})
+            return {"video": None, "status": "unavailable"}
+        except _scene_video.SceneVideoProviderError as e:
+            log.warning("scene_video_provider_error", extra={**base, "success": False, "error": str(e)[:160]})
+            return {"video": None, "status": "provider_error"}
+        if video is None:
+            log.info("scene_video_no_match", extra={**base, "success": True})
+            return {"video": None, "status": "no_match"}
+        log.info("scene_video_resolved",
+                 extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
+                        "success": True, "video_id": video.video_id,
+                        "technique": video.matched_technique, "is_ai": video.is_ai_generated})
+        return {"video": video.to_wire(), "status": "ok"}
+
+    @app.post("/v1/scene-video/poster", status_code=200)
+    def scene_video_poster(
+        body: SceneVideoPosterRequest,
+        principal: Principal = Depends(optional_user),
+    ):
+        """Fetch ONE Pixabay poster image and return its bytes (Pixabay forbids client hotlinking of images,
+        but permits video embedding). SSRF-bounded: only https://cdn.pixabay.com is ever fetched; any other
+        URL is refused. Gated by STORY_REFERENCE_MEDIA_MODE=video. Fail-soft: a fetch failure -> 404 so the
+        card shows the video with a neutral placeholder (never blocks the UI)."""
+        if not _scene_video.enabled():
+            raise HTTPException(status_code=404, detail="scene_video not enabled")
+        url = (body.poster_url or "").strip()
+        if not _scene_video.poster_is_allowed_host(url):
+            raise HTTPException(status_code=400, detail="poster_url host not allowed")
+        try:
+            data, ctype = _scene_video.fetch_poster(url)
+        except _scene_video.SceneVideoProviderError:
+            raise HTTPException(status_code=404, detail="poster unavailable")
+        # Posters are immutable CDN assets — let the app/edge cache for a day.
+        return Response(content=data, media_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
 
     @app.post("/v1/music-direction", response_model=MusicDirectionContract, status_code=200)
     def music_direction(
@@ -1550,6 +1992,7 @@ def create_app() -> FastAPI:
                 "task": "edit_plan.generate", "schema_version": "edit_plan/2",
                 "has_music_analysis": body.music_analysis is not None, "moment_count": len(body.moments),
                 "planning_mode": "text_only"}
+        _set_cost_ctx(story_id=body.story_id)  # B0 attribution
         inputs = EditPlanInputs(
             story_id=str(body.story_id), creative_intent_id=str(body.creative_intent_id),
             creative_intent=body.creative_intent, story_guide=body.story_guide,
@@ -1753,12 +2196,6 @@ def create_app() -> FastAPI:
         ov = getattr(app.state, "_job_store_override", None)
         return ov if ov is not None else _jobs.JobStore()
 
-    def _dev_access_ok() -> bool:
-        # Adjustment 1: UUIDv5 secrecy is NOT authentication. In dev the job API is gated by an env flag so it
-        # is not open to the world; a real auth principal replaces this when auth lands. Default ON in dev.
-        import os as _os
-        return _os.environ.get("STORY_JOBS_API_ENABLED", "1") == "1"
-
     # P0 Beta Auth Increment 2: scope job identity + ownership to the authenticated principal.
     def _scoped_op_id(principal, operation_id: str) -> str:
         """Namespace the client operation_id by the trusted story_user_id BEFORE job_id_for/fingerprint, so
@@ -1774,6 +2211,20 @@ def create_app() -> FastAPI:
         and vice-versa."""
         if job.get("owner") != principal.story_user_id:
             raise HTTPException(status_code=404, detail="job not found")
+
+    def _deny_job(store, job_id: str, staging_prefix: str, category: str, detail: str) -> None:
+        """A submit was DENIED (operational quota or billing) after its job row was created. Terminalise the row so it can
+        NEVER be enqueued by the lost-enqueue reconciler and run without authorization, and drop its staged inputs. Runs in
+        every billing mode (the quota denial path predates billing). A later retry of the SAME operation id is re-opened by the
+        store (bounded) and reserved again; nothing was spent by a denied job."""
+        try:
+            store.deny(job_id, category, detail)
+        finally:
+            if staging_prefix:
+                try:
+                    store.delete_staging(staging_prefix)
+                except Exception:  # noqa: BLE001 — staging TTL/lifecycle is the backstop
+                    pass
 
     @app.post("/v1/edit-plan-jobs", status_code=202)
     async def submit_edit_plan_job(
@@ -1795,8 +2246,6 @@ def create_app() -> FastAPI:
         operation_id; a same-id DIFFERENT-payload submit is 409. Stages derived sheets to encrypted S3, then
         enqueues for the worker."""
         import json as _json
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         try:
             parsed = EditPlanRequest.model_validate_json(body)
         except Exception as e:
@@ -1855,6 +2304,8 @@ def create_app() -> FastAPI:
         body_envelope = _j2.dumps({"body": body, "sheet_order": order, "creative_brief": creative_brief,
                                     "critique_revision": bool(critique_revision), "approach": approach,
                                     "evidence_accounting": _evidence, "build_provenance": _provenance,
+                                    # API code revision that accepted the job (worker copies it to diagnostics)
+                                    "api_build_sha": _api_build_sha(),
                                     "_test_delay_s": int(test_delay_s or 0)})
         prefix = store.stage_request(jid, body_envelope, staged)
         try:
@@ -1867,8 +2318,20 @@ def create_app() -> FastAPI:
         # P0 Beta Security Phase 4: reserve the AI allowance + an active-job slot EXACTLY ONCE for a newly
         # created job (a recovered duplicate reserves nothing new — idempotent on scoped_op/job slot). In
         # enforce mode an over-quota submit is short-circuited 429 BEFORE enqueue; observe never denies.
+        # Billing V1: one video credit per NEWLY CREATED job (a recovered duplicate reserves nothing). Reserved BEFORE
+        # the operational quota so a 402 never leaves a quota hold behind. A denied job is terminalised (never left
+        # queued) so the lost-enqueue reconciler cannot later run it without a credit.
+        _bill_uid = billing_gate.principal_uid(request)
+        _bgate = None
+        if _bill_uid is not None:
+            _bgate, _bresp = billing_gate.submit_reserve_video(request, _bill_uid, scoped_op, created=created)
+            if _bresp is not None:
+                _deny_job(store, job_id, prefix, "billing_denied", "entitlement does not permit this video")
+                return _bresp
         denied = quota_gate.submit_reserve(request, principal.story_user_id, scoped_op, job_id, created=created)
         if denied is not None:
+            billing_gate.release(_bgate)
+            _deny_job(store, job_id, prefix, "quota_denied", "operational quota denied this submit")
             return denied
         if created:
             store.enqueue(job_id)
@@ -1879,8 +2342,6 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/edit-plan-jobs/{job_id}")
     def get_edit_plan_job(job_id: str, principal: Principal = Depends(optional_user)):
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         job = _job_store().get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
@@ -1893,8 +2354,6 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/edit-plan-jobs/{job_id}/cancel")
     def cancel_edit_plan_job(job_id: str, principal: Principal = Depends(optional_user)):
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         store = _job_store()
         job = store.get(job_id)
         if not job:
@@ -1907,8 +2366,6 @@ def create_app() -> FastAPI:
         """Lost-enqueue recovery sweep (concern 6). Called by a scheduled EventBridge rule in CDK; also
         callable manually in dev. Re-enqueues only never-leased stranded queued jobs, capped. Requires a
         principal (not anonymous); it re-enqueues by job_id only and discloses no job data cross-user."""
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         return {"reenqueued": _job_store().reconcile_lost_enqueue()}
 
     # ========================================================================================================
@@ -1933,8 +2390,6 @@ def create_app() -> FastAPI:
         operation_id; a same-id DIFFERENT-payload submit is 409 (payload conflict preserved). Recovers an
         existing queued/running/completed job for the SAME snapshot without launching new inference."""
         import json as _json
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         # Validate the body against the SAME frozen request model the sync endpoint uses (never reinterpret).
         try:
             parsed = StoryCoverageV2Request.model_validate_json(body)
@@ -1945,6 +2400,12 @@ def create_app() -> FastAPI:
         # Re-serialize the VALIDATED body so the fingerprint + the worker see a canonical form (and optionally
         # fold in the acceptance-only test delay). Keeps the stored body independent of client whitespace.
         canon = parsed.model_dump(mode="json")
+        # content_language is part of the request identity (it changes the output) ONLY when it is a supported,
+        # normalized value; when absent/unknown the key is dropped so the stored body — and therefore the payload
+        # fingerprint — is byte-identical to the pre-i18n shape.
+        _cl = _norm_lang(canon.pop("content_language", None))
+        if _cl is not None:
+            canon["content_language"] = _cl
         if test_delay_s and int(test_delay_s) > 0:
             canon["_test_delay_s"] = int(test_delay_s)
         body_json = _json.dumps(canon, sort_keys=True, default=str)
@@ -1967,6 +2428,7 @@ def create_app() -> FastAPI:
         # P0 Beta Security Phase 4: reserve AI allowance + active-job slot exactly once (same as edit-plan).
         denied = quota_gate.submit_reserve(request, principal.story_user_id, scoped_op, job_id, created=created)
         if denied is not None:
+            _deny_job(store, job_id, staging_prefix, "quota_denied", "operational quota denied this submit")
             return denied
         if created:
             store.enqueue(job_id)
@@ -1980,8 +2442,6 @@ def create_app() -> FastAPI:
         """Durable status. Polling NEVER triggers inference — it only reads DynamoDB. On completion returns the
         StoryCoverage/2 result AND the operation_id, so the client can reject a result that is stale for the
         CURRENT Story (safeguard 4: input-freshness is enforced client-side against the live fingerprint)."""
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         job = _job_store().get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
@@ -2001,8 +2461,6 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/story-coverage/v2/jobs/{job_id}/cancel")
     def cancel_coverage_job(job_id: str, principal: Principal = Depends(optional_user)):
-        if not _dev_access_ok():
-            raise HTTPException(status_code=404, detail="not found")
         store = _job_store()
         job = store.get(job_id)
         if not job:
@@ -2027,6 +2485,7 @@ def create_app() -> FastAPI:
         base = {"operation": "music_plan", "correlation_id": correlation_id,
                 "task": "music_plan.generate", "schema_version": "music_plan/1",
                 "target_s": body.target_duration_seconds}
+        _set_cost_ctx(story_id=body.story_id)  # B0 attribution
         inputs = MusicPlanInputs(
             story_id=str(body.story_id),
             creative_intent=body.creative_intent,
@@ -2083,7 +2542,8 @@ def create_app() -> FastAPI:
             recommendation = engine.recommend(DurationPlannerInputs(
                 creative_intent=ci, evidence=evidence,
                 story_guide=body.story_guide, story_coverage=body.story_coverage,
-                requested_scope=body.requested_scope))
+                requested_scope=body.requested_scope,
+                content_language=_norm_lang(body.content_language)))
         except (StructuredOutputError, ProviderError) as e:
             error = str(e)[:300]
             log.warning("duration_recommendation_unavailable", extra={**base, "success": False, "error": error})
@@ -2282,11 +2742,13 @@ def create_app() -> FastAPI:
                 "task": "story_coverage.v2", "schema_version": "story_coverage/2",
                 "moment_count": len(body.moment_understandings), "pending_count": body.pending_count}
         try:
+            _set_cost_ctx(story_id=body.story_id)  # B0 attribution
             cov = engine.compute(CoverageV2Input(
                 story_id=body.story_id, story_guide=body.story_guide,
                 story_guide_version=body.story_guide_version, creative_intent=body.creative_intent,
                 scope=body.scope, moment_understandings=body.moment_understandings,
-                pending_count=body.pending_count))
+                pending_count=body.pending_count,
+                content_language=_norm_lang(body.content_language)))
         except CoverageV2UnavailableError as e:
             log.warning("story_coverage_v2_unavailable",
                 extra={**base, "latency_ms": round((time.monotonic() - started) * 1000),
@@ -2340,8 +2802,14 @@ def create_app() -> FastAPI:
         cid = str(uuid4())
         started = time.monotonic()
         try:
-            out = engine.initialize(body.creative_intent, body.scene_understanding,
-                                    body.capture_constraints, body.selected_opportunity)
+            _lang = _norm_lang(body.content_language)
+            if _lang is None:
+                out = engine.initialize(body.creative_intent, body.scene_understanding,
+                                        body.capture_constraints, body.selected_opportunity)
+            else:
+                out = engine.initialize(body.creative_intent, body.scene_understanding,
+                                        body.capture_constraints, body.selected_opportunity,
+                                        content_language=_lang)
         except StructuredOutputError as e:
             _director_fail("initialize", e, started, cid, "structured_output_failed")
         except ProviderError as e:
@@ -2359,7 +2827,8 @@ def create_app() -> FastAPI:
         cid = str(uuid4())
         started = time.monotonic()
         try:
-            out = engine.next(body.prior)
+            _lang = _norm_lang(body.content_language)
+            out = engine.next(body.prior) if _lang is None else engine.next(body.prior, content_language=_lang)
         except StructuredOutputError as e:
             _director_fail("next", e, started, cid, "structured_output_failed")
         except ProviderError as e:

@@ -15,6 +15,9 @@ struct CreateStoryPreviewView: View {
     @Environment(\.modelContext) private var context
     @State private var cloudGate = CloudAuthGateModel()
     @Environment(AuthStore.self) private var auth
+    @Environment(BillingStore.self) private var billing
+    /// Billing V2 preflight: the server will refuse a new video, so show the upgrade screen before any preparation.
+    @State private var preflightDenial: BillingDenial?
     @Bindable var story: StoryModel
     @Environment(\.dismiss) private var dismiss
     /// When set, this host launches a CREATE ANOTHER VERSION from that parent (Explore + Customize), not a
@@ -117,6 +120,12 @@ struct CreateStoryPreviewView: View {
     private func promptDuration() {
         recommendingDuration = true
         Task {
+            // Billing V2 preflight (create AND create-another-version both come through here): a Free starter with no video
+            // left goes straight to the upgrade screen instead of Customize -> music -> generation -> 402.
+            if let denial = await billing.videoPreflightDenial() {
+                await MainActor.run { recommendingDuration = false; preflightDenial = denial }
+                return
+            }
             let payload = EditPlanRequestBuilder.momentsPayload(for: story, context: context)
             let rec: DurationRecommendation? = await {
                 guard let p = payload else { return nil }
@@ -139,6 +148,7 @@ struct CreateStoryPreviewView: View {
     private func acceptDuration(_ seconds: Double) {
         durationRec = nil
         story.intentTargetDurationSeconds = (seconds * 10).rounded() / 10
+        story.durationChoiceExplicit = nil   // legacy sheet: provenance unknown -> inferred on reopen
         try? context.save()
         beginMusicFlow()
     }
@@ -151,9 +161,11 @@ struct CreateStoryPreviewView: View {
     /// or navigation keeps what the user typed.
     private func acceptCustomize(seconds: Double, sound: SoundPreference, mode: String, approach: EditingApproach,
                                  directives: ResolvedDirectives?, soft: String, chipIds: [UUID],
-                                 music: ParsedMusicIntent) {
+                                 music: ParsedMusicIntent, sequence: MomentSequence,
+                                 durationChoice: CustomizeYourStoryView.DurationChoice) {
         durationRec = nil
         story.intentTargetDurationSeconds = (seconds * 10).rounded() / 10
+        story.durationChoiceExplicit = durationChoice.wire   // Recommended pick vs typed Custom length
         story.soundPreferenceExplicit = sound.rawValue   // explicit choice; never overwritten by inference
         story.editorialMode = mode                        // highlights|full|custom -> edit-plan request breadth
         story.editingApproachExplicit = approach.rawValue // storytelling|visual_first -> planning path
@@ -162,6 +174,11 @@ struct CreateStoryPreviewView: View {
         // the factual Story description (intentText). Beat-sync lives INSIDE `soft` (edit-planner only) — it is
         // intentionally not routed to music, so matching cuts to the music never changes the soundtrack (§1).
         story.creativeDirectivesJSON = directives?.toWireJSON()
+        // Customize UX v2: persist the arranged storyboard sequence (ordered ids + policy). Its inclusion +
+        // relative order already rode into creativeDirectivesJSON above (must_include + order_after); this
+        // additionally preserves the POLICY so a Policy-B run can restrict the planner's moments[]. An inactive
+        // sequence serializes nil -> cleared (full AI freedom), never silently retained.
+        story.momentSequenceJSON = sequence.toJSON()
         let trimmedSoft = soft.trimmingCharacters(in: .whitespacesAndNewlines)
         story.creativeDirectionText = trimmedSoft.isEmpty ? nil : trimmedSoft
         try? context.save()
@@ -176,9 +193,7 @@ struct CreateStoryPreviewView: View {
                 let existing = coord.direction(for: story.id)?.moodTags ?? []
                 // Surface only a MATERIAL conflict (the requested moods are not already covered).
                 if !Set(pref.moodTags).isSubset(of: Set(existing)) {
-                    musicConflictMessage = "You asked for “\(pref.phrase)” music, but this Story already has a "
-                        + "music feel you set earlier. I kept your earlier choice. Change it from the music "
-                        + "controls if you want “\(pref.phrase)” instead."
+                    musicConflictMessage = L10n.t("You asked for “\(pref.phrase)” music, but this Story already has a music feel you set earlier. I kept your earlier choice. Change it from the music controls if you want “\(pref.phrase)” instead.")
                 }
                 // else: compatible — nothing to do, the authored direction already covers it.
             } else {
@@ -234,18 +249,19 @@ struct CreateStoryPreviewView: View {
                                            story: StoryModel) -> String {
         let numbering = StoryMomentNumbering(story: story.moments)
         func nums(_ ids: [UUID]) -> String {
-            ids.compactMap { numbering.number(forId: $0) }.sorted().map { "Moment \($0)" }.joined(separator: ", ")
+            ids.compactMap { numbering.number(forId: $0) }.sorted().map { L10n.momentInSentence($0) }
+                .joined(separator: L10n.current == .zhHans ? "、" : ", ")
         }
         if !e.ineligibleNeedsAU.isEmpty {
             let who = nums(e.ineligibleNeedsAU)
-            return "\(who) \(e.ineligibleNeedsAU.count == 1 ? "is" : "are") still being analyzed. "
-                 + "Give it a moment, then create your Story — your instruction is saved."
+            return e.ineligibleNeedsAU.count == 1
+                ? L10n.t("\(who) is still being analyzed. Give it a moment, then create your Story — your instruction is saved.")
+                : L10n.t("\(who) are still being analyzed. Give them a moment, then create your Story — your instruction is saved.")
         }
         if !e.ineligibleUnknown.isEmpty {
-            return "A Moment your instruction refers to isn't available on this device. "
-                 + "Edit your instruction, or wait for it to finish syncing."
+            return L10n.t("A Moment your instruction refers to isn't available on this device. Edit your instruction, or wait for it to finish syncing.")
         }
-        return "Some referenced Moments aren't ready yet. Please try again in a moment."
+        return L10n.t("Some referenced Moments aren't ready yet. Please try again in a moment.")
     }
 
     /// Restore (R6) only the cloud-only Moments this Story's PERSISTED directives reference, on demand, before
@@ -435,6 +451,14 @@ struct CreateStoryPreviewView: View {
         // view, and a nested navigationDestination set from onAppear / after a sheet dismissal fires
         // unreliably on a pushed view (it silently dropped the Creating push, so the edit-plan job was never
         // submitted). A cover is reliable regardless of nav-stack timing.
+        .sheet(item: $preflightDenial, onDismiss: {
+            // Subscribed from the upgrade sheet -> continue the create; otherwise back to the Story (never a blank host).
+            if billing.entitlement?.videoPreflightDenial == nil && billing.entitlement?.isUnlimited == true {
+                promptDuration()
+            } else {
+                userBackedOut = true
+            }
+        }) { denial in PlusSubscriptionView(denial: denial) }
         .fullScreenCover(isPresented: $showCreating) {
             StoryCreatingView(story: story, preresolvedMusic: chosenMusic, musicIsPreresolved: true,
                               sourceVersion: recreateSource,
@@ -465,27 +489,25 @@ struct CreateStoryPreviewView: View {
                     desiredFeeling: story.intentDesiredFeeling, styleTags: story.intentStyleTags),
                 initialExplicitSound: SoundPreference(rawValue: story.soundPreferenceExplicit ?? ""),
                 initialEditingApproach: story.effectiveEditingApproach,
-                visualFirstAvailable: StoryMultimodalPlanning.enabled,
+                visualFirstAvailable: true,
                 numbering: StoryMomentNumbering(story: story.moments),
                 momentForId: { id in story.moments.first { $0.id == id } },
                 initialCreativeDirection: story.creativeDirectionText ?? "",
-                // Seed ONLY must_include as visual chips. Chips are an INCLUDE-only control
-                // (CustomizeYourStoryView maps every chip to slot .include), so folding opening/ending/exclude
-                // ids in here silently DOWNGRADES them to must_include on every round-trip through this sheet —
-                // the opening directive was being destroyed, which is why "Start with Moment N" never moved the
-                // clip to the front. opening/ending survive via the typed creativeDirectionText above, not chips.
-                initialReferenceChipIds: ResolvedDirectives.fromWireJSON(story.creativeDirectivesJSON)
-                    .map { $0.mustInclude } ?? [],
+                // Customize UX v2: the Moment-chip list is gone — Moments are chosen ONLY in the Arrange sheet,
+                // so nothing is seeded as chips (re-listing the previous version's Moments here was the bug).
+                // opening/ending still survive via the typed creativeDirectionText above.
+                initialReferenceChipIds: [],
                 // Issue 1: prefill the Story's existing length so re-opening Customize shows the prior choice
                 // (explicit custom seconds or the editorial mode) instead of silently resetting.
                 initialExplicitTargetSeconds: story.intentTargetDurationSeconds,
                 initialEditorialMode: story.editorialMode,
-                // Part B: surface ALL persisted structural directives (opening/adjacency/order/include/exclude)
-                // so the user can see + clear them, not just the must_include chips + soft text.
-                initialSavedDirectives: ResolvedDirectives.fromWireJSON(story.creativeDirectivesJSON),
-                onCreate: { seconds, sound, mode, approach, directives, soft, chipIds, music in
+                initialDurationChoice: story.durationChoiceExplicit,
+                // The arranged storyboard (ordered ids + policy) round-trips from its own persisted field.
+                initialMomentSequence: MomentSequence.fromJSON(story.momentSequenceJSON),
+                onCreate: { seconds, sound, mode, approach, directives, soft, chipIds, music, sequence, choice in
                     acceptCustomize(seconds: seconds, sound: sound, mode: mode, approach: approach,
-                                    directives: directives, soft: soft, chipIds: chipIds, music: music) },
+                                    directives: directives, soft: soft, chipIds: chipIds, music: music,
+                                    sequence: sequence, durationChoice: choice) },
                 onCancel: { durationRec = nil; userBackedOut = true })
                 .presentationDetents([.large])
                 // Force a FRESH view identity each time the sheet opens. CustomizeYourStoryView seeds its

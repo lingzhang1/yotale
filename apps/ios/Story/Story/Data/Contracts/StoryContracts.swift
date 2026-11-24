@@ -305,10 +305,16 @@ struct DirectorOutputDTO: Codable, Equatable {
     /// candidates[0] == decision. NOT persisted into StoryPlan, NOT extra required
     /// captures — the user captures at most one. Defaults to [] when the server omits it.
     var candidates: [DirectorDecisionDTO] = []
+    /// Phase 1A (story_director.envelope/2): server-minted shot id (lowercase UUID string) -> a
+    /// Director-written, server-sanitized GENERIC stock-photo query for that shot. Instructional UI only
+    /// (one optional reference photo per Shooting Idea). Empty when the server omits it (older backend /
+    /// model chose none) => text-only card.
+    var shotReferenceQueries: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
         case concept, plan, decision, candidates
         case directorState = "director_state"
+        case shotReferenceQueries = "shot_reference_queries"
     }
 
     init(from decoder: Decoder) throws {
@@ -318,14 +324,27 @@ struct DirectorOutputDTO: Codable, Equatable {
         directorState = try c.decode(DirectorStateDTO.self, forKey: .directorState)
         decision = try c.decode(DirectorDecisionDTO.self, forKey: .decision)
         candidates = try c.decodeIfPresent([DirectorDecisionDTO].self, forKey: .candidates) ?? []
+        // Fail-soft: a malformed map never fails the Director decode — it just means no photos.
+        shotReferenceQueries = (try? c.decodeIfPresent([String: String].self, forKey: .shotReferenceQueries))
+            .flatMap { $0 } ?? [:]
     }
 
     init(concept: StoryConceptContractDTO, plan: StoryPlanContractDTO,
          directorState: DirectorStateDTO, decision: DirectorDecisionDTO,
-         candidates: [DirectorDecisionDTO] = []) {
+         candidates: [DirectorDecisionDTO] = [], shotReferenceQueries: [String: String] = [:]) {
         self.concept = concept; self.plan = plan
         self.directorState = directorState; self.decision = decision
         self.candidates = candidates
+        self.shotReferenceQueries = shotReferenceQueries
+    }
+
+    /// The Director's reference query for one shot, or nil (=> text-only). Server ids are lowercase
+    /// UUID strings; Swift's `uuidString` is uppercase, so compare case-insensitively.
+    func referenceQuery(for shotId: UUID) -> String? {
+        let q = shotReferenceQueries[shotId.uuidString.lowercased()]
+            ?? shotReferenceQueries[shotId.uuidString]
+        guard let q, !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return q
     }
 }
 
@@ -617,6 +636,53 @@ struct SceneImageDTO: Codable, Equatable {
 /// Envelope for /v1/scene-image: {image: SceneImageDTO?, status: "ok"|"no_match"|...}.
 struct SceneImageResponseDTO: Codable, Equatable {
     let image: SceneImageDTO?
+    let status: String
+}
+
+/// Metadata-only reference VIDEO (Phase 1B, from the backend /v1/scene-video proxy — Pixabay).
+/// `previewURL` is a cdn.pixabay.com MP4 the app streams DIRECTLY in AVPlayer (Pixabay permits video
+/// embedding). `posterURL` is a cdn.pixabay.com image that must NOT be hotlinked — the app loads it via
+/// the backend poster endpoint (SceneVideoService.posterRequestURL). Attribution is mandatory to show.
+struct SceneVideoDTO: Codable, Equatable {
+    let provider: String
+    let videoId: String
+    let previewURL: String
+    let posterURL: String
+    let sourceURL: String
+    let attributionText: String
+    let contributor: String
+    let tags: [String]
+    let duration: Int?
+    let width: Int?
+    let height: Int?
+    let aspectRatio: String?
+    let isAiGenerated: Bool?
+    let matchedQuery: String?
+    let matchedTechnique: String?
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case videoId = "video_id"
+        case previewURL = "preview_url"
+        case posterURL = "poster_url"
+        case sourceURL = "source_url"
+        case attributionText = "attribution_text"
+        case contributor, tags, duration, width, height
+        case aspectRatio = "aspect_ratio"
+        case isAiGenerated = "is_ai_generated"
+        case matchedQuery = "matched_query"
+        case matchedTechnique = "matched_technique"
+    }
+
+    /// Aspect ratio for AVPlayer layout; falls back to 16:9 when unknown so the player never collapses.
+    var aspect: CGFloat {
+        if let w = width, let h = height, w > 0, h > 0 { return CGFloat(w) / CGFloat(h) }
+        return 16.0 / 9.0
+    }
+}
+
+/// Envelope for /v1/scene-video: {video: SceneVideoDTO?, status: "ok"|"no_match"|...}.
+struct SceneVideoResponseDTO: Codable, Equatable {
+    let video: SceneVideoDTO?
     let status: String
 }
 

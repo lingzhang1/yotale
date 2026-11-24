@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from language_policy import apply_language_suffix
 from model_gateway import ModelGateway, StructuredRequest
 
 PROMPT_VERSION = "duration_recommendation/1"
@@ -145,6 +146,7 @@ class DurationPlannerInputs:
     story_guide: dict = field(default_factory=dict)
     story_coverage: dict = field(default_factory=dict)
     requested_scope: str | None = None  # 'highlights' | 'complete' | None
+    content_language: str | None = None  # 'en' | 'zh-Hans' | None (None => prompt unchanged)
 
 
 @runtime_checkable
@@ -170,7 +172,7 @@ def _build_user(inputs: DurationPlannerInputs) -> str:
     return (
         "Recommend a target duration for THIS Story from the material and intent below. "
         "There is NO universal duration — scale to scope and evidence. Never exceed the feasible ceiling.\n\n"
-        + json.dumps(payload, indent=2)
+        + json.dumps(payload, indent=2, ensure_ascii=False)
         + "\n\nReturn ONLY the recommendation via the tool."
     )
 
@@ -200,7 +202,8 @@ class RealDurationPlannerEngine:
 
     def recommend(self, inputs: DurationPlannerInputs) -> dict:
         req = StructuredRequest(
-            task=TASK, schema=SCHEMA, prompt_version=PROMPT_VERSION, system=self._system,
+            task=TASK, schema=SCHEMA, prompt_version=PROMPT_VERSION,
+            system=apply_language_suffix(self._system, inputs.content_language),
             user_content=_build_user(inputs), max_repair_attempts=2,
             max_tokens=self._max_tokens, temperature=0.0,
         )

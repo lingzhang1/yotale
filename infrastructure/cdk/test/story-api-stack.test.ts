@@ -1,6 +1,8 @@
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import { StoryApiStack } from "../lib/story-api-stack";
+import * as fs from "fs";
+import * as path from "path";
 
 function synth(): Template {
   const app = new cdk.App();
@@ -109,10 +111,10 @@ describe("StoryApiStack (Milestone A)", () => {
     // (main + DLQ), the worker (+ the S3 auto-delete helper), the staging bucket, an SQS event source,
     // and the reconcile rule. API Gateway / Cognito / Fargate remain forbidden (separate tests below).
     // R2/R3 (owner-approved) adds the media ownership table -> 2 DynamoDB tables total.
-    template.resourceCountIs("AWS::DynamoDB::Table", 5);  // jobs + media + R7 stories + R7-E understanding + P0-P3 rate-limits
+    template.resourceCountIs("AWS::DynamoDB::Table", 6);  // jobs + media + R7 stories + R7-E understanding + P0-P3 rate-limits + account-deletions (D2)
     template.resourceCountIs("AWS::SQS::Queue", 2);          // jobs + DLQ
     template.resourceCountIs("AWS::Lambda::EventSourceMapping", 1);
-    template.resourceCountIs("AWS::Events::Rule", 1);         // reconcile tick
+    template.resourceCountIs("AWS::Events::Rule", 2);         // reconcile tick + account-deletion schedule (D2)
     // At least the worker Lambda + the staging bucket exist.
     const all = template.toJSON().Resources as Record<string, { Type: string }>;
     const types = Object.values(all).map((r) => r.Type);
@@ -281,39 +283,93 @@ describe("StoryApiStack (Milestone A)", () => {
     expect(actions.some((a) => a.toLowerCase().includes("delete"))).toBe(false);
   });
 
-  test("EditPlan v2 flags: absent by default, present for development+beta with -c editplanV2=true, never elsewhere", () => {
+  test("P1-G0: removed release switches are absent in every env; planner version only via explicit rollback", () => {
     const workerVars = (t: Template) => {
       const fns = Object.values(t.findResources("AWS::Lambda::Function")) as any[];
       const w = fns.find((f) => String(f.Properties?.FunctionName || "").endsWith("edit-plan-worker"));
       return (w?.Properties?.Environment?.Variables) || {};
     };
-    const V2 = ["STORY_EDITPLAN_OBJECTIVE_DIRECTIVES", "STORY_EDITPLAN_BEST_VALID_RETENTION",
-                "STORY_EDITPLAN_APPROX_DURATION_SOFT"];
+    const serviceVars = (t: Template) => {
+      const svc = Object.values(t.findResources("AWS::AppRunner::Service")) as any[];
+      const out: Record<string, string> = {};
+      for (const e of svc[0].Properties.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables)
+        out[e.Name] = e.Value;
+      return out;
+    };
+    const REMOVED = [
+      "STORY_EDITPLAN_OBJECTIVE_DIRECTIVES", "STORY_EDITPLAN_BEST_VALID_RETENTION",
+      "STORY_EDITPLAN_APPROX_DURATION_SOFT", "STORY_EDITPLAN_EXCLUDE_DEFAULT_CREATIVE",
+      "STORY_GUIDE_V2", "STORY_SCENE_IMAGES", "STORY_JOBS_API_ENABLED", "STORY_LLM_FALLBACK_MODEL",
+      "STORY_MODEL_PROVIDER", "STORY_REUSABLE_EVIDENCE",
+    ];
+    // STORY_EDIT_PLAN_VERSION is NOT a removed switch: it is the ONE manifest-driven pin (see (c) below).
+    const committed = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "..", "release", "release.json"), "utf8"));
+    const committedPin = (env: string): string | undefined =>
+      Object.prototype.hasOwnProperty.call(committed.planner.environment_overrides ?? {}, env)
+        ? committed.planner.environment_overrides[env] : (committed.planner.emergency_override ?? undefined);
+    const synth = (environment: string, ctx: Record<string, unknown>) => Template.fromStack(
+      new StoryApiStack(new cdk.App({ context: ctx }), `story-${environment}-api`, {
+        environment, env: { account: "123456789012", region: "us-east-1" } }));
 
-    // (a) default test stack: no v2 flags at all.
-    for (const k of V2) expect(workerVars(template)[k]).toBeUndefined();
+    // (a) default test stack AND development: none of the removed switches, on API or worker. The planner pin is
+    //     whatever the COMMITTED manifest declares for that environment (a time-boxed dev evaluation, else nothing).
+    for (const [t, env] of [[template, "test"], [synth("development", {}), "development"]] as const) {
+      for (const k of REMOVED) {
+        expect(workerVars(t)[k]).toBeUndefined();
+        expect(serviceVars(t)[k]).toBeUndefined();
+      }
+      expect(workerVars(t)["STORY_EDIT_PLAN_VERSION"]).toBe(committedPin(env));
+      expect(serviceVars(t)["STORY_EDIT_PLAN_VERSION"]).toBe(committedPin(env));
+    }
+    // (b) obsolete context keys are inert: passing them must NOT reintroduce a variable.
+    const legacy = synth("development", { editplanV2: "true", editplanV2Flags: "1", guideV2: "1",
+                                          sceneImages: "1", modelProvider: "bedrock" });
+    for (const k of REMOVED) {
+      expect(workerVars(legacy)[k]).toBeUndefined();
+      expect(serviceVars(legacy)[k]).toBeUndefined();
+    }
+    // (c) the ONE planner control is release/release.json: planner.environment_overrides.<env> pins ONE environment,
+    //     planner.emergency_override pins all. Test seam: `releaseManifestForTest` replaces the parsed file; `null`
+    //     for plannerEmergencyOverride forces "no override". API and worker always agree.
+    // Non-dev environments REQUIRE explicit release inputs (context), or synthesis fails by design.
+    const releaseCtx = (environment: string): Record<string, unknown> => environment === "beta" ? {
+      imageDigest: "sha256:" + "0".repeat(64), cognitoUserPoolId: "us-east-1_TESTPOOL0",
+      cognitoAppClientId: "testclient0000000000000000",
+    } : {};
+    const stack = (environment: string, extra: Record<string, unknown>) => Template.fromStack(new StoryApiStack(
+      new cdk.App({ context: releaseCtx(environment) }), `story-${environment}-api`, {
+        environment, env: { account: "123456789012", region: "us-east-1" },
+        ...(environment === "beta" ? { enableObservability: true, alarmDestination: "alerts@example.com" } : {}),
+        ...extra } as any));
+    const manifest = (planner: Record<string, unknown>) => ({ planner: { version: "5.3", emergency_override: null, ...planner } });
+    const both = (t: Template) => [workerVars(t)["STORY_EDIT_PLAN_VERSION"], serviceVars(t)["STORY_EDIT_PLAN_VERSION"]];
 
-    // (b) development + flag => all four enabled; EXCLUDE_DEFAULT_CREATIVE stays OFF (fail-safe).
-    const devApp = new cdk.App({ context: { editplanV2: "true" } });
-    const devTpl = Template.fromStack(new StoryApiStack(devApp, "story-development-api", {
-      environment: "development", env: { account: "123456789012", region: "us-east-1" } }));
-    const dv = workerVars(devTpl);
-    for (const k of V2) expect(dv[k]).toBe("1");
-    expect(dv["STORY_EDITPLAN_EXCLUDE_DEFAULT_CREATIVE"]).toBeUndefined();
-
-    // (b2) beta enablement (owner-approved 2026-10-22) is wired by the SAME gate — (development || beta) AND
-    // the context flag — and is verified authoritatively by `cdk synth story-beta-api -c editplanV2=true`
-    // in the deploy pipeline (the CLI context path). The direct-construct test harness does not reliably
-    // reproduce app-context for a second stack in the same process, so the environment matrix is asserted via
-    // the dev (present) and test (absent) cases here; the beta branch is covered by the synth check at deploy.
-
-    // (c) a non-development/non-beta env (here 'test') with the context flag set must still get NONE of the
-    // v2 flags — the gate is (development || beta) AND the context flag.
-    const testApp = new cdk.App({ context: { editplanV2: "true" } });
-    const testTpl = Template.fromStack(new StoryApiStack(testApp, "story-test-api", {
-      environment: "test", env: { account: "123456789012", region: "us-east-1" } }));
-    const tv = workerVars(testTpl);
-    for (const k of V2) expect(tv[k]).toBeUndefined();
+    // the prop seam (old behavior) still reaches API and worker identically
+    expect(both(stack("development", { plannerEmergencyOverride: "5.2" }))).toEqual(["5.2", "5.2"]);
+    // a per-environment entry pins ONLY that environment
+    const devOnly = manifest({ environment_overrides: { development: "5.5" } });
+    expect(both(stack("development", { releaseManifestForTest: devOnly }))).toEqual(["5.5", "5.5"]);
+    expect(both(stack("beta", { releaseManifestForTest: devOnly }))).toEqual([undefined, undefined]);
+    expect(both(stack("test", { releaseManifestForTest: devOnly }))).toEqual([undefined, undefined]);
+    // the global emergency_override still reaches every environment
+    const global = manifest({ emergency_override: "5.2" });
+    expect(both(stack("development", { releaseManifestForTest: global }))).toEqual(["5.2", "5.2"]);
+    expect(both(stack("beta", { releaseManifestForTest: global }))).toEqual(["5.2", "5.2"]);
+    // a per-environment entry wins over the global one for its environment only
+    const mixed = manifest({ emergency_override: "5.2", environment_overrides: { development: "5.5" } });
+    expect(both(stack("development", { releaseManifestForTest: mixed }))).toEqual(["5.5", "5.5"]);
+    expect(both(stack("beta", { releaseManifestForTest: mixed }))).toEqual(["5.2", "5.2"]);
+    // a null per-environment entry explicitly clears the global pin for that environment
+    const cleared = manifest({ emergency_override: "5.2", environment_overrides: { development: null } });
+    expect(both(stack("development", { releaseManifestForTest: cleared }))).toEqual([undefined, undefined]);
+    // the committed manifest never pins gamma or production; beta carries only the time-boxed reviewed pin (if any)
+    expect(committedPin("gamma")).toBeUndefined();
+    expect(committedPin("production")).toBeUndefined();
+    expect(both(stack("beta", {}))).toEqual([committedPin("beta"), committedPin("beta")]);
+    // the old command-line context is no longer an input: it must NOT pin a version
+    const ctxOnly = synth("test", { editPlanVersion: "5.2" });
+    expect(workerVars(ctxOnly)["STORY_EDIT_PLAN_VERSION"]).toBeUndefined();
+    expect(serviceVars(ctxOnly)["STORY_EDIT_PLAN_VERSION"]).toBeUndefined();
   });
 });
 
@@ -353,10 +409,10 @@ describe("P0 Beta Observability construct", () => {
     t.resourceCountIs("AWS::Budgets::Budget", 0);
   });
 
-  test("enabled: 4 dashboards, 10 alarms, 1 SNS topic", () => {
+  test("enabled: 4 dashboards, 15 alarms, 1 SNS topic", () => {
     const t = synthWith({ environment: "test", observability: "true" });
     t.resourceCountIs("AWS::CloudWatch::Dashboard", 4);
-    t.resourceCountIs("AWS::CloudWatch::Alarm", 10);
+    t.resourceCountIs("AWS::CloudWatch::Alarm", 15);   // 10 observability + 5 account deletion (D2)
     t.resourceCountIs("AWS::SNS::Topic", 1);
     // Every alarm wires an SNS action (no silent alarm).
     const alarms = t.findResources("AWS::CloudWatch::Alarm");
@@ -520,5 +576,123 @@ describe("P0 Beta Observability construct", () => {
   test("explicit allowNoObservability=true opt-out is honored (intentional teardown only)", () => {
     const t = synthWith({ environment: "beta", observability: "false", allowNoObservability: "true" });
     t.resourceCountIs("AWS::SNS::Topic", 0);
+  });
+});
+
+
+describe("P1-G0 per-environment operational policy defaults (defined once, in CDK)", () => {
+  const release = {
+    imageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    cognitoUserPoolId: "us-east-1_TESTPOOL0",
+    cognitoAppClientId: "testclient0000000000000000",
+    allowNoObservability: "true",
+  };
+  function serviceVars(environment: string, ctx: Record<string, unknown> = {}): Record<string, string> {
+    const app = new cdk.App({ context: { ...release, ...ctx } });
+    const t = Template.fromStack(new StoryApiStack(app, `story-${environment}-api`, {
+      environment, env: { account: "123456789012", region: "us-east-1" } }));
+    const svc = Object.values(t.findResources("AWS::AppRunner::Service")) as any[];
+    const out: Record<string, string> = {};
+    for (const e of svc[0].Properties.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables)
+      out[e.Name] = e.Value;
+    return out;
+  }
+  const savedEnv = { ...process.env };
+  beforeEach(() => {
+    for (const k of Object.keys(process.env)) if (k.startsWith("STORY_QUOTA_") || k === "STORY_THROTTLE_MODE") delete process.env[k];
+  });
+  afterAll(() => { process.env = savedEnv; });
+
+  test("beta enforces quota+throttle with the existing $50/user limit WITHOUT any shell/workflow env", () => {
+    const v = serviceVars("beta");
+    expect(v.STORY_QUOTA_MODE).toBe("enforce");
+    expect(v.STORY_THROTTLE_MODE).toBe("enforce");
+    expect(v.STORY_QUOTA_USER_MONTHLY_USD).toBe("50");
+    expect(v.STORY_QUOTA_USER_DAILY_GENS).toBe("500");
+    expect(v.STORY_QUOTA_GLOBAL_MONTHLY_USD).toBe("60");
+    expect(v.STORY_REQUIRE_AUTH).toBe("1");
+  });
+  describe("Billing V1 posture (STORY_BILLING_MODE)", () => {
+    function workerEnv(environment: string, manifest?: any): Record<string, string> {
+      const app = new cdk.App({ context: { ...release } });
+      const t = Template.fromStack(new StoryApiStack(app, `story-${environment}-api`, {
+        environment, env: { account: "123456789012", region: "us-east-1" },
+        ...(manifest ? { releaseManifestForTest: manifest } : {}) }));
+      const fns = Object.values(t.findResources("AWS::Lambda::Function")) as any[];
+      const w = fns.find((f) => f.Properties?.Environment?.Variables?.STORY_JOBS_QUEUE_URL !== undefined);
+      return w.Properties.Environment.Variables;
+    }
+    const committed = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "..", "release", "release.json"), "utf8"));
+    const withMode = (env: string, mode: unknown) => ({
+      ...committed, environments: { ...committed.environments, [env]: { ...committed.environments[env], billing_mode: mode } } });
+
+    test("committed posture: beta observe, others off, none enforce without approval; API and worker carry exactly it", () => {
+      const want: Record<string, string> = { development: "off", beta: "observe", gamma: "off", production: "off" };
+      for (const e of Object.keys(want)) {
+        expect(committed.environments[e].billing_mode).toBe(want[e]);
+        expect(workerEnv(e).STORY_BILLING_MODE).toBe(want[e]);
+        if (committed.environments[e].billing_mode === "enforce") {
+          expect((committed.approved_overrides ?? []).some((o: any) =>
+            o.setting === "STORY_BILLING_MODE" && o.env === e && String(o.value) === "enforce")).toBe(true);
+        }
+      }
+      expect(serviceVars("beta").STORY_BILLING_MODE).toBe("observe");
+      expect(serviceVars("development").STORY_BILLING_MODE).toBe("off");
+    });
+    test("the manifest is the only source: observe in the manifest reaches API and worker identically", () => {
+      const m = withMode("development", "observe");
+      expect(workerEnv("development", m).STORY_BILLING_MODE).toBe("observe");
+    });
+    test("an unset manifest value means off, an INVALID one fails the synth (never silently disabled)", () => {
+      const unset = { ...committed, environments: { ...committed.environments, development: { ...committed.environments.development } } };
+      delete unset.environments.development.billing_mode;
+      expect(workerEnv("development", unset).STORY_BILLING_MODE).toBe("off");
+      for (const bad of ["enforced", "ON", "true", "", 1]) {
+        expect(() => workerEnv("development", withMode("development", bad))).toThrow(/billing_mode.*invalid/);
+      }
+    });
+    test("no shell variable or CDK context can change the posture", () => {
+      process.env.STORY_BILLING_MODE = "enforce";
+      const app = new cdk.App({ context: { ...release, billingMode: "enforce", STORY_BILLING_MODE: "enforce" } });
+      const t = Template.fromStack(new StoryApiStack(app, "story-beta-api", {
+        environment: "beta", env: { account: "123456789012", region: "us-east-1" } }));
+      const svc = Object.values(t.findResources("AWS::AppRunner::Service")) as any[];
+      const vars = Object.fromEntries(svc[0].Properties.SourceConfiguration.ImageRepository.ImageConfiguration
+        .RuntimeEnvironmentVariables.map((e: any) => [e.Name, e.Value]));
+      expect(vars.STORY_BILLING_MODE).toBe("observe");
+      delete process.env.STORY_BILLING_MODE;
+    });
+    test("no STORY_BILLING_PLANS_JSON is ever emitted", () => {
+      expect(serviceVars("beta").STORY_BILLING_PLANS_JSON).toBeUndefined();
+      expect(workerEnv("beta").STORY_BILLING_PLANS_JSON).toBeUndefined();
+    });
+  });
+
+  test("development stays observe / auth optional / $8", () => {
+    const v = serviceVars("development");
+    expect(v.STORY_QUOTA_MODE).toBe("observe");
+    expect(v.STORY_THROTTLE_MODE).toBe("observe");
+    expect(v.STORY_QUOTA_USER_MONTHLY_USD).toBe("8");
+    expect(v.STORY_REQUIRE_AUTH).toBe("0");
+  });
+  test("gamma/production default to enforce + auth required (no invented limits)", () => {
+    for (const e of ["gamma", "production"]) {
+      const v = serviceVars(e);
+      expect(v.STORY_QUOTA_MODE).toBe("enforce");
+      expect(v.STORY_THROTTLE_MODE).toBe("enforce");
+      expect(v.STORY_REQUIRE_AUTH).toBe("1");
+    }
+  });
+  test("neither a shell variable nor a CDK context can relax beta (no override input exists)", () => {
+    process.env.STORY_QUOTA_MODE = "observe";
+    process.env.STORY_THROTTLE_MODE = "observe";
+    const v = serviceVars("beta", { quotaMode: "observe", throttleMode: "observe" });
+    expect(v.STORY_QUOTA_MODE).toBe("enforce");
+    expect(v.STORY_THROTTLE_MODE).toBe("enforce");
+  });
+  test("evidence persistence kill-switch defaults ON for development+beta; OFF only by explicit context", () => {
+    expect(serviceVars("beta").STORY_EVIDENCE_PERSIST_ENABLED).toBe("1");
+    expect(serviceVars("development").STORY_EVIDENCE_PERSIST_ENABLED).toBe("1");
+    expect(serviceVars("beta", { evidencePersist: "0" }).STORY_EVIDENCE_PERSIST_ENABLED).toBe("0");
   });
 });

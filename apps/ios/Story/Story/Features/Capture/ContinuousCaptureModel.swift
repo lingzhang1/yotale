@@ -9,7 +9,13 @@ import CoreLocation
 /// device-acceptance concern, not a unit test).
 enum CameraZoomFormat {
     static func label(_ z: Double) -> String {
-        if z < 1 { return String(format: ".%d", Int((z * 10).rounded())) }
+        // Below 1× the label is tenths with a leading dot (.5, .6). A value that ROUNDS to ten tenths
+        // (0.95..<1) is 1, never ".10" (seen on device while dragging through 1×).
+        if z < 1 {
+            let tenths = Int((z * 10).rounded())
+            if tenths >= 10 { return "1" }
+            return String(format: ".%d", max(tenths, 1))
+        }
         if z == z.rounded() { return "\(Int(z))" }
         return String(format: "%.1f", z)
     }
@@ -17,7 +23,7 @@ enum CameraZoomFormat {
     /// The live magnification shown on the ACTIVE zoom chip: "2.7×" style (one decimal + ×), "1×"/"2×"
     /// when sitting on/near an integer, ".5×" sub-1×. Separate from `label` (plain preset text).
     static func liveLabel(_ z: Double) -> String {
-        if z < 1 { return label(z) + "×" }
+        if z < 1 && (z * 10).rounded() < 10 { return label(z) + "×" }
         if abs(z - z.rounded()) < 0.05 { return "\(Int(z.rounded()))×" }
         return String(format: "%.1f×", z)
     }
@@ -114,11 +120,48 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         case ideas                    // one or more shot ideas available (and shown)
         case failed(String)           // AI failed/throttled — recording still works
     }
-    @Published var aiState: AIState = .off
+    @Published var aiState: AIState = .off {
+        didSet { syncInteractiveHold() }
+    }
+    /// Held while the scan + Director are in flight so background AU / upload jobs don't share the uplink.
+    private var interactiveHold: UUID?
+    private func syncInteractiveHold() {
+        let waiting = aiState == .scanning || aiState == .thinking
+        if waiting, interactiveHold == nil {
+            interactiveHold = InteractiveAIHold.begin()
+        } else if !waiting, let hold = interactiveHold {
+            interactiveHold = nil
+            InteractiveAIHold.end(hold)
+        }
+    }
     @Published var ideaIndex = 0                       // which cached idea is shown (preserved)
     @Published var ideasCollapsed = false              // full card hidden but ideas retained (chip reopens)
     @Published var recordingElapsed: TimeInterval = 0  // live REC timer (Phase 2)
     @Published var scanProgress: Double = 0            // 0→1 across the scan window (determinate bar)
+
+    // MARK: - Phase 1A: optional Unsplash reference image for the CURRENT shot idea.
+    //
+    // The image NEVER blocks the idea card (owner §8): the text card shows immediately; the photo is
+    // fetched asynchronously and only appears if a confident, grounded match is found. Guarantees:
+    //   * At most ONE image per idea. `imagesByIdeaKey` memoizes the resolved result (DTO or a cached
+    //     "no image") per (generation, ideaIndex) so SwiftUI re-renders and zoom changes never re-search.
+    //   * Stale responses are dropped: a loader tagged with an older `aiGeneration`/index can never set
+    //     `currentIdeaImage`, so a previous idea's photo can't appear on a new idea.
+    //   * A dismissed/collapsed card is never reopened by a late image (we only publish into state; the
+    //     card's visibility is driven solely by `aiState`/`ideasCollapsed`).
+    /// The resolved reference image for the idea currently shown (nil = text-only / still loading).
+    @Published var currentIdeaImage: SceneImageDTO?
+    /// Memoized per-idea results so we fetch at most once per idea and never re-search on re-render/zoom.
+    /// Key = "<generation>#<ideaIndex>"; value nil means "resolved: no image" (distinct from not-fetched).
+    private var imagesByIdeaKey: [String: SceneImageDTO?] = [:]
+    private let sceneImageService: SceneImageFetching = SceneImageService()
+
+    // Phase 1B — reference VIDEO for the current idea (Pixabay), shown only in video mode. Same guarantees
+    // as the image path (one per idea, memoized, stale-dropped). In image mode this stays nil and no video
+    // request is made. The card prefers a video when present, else the image, else text.
+    @Published var currentIdeaVideo: SceneVideoDTO?
+    private var videosByIdeaKey: [String: SceneVideoDTO?] = [:]
+    private let sceneVideoService: SceneVideoFetching = SceneVideoService()
 
     // Camera controls (Package B Increment 1) — thin passthroughs to the shared controller. The
     // controller owns all device config (serialized + lock-guarded); the model only mirrors UI state.
@@ -136,25 +179,68 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
 
     /// Tap-to-focus at a view point (from the tap gesture). Also shows a brief focus reticle (UI state).
     func focusAndExpose(atViewPoint point: CGPoint) {
+        noteInteraction()
         controller?.focusAndExpose(atViewPoint: point)
     }
     /// Snap to a zoom preset (preset button).
     func setZoomPreset(_ userZoom: Double) {
-        currentUserZoom = userZoom
-        controller?.setUserZoom(userZoom)
+        noteInteraction()
+        zoomDrag = nil
+        setDisplayZoom(userZoom)
     }
-    /// Continuous absolute zoom from the thumb-dial (maps dial position → a user-× value). Reuses the
-    /// same clamped device setter as the presets; the controller reports the real value back via .zoomChanged.
+    /// Continuous absolute zoom (displayed ×). The controller clamps it and is the authority; the readout
+    /// shows the CLAMPED value immediately, and the device's report confirms it via .zoomChanged.
     func setDialZoom(_ userZoom: Double) {
-        currentUserZoom = userZoom
-        controller?.setUserZoom(userZoom)
+        setDisplayZoom(userZoom)
     }
-    /// The device's continuous user-× zoom range (for the dial extents). [1,1] until ready.
+    private func setDisplayZoom(_ userZoom: Double) {
+        guard let controller else { return }
+        controller.setUserZoom(userZoom)
+        currentUserZoom = controller.currentDisplayZoom
+    }
+    /// The device's continuous displayed zoom range (for the dial extents). [1,1] until ready.
     var userZoomRange: ClosedRange<Double> { controller?.userZoomRange ?? 1...1 }
-    /// Continuous pinch zoom. `base` is captured at gesture start from the controller.
-    func pinchZoom(scale: CGFloat, base: CGFloat) {
-        controller?.applyPinchZoom(scale: scale, base: base)
+
+    /// Thumb-dial drag. The FIRST update of a drag snapshots the controller's authoritative zoom and the
+    /// finger offset at that moment; every update after is relative to that snapshot, so a drag continues
+    /// from the current zoom (no jump to the dial minimum, no carry-over from a previous drag). The
+    /// snapshot lives on this reference type, not in SwiftUI @State, so it is readable right after it is set.
+    func dialDragChanged(move: Double) {
+        guard let controller else { return }
+        if zoomDrag == nil {
+            noteInteraction()
+            zoomDrag = ZoomDragSession(startZoom: controller.currentDisplayZoom, startMove: move,
+                                       range: controller.userZoomRange)
+        }
+        guard let drag = zoomDrag else { return }
+        setDisplayZoom(drag.zoom(forMove: move))
     }
+    func dialDragEnded() {
+        zoomDrag = nil
+        noteInteraction()
+    }
+    /// Current drag snapshot (tests / diagnostics).
+    private(set) var zoomDrag: ZoomDragSession?
+
+    /// Continuous pinch zoom. `base` is captured at gesture start from the controller's authoritative zoom.
+    func pinchZoom(scale: CGFloat, base: CGFloat) {
+        noteInteraction()
+        zoomDrag = nil   // a pinch takes over; the next dial drag re-snapshots from the pinched value
+        controller?.applyPinchZoom(scale: scale, base: base)
+        if let controller { currentUserZoom = controller.currentDisplayZoom }
+    }
+
+    // Screen awake (P0 camera): the capture screen keeps the display on while recording, and for a short
+    // idle window while framing. Released on close; suspended automatically while backgrounded.
+    private lazy var screenAwake = CaptureScreenAwake()
+    func screenAppeared() { screenAwake.appear() }
+    func screenDisappeared() {
+        zoomDrag = nil
+        screenAwake.disappear()
+    }
+    /// Any user action on the capture screen.
+    func noteInteraction() { screenAwake.interaction() }
+
     /// The controller's current raw zoom factor (gesture start reads this).
     var currentRawZoom: CGFloat { controller?.currentZoomFactor ?? 1.0 }
     /// Toggle the torch.
@@ -173,6 +259,8 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     /// Flip front/rear (UI gates this out of recording). Resets zoom to 1× on the new camera.
     func switchCamera() {
         guard !isRecording else { return }
+        noteInteraction()
+        zoomDrag = nil
         controller?.switchCamera()
     }
     /// Manual exposure bias from the slider.
@@ -186,6 +274,9 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     }
 
     private(set) var ideas: [DirectorDecisionDTO] = []
+    /// Billing V2 AI-idea meter: set when the server refused an idea (402). The camera keeps recording; the failure note
+    /// offers YoTale Plus instead of a plain "Try again" (a retry cannot succeed until the allowance changes).
+    @Published private(set) var ideaDenial: BillingDenial?
     private(set) var ideasOutput: DirectorOutputDTO?   // for concept/shot lookups
     private var recordingTimer: Timer?
     private var recordingStartedAt: Date?
@@ -239,9 +330,13 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         guard !seedConsumed, seededIdea != nil else { return }
         seedConsumed = true
         aiState = .ideas
+        loadReferenceMediaForCurrentIdea()   // optional photo/video for the seeded guide idea (non-blocking)
     }
 
-    func toggleRecording() { controller?.toggleRecording() }
+    func toggleRecording() {
+        noteInteraction()
+        controller?.toggleRecording()
+    }
 
     /// Whether we hold a shot idea that can be reopened without a new scan (drives the chip):
     /// either live cached Director ideas OR an instant seeded guide idea.
@@ -251,6 +346,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     /// (no inference). Otherwise start a fresh scene scan on the LIVE session (does not stop any
     /// in-progress recording), then run the Director.
     func getAIShotIdeaTapped() {
+        noteInteraction()
         if hasCachedIdeas {
             reopenIdeas()
             return
@@ -274,6 +370,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     func nextIdea() {
         guard !ideas.isEmpty else { return }
         ideaIndex = (ideaIndex + 1) % ideas.count
+        loadReferenceMediaForCurrentIdea()   // load/reuse this idea's media; clears the previous one
     }
 
     /// Dismiss the overlay. If ideas are cached, this COLLAPSES (keeps them for the chip); if a
@@ -306,7 +403,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
 
     var currentIdeaTitle: String {
         if let s = seededIdea, ideas.isEmpty { return s.title }
-        return ideasOutput?.concept.title ?? "Shot idea"
+        return ideasOutput?.concept.title ?? L10n.t("Shot idea")
     }
     var currentIdeaBody: String {
         if let s = seededIdea, ideas.isEmpty { return s.body }
@@ -321,6 +418,119 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
     }
     var ideaCount: Int { ideas.count }
 
+    // MARK: - Phase 1A reference-image loading (non-blocking, one per idea)
+
+    /// A stable key for the idea currently shown, scoped to the live generation so a Rescan (new
+    /// generation) never reuses a prior idea's memoized image.
+    private var currentIdeaKey: String { "\(aiGeneration)#\(ideaIndex)" }
+
+    /// The generic stock-photo query for the CURRENT idea (nil => text-only, no search).
+    /// Source: the Director's own per-shot `visual_reference_query` (story_director/v2), written in the
+    /// SAME call that produced the idea (no extra inference) and sanitized server-side; the
+    /// /v1/scene-image proxy re-sanitizes it again. There is deliberately NO client-side keyword
+    /// fallback: device testing showed keyword heuristics pick background nouns ("city lights" ->
+    /// street) and an irrelevant photo is worse than none (owner §6). A seeded guide idea carries no
+    /// Director shot, so it stays text-only.
+    private func currentReferenceQuery() -> String? {
+        if seededIdea != nil, ideas.isEmpty { return nil }
+        guard ideaIndex < ideas.count, let shotId = ideas[ideaIndex].shot?.id else { return nil }
+        return ideasOutput?.referenceQuery(for: shotId)
+    }
+
+    /// Load (or reuse) the reference image for the CURRENTLY shown idea. Idempotent per idea; safe to
+    /// call on every "idea shown" transition. Does NOT block the card. A stale generation/index result
+    /// is dropped and never published. Called after the idea text is already on screen.
+    func loadReferenceImageForCurrentIdea() {
+        let key = currentIdeaKey
+        // Already resolved for this idea (incl. a cached "no image")? Publish memoized, no network.
+        if let memo = imagesByIdeaKey[key] {
+            currentIdeaImage = memo
+            return
+        }
+        // Not fetched yet: clear any previous idea's image immediately so it can't linger on this idea.
+        currentIdeaImage = nil
+        guard let query = currentReferenceQuery() else {
+            imagesByIdeaKey[key] = nil      // no grounded signal -> resolved "no image" (never a placeholder)
+            return
+        }
+        let gen = aiGeneration
+        let idx = ideaIndex
+        Task { [weak self] in
+            guard let self else { return }
+            let dto = await self.sceneImageService.fetch(query: query)
+            await MainActor.run {
+                // Drop a stale response: the shown idea moved on (Rescan / Next idea / dismiss).
+                guard gen == self.aiGeneration, idx == self.ideaIndex else { return }
+                self.imagesByIdeaKey["\(gen)#\(idx)"] = dto
+                self.currentIdeaImage = dto
+            }
+        }
+    }
+
+    /// Fire the Unsplash download-tracking endpoint when the user actually USES a reference (opens the
+    /// expanded "See framing" view), per Unsplash's rule — never on mere display. Best-effort.
+    func trackReferenceUsed() {
+        guard let loc = currentIdeaImage?.downloadLocation, !loc.isEmpty else { return }
+        Task { [weak self] in await self?.sceneImageService.track(downloadLocation: loc) }
+    }
+
+    // MARK: - Phase 1B reference-video loading (video mode only; mirrors the image path)
+
+    /// The shot's generic framing/camera-motion/instruction text, used by the backend ONLY to classify the
+    /// requested camera technique (no PII, no new model call). nil for a seeded guide idea (no Director shot).
+    private func currentTechniqueText() -> String? {
+        guard ideaIndex < ideas.count, let shot = ideas[ideaIndex].shot else { return nil }
+        return [shot.framing, shot.cameraMotion, shot.instruction].compactMap { $0 }
+            .joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Load (or reuse) the reference VIDEO for the current idea. No-op in image mode. Same memoize +
+    /// stale-drop guarantees as the image loader; the card shows video text immediately and the poster/clip
+    /// appear only if a confident match is found, else it falls back to the image path.
+    func loadReferenceVideoForCurrentIdea() {
+        guard StoryGuideFeatures.referenceVideoEnabled else { currentIdeaVideo = nil; return }
+        let key = currentIdeaKey
+        if let memo = videosByIdeaKey[key] { currentIdeaVideo = memo; return }
+        currentIdeaVideo = nil
+        guard let query = currentReferenceQuery() else { videosByIdeaKey[key] = nil; return }
+        let technique = currentTechniqueText()
+        let gen = aiGeneration
+        let idx = ideaIndex
+        Task { [weak self] in
+            guard let self else { return }
+            let dto = await self.sceneVideoService.fetch(query: query, technique: technique)
+            await MainActor.run {
+                guard gen == self.aiGeneration, idx == self.ideaIndex else { return }   // drop stale
+                self.videosByIdeaKey["\(gen)#\(idx)"] = dto
+                self.currentIdeaVideo = dto
+            }
+        }
+    }
+
+    /// Load the reference MEDIA for the current idea per the active mode: in video mode, fetch the video
+    /// (and still fetch the image as the fallback); in image mode, image only. One call per "idea shown".
+    func loadReferenceMediaForCurrentIdea() {
+        loadReferenceImageForCurrentIdea()      // always: the image is the video's fallback
+        if StoryGuideFeatures.referenceVideoEnabled { loadReferenceVideoForCurrentIdea() }
+    }
+
+    /// Load the current idea video's poster BYTES via the backend (Pixabay forbids image hotlinking).
+    /// Returns nil -> the player shows a neutral placeholder. Best-effort, never throws.
+    func loadIdeaVideoPoster() async -> Data? {
+        guard let video = currentIdeaVideo, !video.posterURL.isEmpty else { return nil }
+        let url = sceneVideoService.posterRequestURL()
+        guard let body = sceneVideoService.posterBody(for: video.posterURL) else { return nil }
+        var req = URLRequest(url: url)
+        StoryBackend.authorize(&req)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 6
+        req.httpBody = body
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty else { return nil }
+        return data
+    }
+
     /// A compact one-line reminder of the active idea, for the minimized recording state.
     var currentIdeaReminder: String? {
         if let s = seededIdea, ideas.isEmpty { return s.title.isEmpty ? nil : s.title }
@@ -333,10 +543,13 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         aiGeneration &+= 1
         let gen = aiGeneration
         ideas = []; ideasOutput = nil; ideaIndex = 0
+        ideaDenial = nil
         seededIdea = nil            // Rescan replaces the seeded guide idea with live, scene-specific ideas
+        currentIdeaImage = nil      // drop any shown photo; new generation key means no stale reuse
+        currentIdeaVideo = nil      // Phase 1B: drop any shown video too
         scanProgress = 0
         aiState = .scanning
-        guard let controller else { aiState = .failed("Camera unavailable."); return }
+        guard let controller else { aiState = .failed(L10n.t("Camera unavailable.")); return }
         controller.startScan(progress: { [weak self] p in
             Task { @MainActor in
                 guard let self, gen == self.aiGeneration, self.aiState == .scanning else { return }
@@ -365,7 +578,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
         guard gen == aiGeneration else { return }                 // stale — drop silently
         guard let captureContext else { aiState = .off; return }
         guard !frames.isEmpty else {
-            if gen == aiGeneration { aiState = .failed("Couldn't read the scene. Try again.") }
+            if gen == aiGeneration { aiState = .failed(L10n.t("Couldn't read the scene. Try again.")) }
             return
         }
         do {
@@ -377,25 +590,32 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
                 creativeIntent: captureContext.directorIntent(),
                 sceneUnderstanding: su,
                 targetDurationSeconds: captureContext.targetDurationSeconds,
-                selectedOpportunity: nil)
+                selectedOpportunity: nil,
+                contentLanguage: ContentLanguageResolver.requestValue(for: captureContext))
             // The user may have started recording or dismissed while we were thinking — if so,
             // this response is stale and must NOT reopen an overlay (Phase 2).
             guard gen == aiGeneration else { return }
             let candidates = out.candidates.isEmpty ? [out.decision] : out.candidates
             let shots = candidates.filter { $0.action == .captureShot || $0.action == .retryShot }
             if shots.isEmpty {
-                aiState = .failed("No strong shot here. Try moving or scanning again.")
+                aiState = .failed(L10n.t("No strong shot here. Try moving or scanning again."))
             } else {
                 ideas = shots
                 ideasOutput = out
                 ideaIndex = 0
                 ideasCollapsed = false
                 aiState = .ideas
+                loadReferenceMediaForCurrentIdea()   // async photo/video for idea 0; never blocks the card
             }
+        } catch StoryDirectorServiceError.entitlementDenied(let denial) {
+            // Billing V2: the Free starter's AI ideas are spent. Recording is untouched; offer the upgrade.
+            guard gen == aiGeneration else { return }
+            ideaDenial = denial
+            aiState = .failed(denial.message)
         } catch {
             // AI failure / quota exhaustion must NOT disable recording — just report, if still current.
             guard gen == aiGeneration else { return }
-            aiState = .failed("AI ideas are unavailable right now.")
+            aiState = .failed(L10n.t("AI ideas are unavailable right now."))
         }
     }
 
@@ -411,6 +631,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
             break
         case .recordingStarted:
             isRecording = true
+            screenAwake.recordingChanged(true)
             // Phase 1+2: starting a recording cancels any IN-FLIGHT scan/inference (bump the
             // generation so a late Director response can't replace newer ideas or reopen the
             // overlay), and COLLAPSES the full idea card — but PRESERVES cached ideas + the
@@ -430,29 +651,36 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
             startRecordingTimer()
         case .recordingFinished(let url, let duration, let capturedAt, let fix):
             isRecording = false
+            screenAwake.recordingChanged(false)
             stopRecordingTimer()
             persist(tempURL: url, duration: duration, capturedAt: capturedAt, location: fix)
         case .captureFailed(let message):
             isRecording = false
+            screenAwake.recordingChanged(false)
             stopRecordingTimer()
             errorMessage = message
             showError = true
         case .interrupted:
             isRecording = false
+            screenAwake.recordingChanged(false)
             stopRecordingTimer()
         case .presetsReady(let presets):
             // The strip now renders from the model's OWN published copy (not a lazy controller read),
             // so it appears on OPEN instead of only after the first tap forces a re-render.
             publishedZoomPresets = presets
         case .zoomChanged(let userZoom):
-            // Live magnification from pinch or a preset tap — drives the active-chip value + highlight.
-            currentUserZoom = userZoom
+            // Live magnification from pinch, dial or a chip. The controller's authoritative target wins over a
+            // report that arrives late from an earlier request (fast drags), so the readout never steps back.
+            currentUserZoom = controller?.currentDisplayZoom ?? userZoom
         case .aeafLockChanged(let locked):
             isAEAFLocked = locked
+        case .stabilizationChanged:
+            break   // the active mode is logged by the controller (category "camera"); no on-screen readout
         case .cameraPositionChanged(let front):
             isFrontCamera = front
-            // A swap resets zoom to 1× and clears torch (front has none); reflect it.
-            currentUserZoom = 1.0
+            // A swap opens the new camera at displayed 1× (or its nearest reachable zoom); the controller
+            // reports the actual value via .zoomChanged. Any in-progress dial drag ends with the old camera.
+            zoomDrag = nil
             if front { torchOn = false }
             exposureBias = 0
         }
@@ -564,7 +792,7 @@ final class ContinuousCaptureModel: ObservableObject, ContinuousCameraController
             inFlightURLs.remove(key)
             isSaving = !inFlightURLs.isEmpty
             try? FileManager.default.removeItem(at: tempURL)
-            errorMessage = "That clip couldn't be saved. Please try again."
+            errorMessage = L10n.t("That clip couldn't be saved. Please try again.")
             showError = true
         }
     }

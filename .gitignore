@@ -1,8 +1,14 @@
-# === Nested existing repos — tracked in their own repos, not here ===
-/specs/
-/prototypes/
+# === Consolidated subtrees (merged into this repo with full history) ===
+# specs/ (yotale-specs) and prototypes/story-figma (yotale-figma) now live here.
+# Keep other prototype scratch and legacy nested-repo dirs ignored.
+/prototypes/*
+!/prototypes/story-figma/
 /StorySpecs/
 /demos/
+
+# figma subtree: ignore its node_modules/build artifacts
+/prototypes/story-figma/node_modules/
+/prototypes/story-figma/dist/
 
 # === OS ===
 .DS_Store
@@ -101,3 +107,6 @@ scripts/.yotale_beta_allowlist
 
 # Live-eval dataset — raw personal footage (faces/children/homes/travel), LOCAL ONLY, never committed.
 evals/dataset/
+
+# build-time code revision stamp (written into the API image / worker asset only)
+/BUILD_SHA

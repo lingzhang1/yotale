@@ -58,11 +58,11 @@ struct StoriesListView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(story.title.displayTitle).font(StoryTheme.display(15))
                         .foregroundStyle(StoryTheme.cream.opacity(0.8))
-                    Text("\(story.status == .completed ? "Completed · " : "")\(story.moments.count) moment\(story.moments.count == 1 ? "" : "s")")
+                    Text(story.status == .completed ? L10n.t("Completed · \(story.moments.count) moments") : L10n.t("\(story.moments.count) moments"))
                         .font(StoryTheme.body(11)).foregroundStyle(StoryTheme.cream.opacity(0.3))
                 }
                 Spacer()
-                Text(story.status == .completed ? "View →" : "Open →")
+                Text(story.status == .completed ? L10n.t("View →") : L10n.t("Open →"))
                     .font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.3))
             }
             .padding(.horizontal, 14).padding(.top, 11).padding(.bottom, 13)

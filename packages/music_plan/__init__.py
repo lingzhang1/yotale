@@ -39,6 +39,7 @@ from contracts.schemas.ai_contracts import (
     SoundtrackRole,
     TrackSelectionCriteria,
 )
+from language_policy import contains_han
 from model_gateway import ModelGateway, StructuredRequest, StructuredOutputError
 from pydantic import ValidationError
 
@@ -150,9 +151,27 @@ def _build_user(inputs: MusicPlanInputs) -> str:
         "a quiet->build->climax. Respect native audio.\n"
         + pref_line
         + "\nINPUT:\n"
-        + json.dumps(payload, indent=2)
+        + json.dumps(payload, indent=2, ensure_ascii=False)
         + "\n\nReturn ONLY the MusicPlan via the tool."
     )
+
+
+# The MusicPlan is NOT user-facing text: mood_tags / track_selection_criteria are music-catalog SEARCH vocabulary
+# (matched against an English provider taxonomy) and the rest is internal planning prose. If the Story's own text
+# (CreativeIntent / Guide / Coverage) is Chinese, keep that vocabulary English so ranking is not silently broken.
+_ENGLISH_VOCAB_CLAUSE = (
+    "VOCABULARY (runtime directive): the Story input may contain Chinese text. Keep `mood_tags`, "
+    "`track_selection_criteria` and every enum value in short ENGLISH music-catalog vocabulary — never Chinese. "
+    "Keep all JSON keys exactly as specified."
+)
+
+
+def _system_for(system: str, inputs: "MusicPlanInputs") -> str:
+    """`system` unchanged (byte-identical) unless the Story input carries Han characters."""
+    import json
+    blob = json.dumps([inputs.creative_intent, inputs.music_direction, inputs.story_guide, inputs.story_coverage],
+                      ensure_ascii=False, default=str)
+    return system + "\n\n" + _ENGLISH_VOCAB_CLAUSE if contains_han(blob) else system
 
 
 def _sound_pref_directive(pref: str | None) -> str:
@@ -269,7 +288,7 @@ class RealMusicPlanEngine:
 
     def generate(self, inputs: MusicPlanInputs) -> MusicPlanContract:
         req = StructuredRequest(
-            task=TASK, schema=SCHEMA, prompt_version=PROMPT_VERSION, system=self._system,
+            task=TASK, schema=SCHEMA, prompt_version=PROMPT_VERSION, system=_system_for(self._system, inputs),
             user_content=_build_user(inputs), max_repair_attempts=2,
             max_tokens=self._max_tokens, temperature=0.0,
         )

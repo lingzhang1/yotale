@@ -28,8 +28,12 @@
     <string>$(STORY_ENV_DOMAIN_PREFIX)</string>
     <key>StoryEnvRedirectURI</key>
     <string>$(STORY_ENV_REDIRECT_URI)</string>
+    <!-- P1-G0: federated sign-in providers are BAKED per build configuration (xcconfig), never an Xcode Run
+         argument or UserDefaults value. Comma-separated Cognito provider names; anything unknown is ignored. -->
+    <key>StoryFederatedProviders</key>
+    <string>$(STORY_FEDERATED_PROVIDERS)</string>
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>Story can tag the Moments you record with where you captured them, so your travel memories remember the place. Location is optional and never added to the videos you share.</string>
+    <string>YoTale can tag the Moments you record with where you captured them, so your travel memories remember the place. Location is optional. It is saved with each Moment and attached to the copy saved to your Photos library.</string>
     <key>UIAppFonts</key>
     <array>
         <string>Fraunces.ttf</string>
@@ -38,6 +42,14 @@
         <string>DMSans-Italic.ttf</string>
     </array>
     <!-- P0 Beta Auth Increment 4: custom-scheme redirect for the Cognito OAuth (Sign in with Apple) callback. -->
+    <!-- AU background continuity: the ONE BGContinuedProcessingTask identifier (iOS 26+, user-initiated imports
+         only). Must equal AUContinuedProcessing.identifier = <bundle id>.au.import. No UIBackgroundModes entry. -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>$(PRODUCT_BUNDLE_IDENTIFIER).au.import</string>
+        <!-- Photo import copy phase (PhotoImportRunner.identifier), iOS 26+ continued processing. -->
+        <string>$(PRODUCT_BUNDLE_IDENTIFIER).photo.import</string>
+    </array>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

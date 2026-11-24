@@ -51,6 +51,9 @@ CLASS_POLICIES: dict[str, ClassPolicy] = {
     # Safe: metadata writes/reads/polling/presign/download. Fail OPEN on store outage.
     "writes":         ClassPolicy(expensive=False, default_per_min=60, env_key="STORY_THROTTLE_WRITES_PER_MIN"),
     "presign":        ClassPolicy(expensive=False, default_per_min=30, env_key="STORY_THROTTLE_PRESIGN_PER_MIN"),
+    # Account deletion request (design 5.3): low limit. Not "expensive" (that marks PAID AI classes the quota gate
+    # covers), so a limiter-store outage fails open; the fresh sign-in and typed confirmation still apply.
+    "account_deletion": ClassPolicy(expensive=False, default_per_min=3, env_key="STORY_THROTTLE_ACCOUNT_DELETION_PER_MIN"),
     "read":           ClassPolicy(expensive=False, default_per_min=120, env_key="STORY_THROTTLE_READ_PER_MIN"),
 }
 
@@ -81,6 +84,9 @@ ROUTE_CLASS: dict[tuple[str, str], str] = {
     # --- scene_image: paid Unsplash reference-image proxy (bounded; fail-soft) ---
     ("POST", "/v1/scene-image"): "music_provider",
     ("POST", "/v1/scene-image/track"): "read",  # cheap fire-and-forget download beacon
+    # --- scene_video: paid Pixabay reference-video provider (Phase 1B; bounded; fail-soft) ---
+    ("POST", "/v1/scene-video"): "music_provider",
+    ("POST", "/v1/scene-video/poster"): "read",  # cheap bounded poster byte fetch (compliance, not hotlinked)
     # --- ai_job_submit: async AI submissions ---
     ("POST", "/v1/edit-plan-jobs"): "ai_job_submit",
     ("POST", "/v1/story-coverage/v2/jobs"): "ai_job_submit",
@@ -100,6 +106,18 @@ ROUTE_CLASS: dict[tuple[str, str], str] = {
     ("POST", "/v1/media/{cloud_media_id}/multipart/complete"): "presign",
     # --- read / poll: reads, polling, media download, batch-get, cancel/reconcile (cheap) ---
     ("GET", "/v1/me"): "read",
+    ("GET", "/v1/billing/entitlement"): "read",       # Billing V1: authoritative entitlement read model
+    ("POST", "/v1/billing/video-refund"): "writes",   # Billing V1: controlled one-credit refund claim (capped, audited)
+    ("POST", "/v1/billing/transactions"): "writes",   # Billing V1 B2: StoreKit transaction submit (verified server-side)
+    # Apple webhook: unauthenticated by design (signature-verified), so there is no principal to throttle per user; the
+    # classification only satisfies the route-coverage test. Abuse control is the WAF rate rule on this one path.
+    ("POST", "/v1/billing/apple-notifications"): "read",
+    # Account deletion (design 5.3). The status route is PUBLIC (no principal to throttle per user, like the Apple
+    # webhook): its abuse control is the 256-bit receipt secret plus the WAF rate rule where a WAF exists.
+    ("POST", "/v1/account/deletion"): "account_deletion",
+    ("GET", "/v1/account/deletion"): "read",
+    ("POST", "/v1/account/deletion/status"): "read",
+    ("POST", "/v1/auth/apple-signin-notifications"): "read",   # public, Apple-signed (D7)
     ("GET", "/v1/stories"): "read",
     ("GET", "/v1/stories/{story_id}"): "read",
     ("GET", "/v1/media"): "read",
@@ -271,7 +289,8 @@ async def throttle_middleware(request: Request, call_next):
             return JSONResponse(status_code=429,
                                 headers={"Retry-After": str(decision.retry_after)},
                                 content={"error": "rate_limited", "class": cls,
-                                         "retry_after_seconds": decision.retry_after})
+                                         "retry_after_seconds": decision.retry_after,
+                                         "busy": True, "reason": "rate_limited"})   # Billing V2: retryable busy
         # Observe mode: record what WOULD have been blocked, but let it through.
         _metric(request, "WouldThrottle", cls)
         return await call_next(request)

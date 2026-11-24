@@ -47,9 +47,10 @@ struct SceneScanFlowView: View {
     @State private var state: FlowState = .intro
     @State private var showCamera = false
     @State private var lastScanToRecommendationMs: Int?
-    @State private var planningLine = "Looking at your scene…"
+    @State private var planningLine = L10n.t("Looking at your scene…")
     @State private var planningTimer: Timer?
     @State private var sceneFrame: UIImage?   // sharpest scanned frame, backs the Idea card
+    @State private var interactiveHold: UUID? // InteractiveAIHold token while the scan/Director run
 
     // C4-Lite capture integrity (Milestone C4-Lite). SAVE does not interrupt (brief
     // "Moment added" confirmation only); only FAIL interrupts with a physical reason.
@@ -70,11 +71,11 @@ struct SceneScanFlowView: View {
     private let directorService = StoryDirectorService()
 
     // Staged consumer copy for the real ~12–16s Director wait (no fake %).
-    private let planningStages = [
-        "Looking at your scene…",
-        "Finding what matters…",
-        "Finding a shot worth capturing…"
-    ]
+    private var planningStages: [String] { [
+        L10n.t("Looking at your scene…"),
+        L10n.t("Finding what matters…"),
+        L10n.t("Finding a shot worth capturing…")
+    ] }
 
     private let bg = Color(red: 0.04, green: 0.04, blue: 0.043)
     private let gold = Color(red: 0.83, green: 0.66, blue: 0.33)
@@ -86,7 +87,7 @@ struct SceneScanFlowView: View {
             switch state {
             case .intro:                      introView
             case .scanning:                   Color.clear
-            case .analyzing:                  statusView("Looking at your scene…")
+            case .analyzing:                  statusView(L10n.t("Looking at your scene…"))
             case .planning:                   statusView(planningLine)
             case .recommendation(let su, let out): recommendationView(su, out)
             case .failed(let message, let retry): failedView(message, retry)
@@ -125,6 +126,26 @@ struct SceneScanFlowView: View {
             }
         }
         .cloudAuthGate(cloudGate)   // P0 Phase 4: Start Scan runs the Director (Bedrock) — gate it behind sign-in
+        // Hold background AU / upload jobs while the scan + Director are in flight (shared uplink).
+        .onChange(of: isWaitingOnAI) { _, waiting in
+            if waiting, interactiveHold == nil {
+                interactiveHold = InteractiveAIHold.begin()
+            } else if !waiting {
+                InteractiveAIHold.end(interactiveHold)
+                interactiveHold = nil
+            }
+        }
+        .onDisappear {
+            InteractiveAIHold.end(interactiveHold)
+            interactiveHold = nil
+        }
+    }
+
+    private var isWaitingOnAI: Bool {
+        switch state {
+        case .scanning, .analyzing, .planning: return true
+        default: return false
+        }
     }
 
     private var integrityFailBinding: Binding<Bool> {
@@ -286,7 +307,7 @@ struct SceneScanFlowView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             if let a = shot.subjectAction, !a.isEmpty { guidanceRow("Subject", a) }
                             if let m = shot.cameraMotion, !m.isEmpty { guidanceRow("You", friendlyMotion(m)) }
-                            if let d = shot.targetDurationSeconds { guidanceRow("Hold", "about \(Int(d.rounded())) seconds") }
+                            if let d = shot.targetDurationSeconds { guidanceRow("Hold", L10n.t("about \(Int(d.rounded())) seconds")) }
                         }
                         .padding(.top, 2)
                     }
@@ -368,7 +389,7 @@ struct SceneScanFlowView: View {
         }
     }
 
-    private func secondaryButton(_ title: String, action: @escaping () -> Void) -> some View {
+    private func secondaryButton(_ title: LocalizedStringKey, action: @escaping () -> Void) -> some View {
         Button(title, action: action).foregroundStyle(gold).frame(maxWidth: .infinity)
     }
 
@@ -376,14 +397,14 @@ struct SceneScanFlowView: View {
     /// plan's estimated duration, falling back to summed shot target durations.
     private func conceptMeta(_ out: DirectorOutputDTO) -> String {
         let shots = out.plan.shots.count
-        let shotLabel = shots == 1 ? "1 shot" : "\(shots) shots"
+        let shotLabel = L10n.t("\(shots) shots")
         let secs = out.plan.estimatedDurationSeconds
             ?? out.plan.shots.compactMap { $0.targetDurationSeconds }.reduce(0, +)
-        if secs > 0 { return "\(shotLabel) · ~\(Int(secs.rounded())) sec" }
+        if secs > 0 { return L10n.t("\(shotLabel) · ~\(Int(secs.rounded())) sec") }
         return shotLabel
     }
 
-    private func guidanceRow(_ k: String, _ v: String) -> some View {
+    private func guidanceRow(_ k: LocalizedStringKey, _ v: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Text(k).font(.caption).foregroundStyle(gold)
                 .frame(width: 60, alignment: .leading)
@@ -394,11 +415,11 @@ struct SceneScanFlowView: View {
     /// Translate contract camera_motion into plain operator language.
     private func friendlyMotion(_ motion: String) -> String {
         switch motion.lowercased() {
-        case "static", "none", "hold": return "hold still"
-        case "pan": return "slowly turn the phone"
-        case "tilt": return "slowly tip the phone up or down"
-        case "follow", "track": return "follow them smoothly"
-        case "push_in", "dolly_in": return "step slowly toward them"
+        case "static", "none", "hold": return L10n.t("hold still")
+        case "pan": return L10n.t("slowly turn the phone")
+        case "tilt": return L10n.t("slowly tip the phone up or down")
+        case "follow", "track": return L10n.t("follow them smoothly")
+        case "push_in", "dolly_in": return L10n.t("step slowly toward them")
         default: return motion.replacingOccurrences(of: "_", with: " ")
         }
     }
@@ -439,7 +460,7 @@ struct SceneScanFlowView: View {
                 await MainActor.run { runDirector(su, scanStart: scanStart) }
             } catch {
                 await MainActor.run {
-                    state = .failed(errorText(error, "Something went wrong reading the scene."),
+                    state = .failed(errorText(error, L10n.t("Something went wrong reading the scene.")),
                                     retry: .rescan)
                 }
             }
@@ -456,7 +477,8 @@ struct SceneScanFlowView: View {
                     creativeIntent: captureContext.directorIntent(),
                     sceneUnderstanding: su,
                     targetDurationSeconds: captureContext.targetDurationSeconds,
-                    selectedOpportunity: selectedOpportunity)   // nil for the direct flow; survives rescan
+                    selectedOpportunity: selectedOpportunity,   // nil for the direct flow; survives rescan
+                    contentLanguage: ContentLanguageResolver.requestValue(for: captureContext))
                 let ms = Int(Date().timeIntervalSince(start) * 1000)
                 await MainActor.run {
                     stopPlanningStages()
@@ -467,7 +489,7 @@ struct SceneScanFlowView: View {
             } catch {
                 await MainActor.run {
                     stopPlanningStages()
-                    state = .failed(errorText(error, "Story couldn't plan this shot."),
+                    state = .failed(errorText(error, L10n.t("Story couldn't plan this shot.")),
                                     retry: .replan(su))
                 }
             }
@@ -536,6 +558,8 @@ struct SceneScanFlowView: View {
             )
             pendingCaptureContext = nil
             Task { await auQueue.drain() }   // opportunistic; failures leave the job PENDING
+            // Auto Backup: back up this new Moment when the account has it ON (fire-and-forget; no-op otherwise).
+            MediaUploadQueue.sharedAutoEnroll(moment)
             // Milestone D §13: also save a user-owned COPY to Apple Photos (add-only),
             // fire-and-forget. The Moment is ALREADY persisted above; this never blocks
             // or fails Moment creation, and Photos denial/failure degrades silently.
@@ -568,7 +592,7 @@ struct SceneScanFlowView: View {
 
     // MARK: - shared
 
-    private func primaryButton(_ title: String, action: @escaping () -> Void) -> some View {
+    private func primaryButton(_ title: LocalizedStringKey, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title).font(.headline)
                 .frame(maxWidth: .infinity).padding()

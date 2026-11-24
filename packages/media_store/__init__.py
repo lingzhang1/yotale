@@ -87,6 +87,7 @@ UPLOAD_URL_TTL_SECONDS = 60 * 60
 MIN_S3_PART_SIZE = 5 * 1024 * 1024
 MULTIPART_PART_SIZE = 8 * 1024 * 1024
 MULTIPART_THRESHOLD = 16 * 1024 * 1024   # <= this -> single PUT; above -> multipart
+SINGLE_PUT_CAPPED_KINDS = (MEDIA_KIND_MOMENT, MEDIA_KIND_GENERATED)   # guard G1, see SinglePutTooLarge
 #
 # CHECKSUM STRATEGY (owner Phase 2 — documented, equivalent integrity; no bytes through App Runner):
 #   • The device declares the FULL-FILE sha256 (hex) at initiate (provenance + the single-PUT guarantee).
@@ -118,12 +119,24 @@ class MediaOwnershipConflict(Exception):
     """An initiate reused a cloud_media_id with a DIFFERENT declared (size/sha) — a client bug, not a retry."""
 
 
+class SinglePutTooLarge(Exception):
+    """A single presigned PUT was requested for a Moment original or generated video above MULTIPART_THRESHOLD.
+    Account deletion guard G1 (design 5.5): bounds how long a PUT started before deletion can still land. The
+    app already switches to multipart above the threshold for these kinds (MediaUploadQueue,
+    GeneratedOutputBackupQueue). My Music and ai_artifact uploads are single-PUT only and are not capped; a late
+    one is caught by deletion's verification passes and final check."""
+
+
 class MediaNotFound(Exception):
     """No media record for (owner, cloud_media_id) — surfaced as 404 so another account's media is invisible."""
 
 
 class MediaVerificationError(Exception):
     """Durable verification failed (missing object / size mismatch / checksum mismatch). NOT marked verified."""
+
+
+class MultipartUploadGone(Exception):
+    """An `uploading` record's S3 multipart upload no longer exists (aborted/expired) — surfaced as 409."""
 
 
 @dataclass
@@ -175,12 +188,18 @@ class MediaStore:
         return self._decode(it) if it else None
 
     def list_for_owner(self, owner: str) -> list[dict]:
-        """All media records owned by `owner` (Query on the PK — never a Scan, so no cross-account leak)."""
-        resp = self._ddb_c().query(
-            TableName=self.cfg.table,
-            KeyConditionExpression="story_user_id = :o",
-            ExpressionAttributeValues={":o": {"S": owner}})
-        return [self._decode(it) for it in resp.get("Items", [])]
+        """All media records owned by `owner` (Query on the PK — never a Scan, so no cross-account leak).
+        Follows LastEvaluatedKey: an account with more than one Query page (1 MB) is returned in full."""
+        out: list[dict] = []
+        kwargs: dict = {"TableName": self.cfg.table, "KeyConditionExpression": "story_user_id = :o",
+                        "ExpressionAttributeValues": {":o": {"S": owner}}}
+        while True:
+            resp = self._ddb_c().query(**kwargs)
+            out.extend(self._decode(it) for it in resp.get("Items", []))
+            lek = resp.get("LastEvaluatedKey")
+            if not lek:
+                return out
+            kwargs["ExclusiveStartKey"] = lek
 
     # --- initiate (idempotent, conditional) ----------------------------------------------------------
     def initiate_upload(self, *, owner: str, content_sha256: str, size_bytes: int,
@@ -197,6 +216,8 @@ class MediaStore:
         (the GeneratedOutput id) instead of a `source_moment_id`. The storage path/verification are IDENTICAL —
         only the provenance fields differ, so the R4 upload pipeline is reused unchanged (no second uploader)."""
         media_kind = _normalize_media_kind(media_kind)
+        if media_kind in SINGLE_PUT_CAPPED_KINDS and int(size_bytes) > MULTIPART_THRESHOLD:
+            raise SinglePutTooLarge(f"{media_kind} above {MULTIPART_THRESHOLD} bytes must use multipart")
         cmid = cloud_media_id_for(owner, content_sha256)
         now = _now()
         key = object_key(owner, cmid)
@@ -384,19 +405,42 @@ class MediaStore:
 
     def list_uploaded_parts(self, *, owner: str, cloud_media_id: str) -> list[dict]:
         """Reconcile: the parts S3 has already received for this MPU (so the client re-uploads only what's
-        missing after an interruption). Returns [{part_number, etag, checksum_sha256, size}]."""
+        missing after an interruption). Returns [{part_number, etag, checksum_sha256, size}].
+
+        ALREADY VERIFIED: a re-initiate of content that is already `cloud_verified` returns the existing record
+        (idempotent), whose `upload_id` belongs to a multipart upload S3 has since COMPLETED — ListParts on it
+        is `NoSuchUpload`. That object is durably verified, so every part is reported as present (from the
+        recorded per-part digests) without calling S3; the client then skips all part PUTs and its
+        `multipart/complete` call is an idempotent no-op. Nothing is re-uploaded and nothing is re-verified.
+
+        EXPIRED: an `uploading` record whose MPU no longer exists (aborted/expired) raises
+        MultipartUploadGone (-> 409), never an unhandled 500."""
         rec = self.get(owner, cloud_media_id)
         if rec is None:
             raise MediaNotFound(cloud_media_id)
         upload_id = rec.get("upload_id")
         if not upload_id:
             raise MediaVerificationError("not a multipart upload")
+        if rec.get("state") == STATE_CLOUD_VERIFIED:
+            try:
+                shas = json.loads(rec.get("part_shas") or "[]")
+            except (TypeError, ValueError):
+                shas = []
+            count = int(rec.get("part_count") or len(shas) or 0)
+            return [{"part_number": i + 1, "etag": "",
+                     "checksum_sha256": shas[i] if i < len(shas) else "", "size": 0} for i in range(count)]
         out: list[dict] = []
         paginator = self._s3_c().get_paginator("list_parts")
-        for page in paginator.paginate(Bucket=self.cfg.bucket, Key=rec["s3_key"], UploadId=upload_id):
-            for p in page.get("Parts", []):
-                out.append({"part_number": p["PartNumber"], "etag": p["ETag"],
-                            "checksum_sha256": p.get("ChecksumSHA256", ""), "size": p.get("Size", 0)})
+        try:
+            for page in paginator.paginate(Bucket=self.cfg.bucket, Key=rec["s3_key"], UploadId=upload_id):
+                for p in page.get("Parts", []):
+                    out.append({"part_number": p["PartNumber"], "etag": p["ETag"],
+                                "checksum_sha256": p.get("ChecksumSHA256", ""), "size": p.get("Size", 0)})
+        except Exception as e:  # botocore ClientError subclass; matched by code, not imported
+            code = getattr(e, "response", {}).get("Error", {}).get("Code") if hasattr(e, "response") else None
+            if code == "NoSuchUpload":
+                raise MultipartUploadGone(cloud_media_id) from e
+            raise
         return out
 
     def complete_multipart(self, *, owner: str, cloud_media_id: str) -> dict:

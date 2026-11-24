@@ -27,9 +27,9 @@ enum CreatingPhase: Equatable {
     /// Pure mapping. Honest, consumer-safe copy — nothing about planners, models, or HTTP status.
     static func from(_ state: StoryCreationCoordinator.State) -> CreatingPhase {
         switch state {
-        case .idle, .preparing:        return .indeterminate(status: "Getting your moments ready…")
-        case .planning:                return .indeterminate(status: "Planning your Story…")
-        case .validating:              return .indeterminate(status: "Checking the plan…")
+        case .idle, .preparing:        return .indeterminate(status: L10n.t("Getting your moments ready…"))
+        case .planning:                return .indeterminate(status: L10n.t("Planning your Story…"))
+        case .validating:              return .indeterminate(status: L10n.t("Checking the plan…"))
         case .rendering(let progress): return .determinate(progress: max(0, min(1, progress)))
         case .failed(let message):     return .failed(message: message)
         case .cancelled:               return .cancelled
@@ -70,6 +70,7 @@ enum FailureRecovery: Equatable {
         // A quota cap (daily/monthly/active-jobs/global) fails identically on an immediate retry — show the
         // honest message and send the user back, never a plain "Try again".
         if case .quotaDenied? = error { return .quotaReached }
+        if case .entitlementDenied? = error { return .quotaReached }   // rendered by `entitlementBody` (never a plain retry)
         return .technical
     }
 }
@@ -94,7 +95,7 @@ struct StoryCreatingView: View {
     var onRequestRecreate: ((GeneratedOutputModel) -> Void)? = nil
     /// When the render completes, hand the output UP to the parent so it can present Result in place of this
     /// screen (stack stays Home -> Preview -> Result instead of Home -> Preview -> Creating -> Result, which
-    /// left the stuck "Finishing up…" screen behind when Result dismissed). When nil, this view falls back to
+    /// left the stuck L10n.t("Finishing up…") screen behind when Result dismissed). When nil, this view falls back to
     /// pushing Result itself (standalone / test host).
     var onCompleted: ((GeneratedOutputModel) -> Void)? = nil
     /// P0 recovery: when true, this screen RESUMES the Story's existing unfinished edit-plan operation instead
@@ -109,6 +110,9 @@ struct StoryCreatingView: View {
     var onAdjustInstructions: (() -> Void)? = nil
 
     @State private var coordinator: StoryCreationCoordinator?
+    @State private var showPlus = false               // Billing V1: YoTale Plus opened from an entitlement denial
+    @State private var preflightDenial: BillingDenial? // Billing V2: refused before any work started (last-line preflight)
+    @Environment(BillingStore.self) private var billing
     // R-d.2 keep-alive: creating a Story runs a long foreground pipeline (Opus planning + AVAssetExportSession),
     // both of which iOS SUSPENDS when the screen locks/darkens — killing the request (-1005) and the export
     // ("Operation Interrupted"). Disabling the idle timer stops auto-lock mid-create; a background task buys a
@@ -122,7 +126,7 @@ struct StoryCreatingView: View {
     @State private var createStartedAt = Date()   // for the time-based patience reminder (honest elapsed time)
 
     private var phase: CreatingPhase {
-        guard let coordinator else { return .indeterminate(status: "Getting your moments ready…") }
+        guard let coordinator else { return .indeterminate(status: L10n.t("Getting your moments ready…")) }
         let p = CreatingPhase.from(coordinator.state)
         // During planning, prefer the REAL backend job status (queued/running) over the static copy.
         if case .indeterminate = p, coordinator.state == .planning,
@@ -145,7 +149,7 @@ struct StoryCreatingView: View {
                 initialOutput: output,
                 onHome: {
                     // Pop BOTH Result and this Creating screen so the user lands on Story Home in one tap
-                    // (fixes the stuck "Finishing up…" screen that a single dismiss left behind). Clearing
+                    // (fixes the stuck L10n.t("Finishing up…") screen that a single dismiss left behind). Clearing
                     // `completedOutput` pops Result; dismissing on the next runloop pops Creating.
                     completedOutput = nil
                     DispatchQueue.main.async { dismiss() }
@@ -170,6 +174,13 @@ struct StoryCreatingView: View {
             // prod renderer = MediaEngineV1 (device-gated). R-d: resolve a soundtrack FIRST (recommend top
             // track -> download), then start MUSIC-AWARE creation; if music is unavailable (provider off,
             // plan/provider failure) fall back to the device-verified no-music path. Music never blocks.
+            // Billing V2 last-line preflight: any NEW video (not a resume of work already accepted) that the server would refuse
+            // shows the upgrade screen here, before music, evidence preparation or any AI call. The entry screens check first;
+            // this covers every other way in.
+            if coordinator == nil, !resumePending, let denial = await billing.videoPreflightDenial() {
+                preflightDenial = denial
+                return
+            }
             if coordinator == nil {
                 createStartedAt = Date()   // start the patience timer from the real creation moment
                 let coord = StoryCreationCoordinator(planner: EditPlannerService(), context: context)
@@ -188,8 +199,13 @@ struct StoryCreatingView: View {
                         // This Create-Another-Version came through the Customize sheet, so any Creative
                         // Direction the user typed is for THIS operation — fold it in (the operation stays
                         // mode=explore; the directives ride along as strong objectives).
+                        // The Video Type the user picked in this Customize sheet (persisted as story.editorialMode
+                        // by acceptCustomize) is THIS attempt's type. Without it Explore kept the PARENT's type, so
+                        // choosing Full Story still planned a Highlights cut (dev 2026-11-12). nil (legacy/custom
+                        // mode) keeps the parent's type, as before.
                         coord.createAnotherVersion(for: story, from: parent, music: preresolvedMusic,
-                                                   directedByCustomize: true)
+                                                   directedByCustomize: true,
+                                                   requestedEditorialType: ResolvedEditorial.fromLegacy(story.editorialMode).type)
                     } else {
                         coord.createWithMusic(for: story, music: preresolvedMusic)
                     }
@@ -222,8 +238,12 @@ struct StoryCreatingView: View {
     /// Keep the app awake and alive during the long create pipeline. Disable auto-lock (the main cause of a
     /// suspended-mid-render failure) and open a background task so a manual lock gets a grace window instead of
     /// an instant kill. Best-effort — a failure here never blocks creation.
+    /// Screen-awake claim for this screen (shared ownership: releasing it never clears the camera's or the
+    /// coordinator's claim).
+    private static let awakeKey = "create.view"
+
     private func beginKeepAlive() {
-        UIApplication.shared.isIdleTimerDisabled = true
+        ScreenAwake.shared.hold(Self.awakeKey)
         if keepAliveTask == .invalid {
             keepAliveTask = UIApplication.shared.beginBackgroundTask(withName: "story-create") {
                 endKeepAlive()   // expiration handler — release cleanly if iOS reclaims the time
@@ -232,7 +252,7 @@ struct StoryCreatingView: View {
     }
 
     private func endKeepAlive() {
-        UIApplication.shared.isIdleTimerDisabled = false
+        ScreenAwake.shared.release(Self.awakeKey)
         if keepAliveTask != .invalid {
             UIApplication.shared.endBackgroundTask(keepAliveTask)
             keepAliveTask = .invalid
@@ -247,11 +267,14 @@ struct StoryCreatingView: View {
 
     @ViewBuilder
     private var content: some View {
+        if let denial = preflightDenial {
+            entitlementBody(denial)
+        } else {
         switch phase {
         case .indeterminate(let status):
             creatingBody(status: status, determinate: false, progress: 0)
         case .determinate(let progress):
-            creatingBody(status: "Putting your Story together…", determinate: true, progress: progress)
+            creatingBody(status: L10n.t("Putting your Story together…"), determinate: true, progress: progress)
         case .failed(let message):
             failedBody(message: message)
         case .cancelled:
@@ -259,7 +282,8 @@ struct StoryCreatingView: View {
             Color.clear.onAppear { dismiss() }
         case .completed:
             // Transition handled by navigationDestination; show the final frame of the bar meanwhile.
-            creatingBody(status: "Finishing up…", determinate: true, progress: 1.0)
+            creatingBody(status: L10n.t("Finishing up…"), determinate: true, progress: 1.0)
+        }
         }
     }
 
@@ -270,11 +294,11 @@ struct StoryCreatingView: View {
     /// expectation-setting so a 1-2 min plan never reads as "stuck".
     private func patienceNote(elapsed: TimeInterval) -> String? {
         switch elapsed {
-        case ..<12:  return "Sit back — we're shaping your moments into a Story."
-        case ..<30:  return "Hang tight — this usually takes a moment."
-        case ..<60:  return "Still working. Good edits take a little longer."
-        case ..<120: return "Almost there — crafting your Story carefully. This can take a minute or two."
-        default:     return "Thanks for your patience — finishing up your Story. You can keep waiting or cancel."
+        case ..<12:  return L10n.t("Sit back — we're shaping your moments into a Story.")
+        case ..<30:  return L10n.t("Hang tight — this usually takes a moment.")
+        case ..<60:  return L10n.t("Still working. Good edits take a little longer.")
+        case ..<120: return L10n.t("Almost there — crafting your Story carefully. This can take a minute or two.")
+        default:     return L10n.t("Thanks for your patience — finishing up your Story. You can keep waiting or cancel.")
         }
     }
 
@@ -358,6 +382,9 @@ struct StoryCreatingView: View {
     private func failedBody(message: String) -> some View {
         // Branch on the STRUCTURED failure: insufficient material gets an actionable duration choice
         // (Create a shorter Story / Keep shooting), everything else keeps the honest Try again.
+        if case .entitlementDenied(let denial)? = coordinator?.lastFailure {
+            entitlementBody(denial)
+        } else {
         switch FailureRecovery.from(coordinator?.lastFailure) {
         case .shorterStory(let suggested):
             insufficientBody(message: message, suggestedSeconds: suggested)
@@ -370,6 +397,37 @@ struct StoryCreatingView: View {
         case .quotaReached:
             quotaReachedBody(message: message)
         }
+        }
+    }
+
+    /// Billing V1 (402). Explains which allowance ended and, when a subscription can fix it, opens YoTale Plus. The Story and its
+    /// current version are untouched. No plain "Try again": a retry cannot succeed until the allowance changes.
+    private func entitlementBody(_ denial: BillingDenial) -> some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Text(denial.canUpgrade ? "Upgrade to keep creating." : "You've reached this period's limit.")
+                .font(StoryTheme.display(22))
+                .foregroundStyle(StoryTheme.cream)
+                .multilineTextAlignment(.center)
+            Text(denial.message)
+                .font(StoryTheme.body(14))
+                .foregroundStyle(StoryTheme.cream.opacity(0.5))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            if denial.canUpgrade {
+                StoryPrimaryButton(title: "See YoTale Plus") { showPlus = true }
+            }
+            Button { dismiss() } label: {
+                Text("Back to Story")
+                    .font(StoryTheme.body(14))
+                    .foregroundStyle(StoryTheme.cream.opacity(0.4))
+                    .frame(maxWidth: .infinity).padding(.vertical, 10)
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 24)
+        }
+        .sheet(isPresented: $showPlus) { PlusSubscriptionView(denial: denial) }
     }
 
     /// Usage-limit denial (enforce mode 429/503). Honest, scope-specific message with NO plain "Try again"

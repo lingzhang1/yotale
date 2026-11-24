@@ -12,9 +12,13 @@ import Foundation
 //   * Fires the Unsplash download-tracking endpoint (/v1/scene-image/track) ONLY when a photo is actually
 //     USED/selected as a reference (per Unsplash's rule) — never on mere display.
 //
-// Gated by StoryGuideFeatures.sceneImagesEnabled: when OFF, fetch() short-circuits to nil with ZERO network.
+// Scene images are standard behavior (no feature switch); failures are soft (nil -> text-only card).
 protocol SceneImageFetching {
     func fetch(query: String, storyId: UUID, sceneId: String) async -> SceneImageDTO?
+    /// Query-only reference lookup with NO Guide provenance (story_id/scene_id omitted). Used by the
+    /// live-camera Shooting Idea card, which has a generic composition query but no Guide scene. The
+    /// backend treats story_id/scene_id as optional provenance; the compliance contract is identical.
+    func fetch(query: String) async -> SceneImageDTO?
     func track(downloadLocation: String) async
 }
 
@@ -30,7 +34,15 @@ actor SceneImageService: SceneImageFetching {
     }
 
     func fetch(query: String, storyId: UUID, sceneId: String) async -> SceneImageDTO? {
-        guard StoryGuideFeatures.sceneImagesEnabled else { return nil }
+        await fetchCore(query: query, storyId: storyId, sceneId: sceneId)
+    }
+
+    /// Query-only lookup (no Guide provenance) for the live-camera Shooting Idea card.
+    func fetch(query: String) async -> SceneImageDTO? {
+        await fetchCore(query: query, storyId: nil, sceneId: nil)
+    }
+
+    private func fetchCore(query: String, storyId: UUID?, sceneId: String?) async -> SceneImageDTO? {
         let key = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return nil }
         if let cached = cache[key] { return cached }   // includes a cached nil (no-image) result
@@ -40,7 +52,11 @@ actor SceneImageService: SceneImageFetching {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 6
-        let payload: [String: Any] = ["query": key, "story_id": storyId.uuidString, "scene_id": sceneId]
+        // story_id/scene_id are OPTIONAL provenance (never sent to the provider). Omit them for the
+        // camera flow so the proxy contract is identical whether a Guide scene exists or not.
+        var payload: [String: Any] = ["query": key]
+        if let storyId { payload["story_id"] = storyId.uuidString }
+        if let sceneId { payload["scene_id"] = sceneId }
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
         req.httpBody = body
 
@@ -65,8 +81,7 @@ actor SceneImageService: SceneImageFetching {
 
     /// Fire-and-forget Unsplash download tracking when a reference is actually used. Best-effort; errors ignored.
     func track(downloadLocation: String) async {
-        guard StoryGuideFeatures.sceneImagesEnabled,
-              downloadLocation.hasPrefix("https://api.unsplash.com/") else { return }
+        guard downloadLocation.hasPrefix("https://api.unsplash.com/") else { return }
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/scene-image/track"))
         StoryBackend.authorize(&req)
         req.httpMethod = "POST"

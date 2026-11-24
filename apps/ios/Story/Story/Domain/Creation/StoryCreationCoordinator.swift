@@ -80,16 +80,21 @@ enum StoryCreationError: Error, LocalizedError, Equatable {
     /// unavailable. NOT a technical failure and NOT material-infeasible — carries an honest, scope-specific
     /// message and never a plain Retry (retrying hits the same cap). The current version is kept unchanged.
     case quotaDenied(String)
+    /// Billing V1 (HTTP 402): the plan's allowance or trial does not permit this video. Carries the server's typed code and
+    /// action so the UI can open the right screen. Not a technical failure; never a plain Retry.
+    case entitlementDenied(BillingDenial)
+    /// Billing V2: temporary capacity (429 `busy`) or a quota-store outage (503). Retryable: the UI offers the honest "Try again".
+    case capacityBusy
 
     var errorDescription: String? {
         switch self {
         case .missingPrerequisite(let w): return w
-        case .planUnavailable: return "The Edit Planner is temporarily unavailable. Please retry."
-        case .planInfeasible(let r): return "This Story's material can't fill the target: \(r)"
-        case .planTransport(let r): return "Couldn't reach the Edit Planner: \(r)"
-        case .invalidPlan(let r): return "The plan can't be rendered: \(r)"
-        case .renderFailed(let r): return "Rendering failed: \(r)"
-        case .alreadyCreating: return "A video is already being created for this Story."
+        case .planUnavailable: return L10n.t("The Edit Planner is temporarily unavailable. Please retry.")
+        case .planInfeasible(let r): return L10n.t("This Story's material can't fill the target: \(r)")
+        case .planTransport(let r): return L10n.t("Couldn't reach the Edit Planner: \(r)")
+        case .invalidPlan(let r): return L10n.t("The plan can't be rendered: \(r)")
+        case .renderFailed(let r): return L10n.t("Rendering failed: \(r)")
+        case .alreadyCreating: return L10n.t("A video is already being created for this Story.")
         case .directivesUnsatisfiable(let detail):
             // Only blame the INSTRUCTION when the failure is genuinely about the directives conflicting with
             // each other / the footage (e.g. an explicit exclude set that leaves nothing, or contradictory
@@ -100,33 +105,35 @@ enum StoryCreationError: Error, LocalizedError, Equatable {
             let d = detail.lowercased()
             let mechanical = ["source", "duration", "render", "speed", "output", "timeline", "segment"]
             if mechanical.contains(where: d.contains) {
-                return "I couldn't put together a valid edit this time — this is on my side, not your instruction. Please try again."
+                return L10n.t("I couldn't put together a valid edit this time — this is on my side, not your instruction. Please try again.")
             }
-            return "Your instruction couldn't be fully applied to this footage — some parts may conflict (for example an ordering or an exclude that leaves too little to work with). Try adjusting it."
+            return L10n.t("Your instruction couldn't be fully applied to this footage — some parts may conflict (for example an ordering or an exclude that leaves too little to work with). Try adjusting it.")
         case .invalidPlanOutput:
             // No user directives were involved — do NOT blame the instruction. Honest technical message.
-            return "I couldn't put together a valid edit this time. This is on my side, not your footage — please try again."
+            return L10n.t("I couldn't put together a valid edit this time. This is on my side, not your footage — please try again.")
         case .unsupportedOperation(let detail):
             // Prefer the backend's specific capability message; fall back to a clear generic one.
             let d = detail.trimmingCharacters(in: .whitespacesAndNewlines)
             return d.isEmpty
-                ? "That kind of edit isn't supported yet — this app can re-cut, re-time, reorder, set transitions and change the soundtrack, but not color, filters or visual effects. Your current version was kept."
+                ? L10n.t("That kind of edit isn't supported yet — this app can re-cut, re-time, reorder, set transitions and change the soundtrack, but not color, filters or visual effects. Your current version was kept.")
                 : d
         case .preservationViolation:
             // Phase 2: a distinct message — NOT the duration "can't fill the target" copy. The revise would
             // have changed clips the user did not ask to change, so the original was kept.
-            return "This change would have altered clips you didn't ask to change, so your current version was kept. Try naming the Moments to keep or move, or use Create Another Version for a fresh edit."
+            return L10n.t("This change would have altered clips you didn't ask to change, so your current version was kept. Try naming the Moments to keep or move, or use Create Another Version for a fresh edit.")
         case .insufficientMaterial(let achievable, let requested, let suggested):
             let a = Int(achievable.rounded()), req = Int(requested.rounded())
             if let s = suggested {
-                return "There's about \(a)s of usable footage — not enough for a \(req)s Story. "
-                     + "You can create a shorter \(Int(s.rounded()))s Story, or keep shooting."
+                return L10n.t("There's about \(a)s of usable footage — not enough for a \(req)s Story. You can create a shorter \(Int(s.rounded()))s Story, or keep shooting.")
             }
-            return "There's only about \(a)s of usable footage — not enough for a \(req)s Story yet. "
-                 + "Shoot or add a little more and try again."
+            return L10n.t("There's only about \(a)s of usable footage — not enough for a \(req)s Story yet. Shoot or add a little more and try again.")
         case .quotaDenied(let m):
             // Surface the honest, scope-specific quota message built by the networking layer; never a retry.
             return m
+        case .entitlementDenied(let d):
+            return d.message
+        case .capacityBusy:
+            return L10n.t("YoTale is busy right now. Please try again in a moment.")
         }
     }
 }
@@ -199,6 +206,11 @@ final class StoryCreationCoordinator {
     private let selectedMusicAssetId: String?
     private let musicAnalysis: MusicAnalysisV1?
     private let soundtrackURL: URL?
+    /// Test seams for the two side effects of planning-time visual evidence. nil in production, which uses the
+    /// authorized evidence fetch and the R6 resolver. Injected only by tests so the coordinator wiring can be
+    /// exercised without network.
+    private let evidenceFetchOverride: ((EvidenceMomentRef) async -> [AUExtractedFrame]?)?
+    private let sourceRestoreOverride: (([UUID]) async -> (restored: [UUID: URL], unavailable: [UUID]))?
 
     /// R-d: a music selection RESOLVED by the UI (MusicPlan + chosen track + its analysis + a downloaded
     /// local soundtrack file). Set per-run via create(for:music:). When nil the pipeline runs the
@@ -302,6 +314,20 @@ final class StoryCreationCoordinator {
         return .object(obj)
     }
 
+    /// Customize UX v2 (owner §6): the Policy-B allowed-source-set for THIS build, or nil (Policy A / inactive
+    /// sequence / wrong operation => full eligible set). Reads the persisted MomentSequence and returns its
+    /// selected ids ONLY when the sequence is active AND policy is .onlySelected AND this operation uses the
+    /// persisted creative direction (same `usesPersisted` gate as composeRevisionContext — an undirected
+    /// Explore or a Revise never inherits a stale allowed-set). The planner then cannot cite an unselected
+    /// Moment because it is absent from moments[] (eligibility mechanism, not creative exclude).
+    static func allowedSourceSetForBuild(story: StoryModel, operationType: String,
+                                         directedByCustomize: Bool) -> Set<UUID>? {
+        let usesPersisted = (operationType == "original")
+            || (operationType == "another_version" && directedByCustomize)
+        guard usesPersisted, let seq = MomentSequence.fromJSON(story.momentSequenceJSON) else { return nil }
+        return seq.allowedSourceSet   // nil for Policy A; the selected ids for Policy B
+    }
+
     /// Compact diagnostic tag for the submit beacon: what revision_context the device is actually sending.
     /// e.g. "revise+dir+base", "explore", or "none". Proves end-to-end whether Revise directives arrive.
     static func revisionModeTag(_ ctx: JSONValue?) -> String {
@@ -351,8 +377,12 @@ final class StoryCreationCoordinator {
         musicPlan: JSONValue? = nil,
         selectedMusicAssetId: String? = nil,
         musicAnalysis: MusicAnalysisV1? = nil,
-        soundtrackURL: URL? = nil
+        soundtrackURL: URL? = nil,
+        evidenceFetch: ((EvidenceMomentRef) async -> [AUExtractedFrame]?)? = nil,
+        sourceRestore: (([UUID]) async -> (restored: [UUID: URL], unavailable: [UUID]))? = nil
     ) {
+        self.evidenceFetchOverride = evidenceFetch
+        self.sourceRestoreOverride = sourceRestore
         self.planner = planner
         self.jobClient = jobClient
         self.renderer = renderer
@@ -378,6 +408,14 @@ final class StoryCreationCoordinator {
     func createWithMusic(for story: StoryModel, outputFormat: String = "vertical",
                          targetSeconds: Double? = nil, music: MusicSelection?) {
         guard !isCreating else { return }
+        // Never re-poll a job that already ended. A Story can still carry the handle of a failed / cancelled /
+        // expired job (failed before this fix, or cancelled server-side); reusing it would replay that terminal
+        // state without any new planning. A job that may still be live (queued/running, or a recoverable
+        // pending row) is kept so the idempotent submit + poll still recovers it.
+        if Self.hasStaleTerminalJob(story, pending: fetchPending(storyId: story.id)) {
+            Self.clearTerminalJobHandles(story)
+            try? context.save()
+        }
         // Original create (or a retry of one): clear any Explore version-context so stale context never leaks.
         pendingRevisionContext = nil
         pendingParentVersionId = nil
@@ -385,10 +423,8 @@ final class StoryCreationCoordinator {
         pendingDirectedByCustomize = false
         // P1-C: resolve the attempt's editorial TYPE once, here, at the Original-create boundary. Explicit
         // Story selection -> that type; no selection -> Highlights DEFAULT (never model-inferred, never derived
-        // from a custom duration). nil when the flag is OFF (v5.2 behavior).
-        pendingEditorialType = EditorialTypeFlag.enabled
-            ? ResolvedEditorial.fromLegacy(story.editorialMode).typeForNewAttempt.rawValue
-            : nil
+        // from a custom duration).
+        pendingEditorialType = ResolvedEditorial.fromLegacy(story.editorialMode).typeForNewAttempt.rawValue
         beginRun(for: story, outputFormat: outputFormat, targetSeconds: targetSeconds, music: music)
     }
 
@@ -403,7 +439,7 @@ final class StoryCreationCoordinator {
         // into a dead .idle state (the Creating screen would spin on "Getting your moments ready…" forever with
         // no failure surfaced) — surface a recoverable failure so the user gets Try again.
         guard Self.claimActive(story.id, by: self) else {
-            state = .failed(message: "A video is already being created for this Story. Please wait a moment and try again.")
+            state = .failed(message: L10n.t("A video is already being created for this Story. Please wait a moment and try again."))
             lastFailure = .alreadyCreating
             lastStory = story
             return
@@ -417,10 +453,29 @@ final class StoryCreationCoordinator {
         cancelRequested = false
         partialRelativePath = nil
         lastFailure = nil
-        Self.setKeepAwake(true)   // don't let the screen sleep mid-plan/render (sleep tears down the connection)
+        Self.setKeepAwake(true, story.id)   // don't let the screen sleep mid-plan/render (sleep tears down the connection)
+        recordPreparingAttempt(story: story)
         task = Task { [weak self] in
             await self?.run(story: story, outputFormat: outputFormat, targetSeconds: targetSeconds)
         }
+    }
+
+    /// Record the attempt NOW, before the multi-second on-device evidence preparation, so an app kill during
+    /// preparation leaves a resumable "preparing" row instead of nothing (dev 2026-11-13: a kill ~20 s after
+    /// tapping create lost the attempt entirely). Nothing has been sent or billed yet. The operation id is minted
+    /// HERE rather than after preparation so the resumed attempt submits with the SAME id: the server's
+    /// idempotency then guarantees it can never run twice. An existing resumable row for the same operation (a
+    /// retry of an attempt that already reached the server) is left untouched.
+    private func recordPreparingAttempt(story: StoryModel) {
+        if story.planOperationId == nil {
+            story.planOperationId = UUID().uuidString
+            try? context.save()
+        }
+        let opId = story.planOperationId!
+        if let existing = fetchPending(storyId: story.id), existing.operationId == opId, existing.isRecoverable {
+            return
+        }
+        upsertPending(story: story, operationId: opId, jobId: nil, phase: "preparing")
     }
 
     // Process-global set of Story ids with an ACTIVE run/resume, each mapped to the OWNING coordinator (weak).
@@ -445,9 +500,12 @@ final class StoryCreationCoordinator {
 
     /// Keep the device awake during an active Create/Revise so a screen sleep cannot suspend the app and tear
     /// down the in-flight planning/render connection (observed as NSURLError -1005). Cleared when the run ends.
-    private static func setKeepAwake(_ on: Bool) {
+    private static func setKeepAwake(_ on: Bool, _ storyId: UUID) {
         #if canImport(UIKit)
-        UIApplication.shared.isIdleTimerDisabled = on
+        // Shared ownership (ScreenAwake): ending a run releases only THIS Story's claim, never another run's
+        // or the camera's.
+        let key = "create.coordinator.\(storyId.uuidString)"
+        if on { ScreenAwake.shared.hold(key) } else { ScreenAwake.shared.release(key) }
         #endif
     }
 
@@ -501,10 +559,8 @@ final class StoryCreationCoordinator {
         pendingOperationType = "another_version"
         // P1-C: Explore allows type SWITCHING. Use the explicitly requested type when given; otherwise RETAIN
         // the parent output's type (all four H/F transitions supported). Directed Explore stays Explore. A
-        // legacy parent with no stamped type + no request -> Highlights default. Flag-gated.
-        pendingEditorialType = EditorialTypeFlag.enabled
-            ? (requestedEditorialType ?? parent.editorialType ?? EditorialType.defaultType).rawValue
-            : nil
+        // legacy parent with no stamped type + no request -> Highlights default.
+        pendingEditorialType = (requestedEditorialType ?? parent.editorialType ?? EditorialType.defaultType).rawValue
         // When the user reached this via the Customize sheet and typed Creative Direction for THIS operation,
         // fold those directives + soft instruction onto the explore context so the planner strongly pursues
         // them (owner decision 2026-10-22: the operation STAYS mode=explore — a meaningfully-different NEW
@@ -533,8 +589,8 @@ final class StoryCreationCoordinator {
         pendingOperationType = "revision"
         pendingDirectedByCustomize = false
         // P1-C: Revise INHERITS the base output's editorial type (never re-infers). A legacy base with no
-        // stamped type stays nil (preserve historical semantics — not silently Full Story). Flag-gated.
-        pendingEditorialType = EditorialTypeFlag.enabled ? base.editorialType?.rawValue : nil
+        // stamped type stays nil (preserve historical semantics — not silently Full Story).
+        pendingEditorialType = base.editorialType?.rawValue
         lastDiversity = nil
         beginRun(for: story, outputFormat: outputFormat, targetSeconds: targetSeconds, music: music)
     }
@@ -542,10 +598,23 @@ final class StoryCreationCoordinator {
     // MARK: - Pipeline
 
     private func run(story: StoryModel, outputFormat: String, targetSeconds: Double?) async {
-        defer { isCreating = false; task = nil; Self.setKeepAwake(false); Self.releaseActive(story.id) }
+        defer { isCreating = false; task = nil; Self.setKeepAwake(false, story.id); Self.releaseActive(story.id) }
 
         // ---- preparing: gather REAL persisted inputs; missing prerequisite -> honest failure ----
         state = .preparing
+        // Performance timeline: one op id correlates every stage of this attempt; the stall probe measures how
+        // long the main thread fails to respond (the UI freezes) and the peak memory footprint.
+        RenderTiming.startOperation(story.planOperationId ?? UUID().uuidString)
+        RenderTiming.emit(stage: "create_start", ms: 0, detail: "op_type=\(pendingOperationType)")
+        let stallProbe = MainThreadStallProbe()
+        stallProbe.start()
+        defer {
+            let r = stallProbe.stop()
+            RenderTiming.emit(stage: "main_thread", ms: r.maxStallMs,
+                              detail: "max_stall_ms=\(r.maxStallMs) stalls_over_250ms=\(r.stallsOver250) peak_mem_mb=\(r.peakMB)")
+        }
+        let tRun = RenderTiming.begin("create_total")
+        let tReq = RenderTiming.begin("build_request")
         let build: EditPlanRequestBuilder.Build
         do {
             // Imported My Music has no backend MusicPlan — its selection carries an empty music_plan object.
@@ -557,6 +626,14 @@ final class StoryCreationCoordinator {
                 return p
             }()
             let assetIdForBuilder = pendingMusic?.trackId.hasPrefix("mymusic:") == true ? nil : pendingMusic?.trackId
+            // Customize UX v2 (owner §6): Policy B ("use only selected Moments") restricts the planner payload
+            // to the arranged set via the existing eligibility mechanism — NOT creative exclude. Apply it ONLY
+            // for operations that use the persisted creative direction (original, or another_version directed
+            // from Customize), mirroring composeRevisionContext's usesPersisted gate, so a one-tap Explore or a
+            // Revise never inherits a stale allowed-set. Policy A / inactive sequence => nil => full set.
+            let allowedSourceSet = Self.allowedSourceSetForBuild(
+                story: story, operationType: pendingOperationType,
+                directedByCustomize: pendingDirectedByCustomize)
             build = try EditPlanRequestBuilder.build(
                 story: story, context: context, targetSeconds: targetSeconds, outputFormat: outputFormat,
                 musicPlan: planForBuilder,
@@ -565,12 +642,14 @@ final class StoryCreationCoordinator {
                 revisionContext: Self.composeRevisionContext(base: pendingRevisionContext, story: story,
                                                              operationType: pendingOperationType,
                                                              directedByCustomize: pendingDirectedByCustomize),
-                editorialType: pendingEditorialType)
+                editorialType: pendingEditorialType,
+                allowedSourceSet: allowedSourceSet)
         } catch let e as EditPlanRequestBuilder.BuildError {
-            return finishFailed(.missingPrerequisite(e.errorDescription ?? "Missing prerequisites for creation."))
+            return finishFailed(.missingPrerequisite(e.errorDescription ?? L10n.t("Missing prerequisites for creation.")))
         } catch {
-            return finishFailed(.missingPrerequisite("Couldn't assemble the creation request: \(error)"))
+            return finishFailed(.missingPrerequisite(L10n.t("Couldn't assemble the creation request: \(String(describing: error))")))
         }
+        tReq.end("moments=\(build.includedMedia.count)")
         if cancelRequested { return finishCancelled() }
 
         // ---- feasibility preflight: deterministic, BEFORE the planner. If the material can't reach the
@@ -605,7 +684,7 @@ final class StoryCreationCoordinator {
                 hasBasePlan: Self.revisionHasBasePlan(pendingRevisionContext))
             : nil
         let wantMultimodal: Bool = {
-            let base = requested.requiresMultimodal && StoryMultimodalPlanning.enabled
+            let base = requested.requiresMultimodal
             guard base, let scope = reviseScope else { return base }
             return scope.sendsSheets   // targeted text-light revise -> no sheets; full/visual -> sheets
         }()
@@ -620,66 +699,77 @@ final class StoryCreationCoordinator {
             var sheetMissReasons: [String: SheetMissReason] = [:]
             var restoreUnavailableIds: [String] = []
             if wantMultimodal {
-                // P1-F (Option 8-i): FIRST try to satisfy each included Moment from DURABLE cached AU evidence
-                // — on a valid cache hit we build the contact sheet from the cached frames and SKIP both the
-                // full-video restore AND MomentFrameExtractor re-extraction for that Moment. Only the MISSES
-                // fall through to the existing restore+extract path below, so coverage is preserved exactly
-                // while duplicate extraction / pre-planning downloads are eliminated on hits. Pure addition:
-                // flag-gated so it is a no-op (all misses) until enabled, and any failure is a silent miss.
-                let evVideoType: EvidenceVideoType =
-                    (story.editorialMode?.lowercased() == "full") ? .fullStory : .highlights
-                var cachedSheets: [MomentContactSheet] = []
-                var cachedHitIds = Set<UUID>()
-                if StoryReusableEvidence.enabled {
-                    let includedIds0 = Set(build.includedMedia.map { $0.momentId })
-                    let includedMoments0 = story.moments.filter { includedIds0.contains($0.id) }
-                    let perMoment = build.auUsefulRanges   // id(lower) -> ranges, for budget sizing parity
-                    for m in includedMoments0 {
-                        let dur = MomentResolver.plannerDuration(for: m)
-                        let budgetN = ContactSheetBudget.tier1(forDuration: dur)
-                        let cand = Self.editorialCandidates(for: m.id, context: context)
-                        if let sheet = await AUEvidenceCacheHit.buildSheet(
-                            momentId: m.id, videoType: evVideoType,
-                            visualCandidates: cand.visual, narrativeCandidates: cand.narrative,
-                            eventTimesS: cand.events, budget: budgetN) {
-                            cachedSheets.append(sheet); cachedHitIds.insert(m.id)
+                // P1-F: build planning-time visual evidence for EVERY eligible Moment — local OR cloud-only —
+                // through VisualEvidencePreparation (cache -> restore+extract -> truthful none), all under ONE
+                // MultimodalVisualBudget. A valid cache hit needs no source video, so an evicted original is
+                // neither restored nor re-extracted for planning; only cache MISSES are restored (R6) when their
+                // bytes are not local. Render-time restoration is separate and unchanged. Standard behavior
+                // (no feature flag): any miss/validation/transport failure is a silent fallback.
+                //
+                // `build.includedMedia` is the LOCAL set, so it must not decide who gets evidence: that is
+                // `build.eligibility.eligibleIds` (AU + positive duration + renderable local-or-cloud source).
+                //
+                // The selection rule follows THIS attempt's editorial type (Original/Revise/Explore resolve it
+                // into pendingEditorialType), not the Story's legacy default seed.
+                let evVideoType = EvidenceVideoType.forAttempt(editorialType: pendingEditorialType,
+                                                               legacyStoryMode: story.editorialMode)
+                let eligibleSet = Set(build.eligibility.eligibleIds)
+                let eligibleMoments = story.moments
+                    .filter { eligibleSet.contains($0.id) }
+                    .sorted { $0.createdAt < $1.createdAt }
+                let momentById = Dictionary(eligibleMoments.map { ($0.id, $0) }) { a, _ in a }
+                let tRefs = RenderTiming.begin("evidence_refs")
+                let refs: [EvidenceMomentRef] = eligibleMoments.map { m in
+                    let cand = Self.editorialCandidates(for: m.id, context: context)
+                    return EvidenceMomentRef(
+                        momentId: m.id,
+                        durationSeconds: MomentResolver.plannerDuration(for: m),
+                        usefulSegmentCount: build.auUsefulRanges[m.id.uuidString.lowercased()]?.count ?? 0,
+                        guidance: EditorialFrameGuidance(videoType: evVideoType, visual: cand.visual,
+                                                         narrative: cand.narrative, events: cand.events))
+                }
+                tRefs.end("moments=\(refs.count)")
+                let tPrep = RenderTiming.begin("evidence_prepare")
+                let localMediaById = Dictionary(build.includedMedia.map { ($0.momentId, $0) }) { a, _ in a }
+                let prepared = await VisualEvidencePreparation.prepare(
+                    moments: refs,
+                    localURL: { id in
+                        guard let md = localMediaById[id],
+                              MediaStore.shared.fileExists(relativePath: md.relativePath) else { return nil }
+                        return MediaStore.shared.absoluteURL(for: md.relativePath)
+                    },
+                    fetchCachedFrames: { ref in
+                        if let f = self.evidenceFetchOverride { return await f(ref) }
+                        return await AUEvidenceCacheHit.fetchFrames(momentId: ref.momentId)
+                    },
+                    restoreSources: { ids in
+                        if let r = self.sourceRestoreOverride { return await r(ids) }
+                        let restored = await MomentResolver.resolveEnsuringLocal(
+                            moments: ids.compactMap { momentById[$0] }, context: context,
+                            activeOwner: AuthStore.shared?.storyUserId,
+                            token: { await AuthStore.shared?.validAccessToken() })
+                        var urls: [UUID: URL] = [:]
+                        for md in restored.media where ids.contains(md.momentId) {
+                            urls[md.momentId] = MediaStore.shared.absoluteURL(for: md.relativePath)
                         }
-                        _ = perMoment
-                    }
-                    if !cachedSheets.isEmpty {
-                        MediaEngineV1.beacon("evidence cache: \(cachedSheets.count) of \(includedMoments0.count) Moment(s) served from cached AU frames (no restore/extract)")
-                    }
-                }
-
-                // RELIABILITY (visual-first): a Moment whose local file is evicted (R5) or not-yet-restored is
-                // otherwise SILENTLY skipped by visualBudgetInputs (fileExists -> continue) and planned
-                // text-only — which made an initial create sheet only the Moments that happened to be local at
-                // that instant (observed: 7 of 16 sheets one run, 16/16 the next). Restore the included
-                // Moments to local FIRST (reusing the same R6 path as the render step), so visual-first covers
-                // every Moment regardless of eviction state. A Moment that genuinely cannot be restored still
-                // falls back to text-only (never fabricated), and is counted in momentsTextOnly for diagnostics.
-                // P1-F: EXCLUDE Moments already served from cache — they need neither restore nor extraction.
-                let includedIds = Set(build.includedMedia.map { $0.momentId }).subtracting(cachedHitIds)
-                let includedMoments = story.moments.filter { includedIds.contains($0.id) }
-                let restored = await MomentResolver.resolveEnsuringLocal(
-                    moments: includedMoments, context: context,
-                    activeOwner: AuthStore.shared?.storyUserId,
-                    token: { await AuthStore.shared?.validAccessToken() })
-                var mediaById = Dictionary(build.includedMedia.filter { !cachedHitIds.contains($0.momentId) }
-                    .map { ($0.momentId, $0) }) { a, _ in a }
-                for md in restored.media { mediaById[md.momentId] = md }
-                restoreUnavailableIds = restored.unavailable.map { $0.momentId.uuidString.lowercased() }
-                if !restored.unavailable.isEmpty {
-                    MediaEngineV1.beacon("visual-first restore: \(restored.unavailable.count) of \(includedMoments.count) Moment(s) could not be restored -> text-only")
-                }
-                let budget = await MultimodalVisualBudget.build(
-                    Self.visualBudgetInputs(fromMedia: Array(mediaById.values), auUsefulRanges: build.auUsefulRanges))
-                // Merge cached-hit sheets with the freshly-extracted budget sheets. Cached hits are already
-                // within the per-Moment budget; the global payload ceiling still applies to the extracted set.
-                sheets = cachedSheets + budget.sheets
-                sheetMissReasons = budget.sheetMissReasons
-                budgetDiag = (budget.selectedTier, budget.appliedSteps, budget.momentsTextOnly,
-                              sheets.reduce(0) { $0 + $1.jpeg.count })
+                        return (urls, restored.unavailable.map { $0.momentId })
+                    })
+                tPrep.end("eligible=\(prepared.eligibleCount) cacheHit=\(prepared.cacheHitCount) sheets=\(prepared.sheets.count) bytes=\(prepared.budget.totalImageBytes)")
+                sheets = prepared.sheets
+                sheetMissReasons = prepared.sheetMissReasons
+                restoreUnavailableIds = prepared.restoreUnavailableIds
+                // textOnly = eligible Moments that reached the planner without a sheet (includes unrestorable).
+                budgetDiag = (prepared.budget.selectedTier, prepared.budget.appliedSteps,
+                              prepared.eligibleCount - prepared.sheets.count, prepared.budget.totalImageBytes)
+                // Privacy-safe counts only (no ids/content). A missing beacon is NOT evidence reuse is off.
+                MediaEngineV1.beacon("evidence prep: eligible=\(prepared.eligibleCount) cacheHit=\(prepared.cacheHitCount) "
+                    + "cacheMiss=\(prepared.cacheMissCount) restored=\(prepared.restoredCount) "
+                    + "unavailable=\(prepared.restoreUnavailableIds.count) sheets=\(prepared.sheets.count) "
+                    + "guided=\(prepared.guidedCount) uniform=\(prepared.uniformCount) "
+                    + "tier=\(prepared.budget.selectedTier) wireBytes=\(prepared.wireBytes) "
+                    + "eventsCovered=\(prepared.coverage.eventsCovered)/\(prepared.coverage.eventsTotal) "
+                    + "visualCovered=\(prepared.coverage.visualCovered)/\(prepared.coverage.visualTotal) "
+                    + "policy=\(EvidenceFrameMapper.policyVersion)")
             }
             // operation_id = idempotency key. Persist BEFORE submit so a crash/restart/retry/dup-tap reuses the
             // SAME job (no duplicate inference). Reuse the Story's existing id on recovery; mint one otherwise.
@@ -694,17 +784,10 @@ final class StoryCreationCoordinator {
             // critique is CONDITIONAL, not automatic — while the ORIGINAL create keeps its existing gated
             // behavior. Images, prior-version context/diversity, mandatory deterministic validation and the
             // worker's bounded repair are all preserved; only the automatic critique pass is dropped for
-            // Explore. An explicit opt-in (critiqueExploreEnabled, default false) can still force it.
-            let critique: Bool = {
-                guard wantMultimodal && StoryMultimodalPlanning.critiqueRevisionEnabled else { return false }
-                if pendingOperationType == "another_version" {
-                    return StoryMultimodalPlanning.critiqueExploreEnabled   // conditional; default OFF
-                }
-                // Phase 2: a TARGETED revise (Path B) runs critique OFF by default — it is a bounded change,
-                // not a creative re-edit. Only a full re-edit (Path C) keeps the original revise behavior.
-                if let scope = reviseScope, scope != .fullReedit { return false }
-                return true   // original create / full-reedit revision: unchanged
-            }()
+            // Explore (Explore always plans in ONE call; there is no switch to turn the critique on for it).
+            let critique: Bool = StoryMultimodalPlanning.critiqueApplies(
+                wantMultimodal: wantMultimodal, critiqueEnabled: StoryMultimodalPlanning.critiqueRevisionEnabled,
+                isExplore: pendingOperationType == "another_version", reviseScope: reviseScope)
 
             // P0 EVIDENCE ACCOUNTING — assemble the reconciling census (stages 1-10) from the eligibility
             // census (build) + the visual-budget miss reasons + the R6-unrestorable set, plus build provenance.
@@ -716,12 +799,12 @@ final class StoryCreationCoordinator {
                 sheetMissReasons: sheetMissReasons, restoreUnavailableIds: Set(restoreUnavailableIds))
             let provenance = BuildProvenance.current(
                 requestedApproach: requested.rawValue,
-                multimodalEnabled: StoryMultimodalPlanning.enabled,
+                multimodalEnabled: true,
                 extractionPolicy: MomentFrameExtractor.extractionPolicy)
             MediaEngineV1.beacon("evidence-accounting reconciles=\(evidenceAccounting.reconciles) "
                 + "linked=\(evidenceAccounting.linkedCount) eligible=\(evidenceAccounting.eligibleCount) "
                 + "sheeted=\(evidenceAccounting.sheetedCount) missing=\(evidenceAccounting.missingSheetCount) "
-                + "sha=\(provenance.commitSHA) extract=\(provenance.extractionPolicy)")
+                + "sha=\(provenance.commitSHA) extract=\(provenance.extractionPolicy) select=\(provenance.selectionPolicy)")
             let evidenceDict = evidenceAccounting.asRequestDictionary()
             let provenanceDict = provenance.asRequestDictionary()
 
@@ -739,14 +822,37 @@ final class StoryCreationCoordinator {
                 reusedExistingJob = false
                 var submitted: String? = nil
                 var lastErr: Error? = nil
+                // LOST-REPLY RECOVERY: encode once, keep the exact bytes on device and durably record the attempt
+                // (phase "submitting", no job id yet) BEFORE the POST. A reply lost to a dropped connection, a
+                // locked screen or a killed app is then recoverable: the retries below and any later resume
+                // re-send these SAME bytes, which the server matches to the SAME job (deterministic job id +
+                // payload fingerprint) — never a second inference.
+                let tEnc = RenderTiming.begin("encode_request")
+                let prepared = jobClient.prepareSubmit(build.request, operationId: opId, owner: "dev",
+                                                       approach: requested, sheets: sheets,
+                                                       creativeBrief: brief, critiqueRevision: critique,
+                                                       evidenceAccounting: evidenceDict,
+                                                       buildProvenance: provenanceDict)
+                tEnc.end()
+                if let prepared {
+                    PendingJobSubmitStore.save(prepared, operationId: opId)
+                    upsertPending(story: story, operationId: opId, jobId: nil, phase: "submitting",
+                                  jobStatus: nil, fingerprint: Self.fingerprint(
+                                    for: build.includedMedia.map(\.momentId), story: story))
+                }
+                let tSubmit = RenderTiming.begin("submit_job")
                 for attempt in 0..<3 {
                     if cancelRequested { return finishCancelled() }
                     do {
-                        submitted = try await jobClient.submit(build.request, operationId: opId, owner: "dev",
-                                                               approach: requested, sheets: sheets,
-                                                               creativeBrief: brief, critiqueRevision: critique,
-                                                           evidenceAccounting: evidenceDict,
-                                                           buildProvenance: provenanceDict)
+                        if let prepared {
+                            submitted = try await jobClient.submitPrepared(prepared)
+                        } else {
+                            submitted = try await jobClient.submit(build.request, operationId: opId, owner: "dev",
+                                                                   approach: requested, sheets: sheets,
+                                                                   creativeBrief: brief, critiqueRevision: critique,
+                                                                   evidenceAccounting: evidenceDict,
+                                                                   buildProvenance: provenanceDict)
+                        }
                         break
                     } catch let EditPlanJobError.transport(underlying) {
                         // A user cancel surfaces as NSURLError -999 — not retryable, it IS a cancellation.
@@ -759,11 +865,15 @@ final class StoryCreationCoordinator {
                         try? await Task.sleep(nanoseconds: UInt64(600_000_000 * (attempt + 1)))  // 0.6s,1.2s
                     }
                 }
+                tSubmit.end("ok=\(submitted != nil)")
                 guard let jid = submitted else {
+                    // Keep the cached bytes + "submitting" row: the job may exist server-side (the reply was
+                    // lost), and reopening the Story resumes it by re-sending the same bytes.
                     let reason = lastErr.map { String(describing: $0) } ?? "submit failed"
                     return finishFailed(.planTransport(reason))
                 }
                 jobId = jid
+                PendingJobSubmitStore.remove(operationId: opId)   // job id known — the bytes are no longer needed
                 story.planJobId = jobId; story.planJobStatus = "queued"; try? context.save()
             }
             // Phase 1: durably record this unfinished operation NOW (job handle known) so a background/suspend/
@@ -783,6 +893,7 @@ final class StoryCreationCoordinator {
             // the stale handle and submit ONE fresh job for the same operation_id (idempotent), then poll that.
             var activeJobId = jobId
             var final: EditPlanJobState
+            let tPoll = RenderTiming.begin("plan_poll")
             do {
                 final = try await pollWithStatusUpdates(jobId: activeJobId, story: story)
             } catch EditPlanJobError.badStatus(404) where reusedExistingJob {
@@ -807,6 +918,7 @@ final class StoryCreationCoordinator {
                 }
             }
 
+            tPoll.end("status=\(final.status.rawValue) status_reads=\(pollStatusReads) sheets=\(Int(final.diagnostics?["sheet_count"]?.doubleValue ?? 0))")
             switch final.status {
             case .completed:
                 guard let p = final.plan else { return finishFailed(.planUnavailable) }
@@ -838,6 +950,12 @@ final class StoryCreationCoordinator {
                 // (opening/ending/include/exclude/order). Without them it is an honest PLANNER/technical failure
                 // (bounded retry), never labeled as "your instruction excluded too much".
                 markPendingFailed(story: story, category: final.failure?.rawValue)
+                // The job is terminal server-side. Drop its handles so the next Create / Try again mints a NEW
+                // operation and submits a NEW job, instead of re-polling this failed one and replaying its
+                // failure with no new planning (dev 2026-11-18, job ad458f5b). The abandoned pending row already
+                // keeps app-level recovery from resuming it, so this cannot reopen the resume loop.
+                Self.clearTerminalJobHandles(story)
+                try? context.save()
                 switch final.failure {
                 case .materialInfeasible: return finishFailed(.planInfeasible(final.failureDetail ?? "material"))
                 case .preservationViolation:
@@ -853,6 +971,12 @@ final class StoryCreationCoordinator {
                     return finishFailed(.invalidPlanOutput(final.failureDetail ?? ""))
                 case .unsupportedOperation: return finishFailed(.unsupportedOperation(final.failureDetail ?? ""))
                 case .providerExhausted:  return finishFailed(.planUnavailable)   // quota — try later
+                // A lost-reply resend adopted a job the server had REFUSED at submit: show the upgrade / limit
+                // screen, never a generic "try again" (the job body carries no typed code, so the copy is generic).
+                case .billingDenied:
+                    return finishFailed(.entitlementDenied(BillingDenial(code: .unknown, action: "subscribe",
+                                                                         videosRemaining: nil, momentsRemaining: nil)))
+                case .quotaDenied:         return finishFailed(.quotaDenied(L10n.t("You've reached a usage limit.")))
                 default:                   return finishFailed(.planUnavailable)
                 }
             case .cancelled:
@@ -869,12 +993,25 @@ final class StoryCreationCoordinator {
             return finishFailed(.planTransport("this Story is already being created"))
         } catch let EditPlanJobError.quotaExceeded(scope, _) {
             // Enforce-mode allowance cap (429). Honest, scope-specific message; NOT a retry.
+            // The server definitively REFUSED this operation: end it so no "Creating…" banner lingers (see below).
+            endRefusedOperation(story: story, category: Self.refusedCategoryQuota)
             if cancelRequested { return finishCancelled() }
             return finishFailed(.quotaDenied(EditPlanJobError.quotaExceeded(scope: scope, retryAfter: nil).errorDescription ?? "You've reached a usage limit."))
-        } catch EditPlanJobError.quotaStoreUnavailable {
-            // Accounting-store outage (503). Transient — the user may try again shortly.
+        } catch let EditPlanJobError.entitlementDenied(denial) {
+            // Billing V1 (402): allowance/trial/subscription. The UI opens the upgrade or allowance screen; never a retry.
+            // Billing V2 device fix (dev 2026-11-21, job 2e057035): the pre-submit "submitting" row kept its cached
+            // bytes after the 402, so the Story screen showed "Creating…" forever and disabled Another Version.
+            endRefusedOperation(story: story, category: Self.refusedCategoryBilling)
             if cancelRequested { return finishCancelled() }
-            return finishFailed(.quotaDenied(EditPlanJobError.quotaStoreUnavailable(retryAfter: nil).errorDescription ?? "Please try again in a moment."))
+            return finishFailed(.entitlementDenied(denial))
+        } catch EditPlanJobError.busy {
+            // Billing V2: temporary capacity (active jobs / shared breaker / rate limit). Retryable, never "out of credits".
+            if cancelRequested { return finishCancelled() }
+            return finishFailed(.capacityBusy)
+        } catch EditPlanJobError.quotaStoreUnavailable {
+            // Accounting-store outage (503). Transient — the user may try again shortly (retryable, Billing V2).
+            if cancelRequested { return finishCancelled() }
+            return finishFailed(.capacityBusy)
         } catch EditPlanJobError.pollTimeout {
             if cancelRequested { return finishCancelled() }
             // The job may still be running server-side — do NOT lose it; the Story keeps its job_id for reopen.
@@ -905,6 +1042,7 @@ final class StoryCreationCoordinator {
         // renderer DOES need the bytes, so restore (R6) the originals for exactly the Moments the plan selected
         // BEFORE validating/resolving — never a bulk download, only the chosen set. A Moment that cannot be
         // restored is reported by validate() below as an unresolved asset (honest failure), never a silent skip.
+        let tRestore = RenderTiming.begin("pre_render_restore")
         let selectedAssetIds = Set(plan.segments.map { $0.assetId.lowercased() })
         let selectedMoments = story.moments.filter { selectedAssetIds.contains($0.id.uuidString.lowercased()) }
         let restoreResult = await MomentResolver.resolveEnsuringLocal(
@@ -916,6 +1054,7 @@ final class StoryCreationCoordinator {
         var renderMediaById = Dictionary(build.includedMedia.map { ($0.momentId, $0) }) { a, _ in a }
         for md in restoreResult.media { renderMediaById[md.momentId] = md }
         let renderMedia = Array(renderMediaById.values)
+        tRestore.end("selected=\(selectedMoments.count)")
         if !restoreResult.unavailable.isEmpty {
             MediaEngineV1.beacon("pre-render restore: \(restoreResult.unavailable.count) selected Moment(s) could not be restored")
         }
@@ -923,31 +1062,22 @@ final class StoryCreationCoordinator {
         // ---- validating: deterministic, BEFORE AVFoundation; renderer never runs on an invalid plan ----
         planningSubstatus = nil   // planning is done; drop the backend-status sub-line
         state = .validating
+        let tValidate = RenderTiming.begin("validate_plan")
         let resolver = MomentResolver.urlResolver(for: renderMedia)
         if let reason = Self.validate(plan: plan, resolver: resolver, includedMedia: renderMedia) {
+            tValidate.end("ok=false")
             return finishFailed(.invalidPlan(reason))
         }
+        tValidate.end("ok=true segments=\(plan.segments.count)")
         if cancelRequested { return finishCancelled() }
 
-        // ---- creative refinement (V2-b, architecture B): DETERMINISTIC, opt-in, OFF by default ----
-        // Runs AFTER the frozen Edit Planner v4 + validation, BEFORE rendering. Proposes conservative
-        // source in/out nudges toward motion-settle / audio-onset points, then re-validates; on ANY failure
-        // (or when disabled) the ORIGINAL executable plan is used unchanged. Narrative selection, order,
-        // output durations, speed, transitions and music alignment are all preserved. A straight cut remains
-        // a valid result. Gate: StoryCreativeRefinement.enabled (default false until device-accepted).
-        if StoryCreativeRefinement.enabled {
-            let sourceDur: (String) -> Double? = { aid in
-                renderMedia.first { $0.momentId.uuidString.lowercased() == aid.lowercased() }?.durationSeconds
-            }
-            let outcome = CreativeRefinementV2b.refine(
-                plan: plan, enabled: true, resolveURL: resolver,
-                actionTimestamps: build.auActionTimestamps,     // AU event starts/ends per asset ([] when absent)
-                sourceDuration: sourceDur,
-                usefulRanges: build.auUsefulRanges,             // AU useful_segments per asset ([] when absent)
-                evidenceProvider: AVFoundationEvidence.sample)
-            StoryCreativeRefinement.lastOutcomeNotes = outcome.validationNotes
-            plan = outcome.plan                                 // refined OR original (safe either way)
-        }
+        // ---- creative refinement (V2-b) is NOT part of the standard path (perf milestone, 2026-11-18) ----
+        // The validated planner plan renders as-is. The V2-b pass (CreativeRefinementV2b) cost 283 s for 56
+        // shots on device (~2,400 synchronous AVFoundation probes on the main actor), it is not needed for
+        // correctness (validate() above already proved the plan executable), and because it moved source
+        // in/out while keeping output_duration it silently retimed shots (span != output -> scaleTimeRange).
+        // The engine and its unit tests are kept as an optional quality experiment; re-adding it requires a
+        // bounded, off-main-actor implementation and an owner decision.
 
         // ---- rendering: real renderer with progress + cancel flag (music seam threaded) ----
         state = .rendering(progress: 0)
@@ -1002,7 +1132,9 @@ final class StoryCreationCoordinator {
             lastDiversity = RevisionContextBuilder.diversity(parent: parent, newPlan: plan)
         }
 
+        let tPersist = RenderTiming.begin("persist_output")
         let output = persist(result: result, plan: plan, story: story, build: build)
+        tPersist.end()
         // The attempt is done — clear the in-flight job handles so a reopened completed Story never re-polls.
         // (A deliberate new version mints a fresh operation_id on its next create.)
         story.planOperationId = nil; story.planJobId = nil; story.planJobStatus = "completed"
@@ -1011,24 +1143,30 @@ final class StoryCreationCoordinator {
         finalizePending(story: story)
         try? context.save()
         state = .completed(output)
+        tRun.end("segments=\(plan.segments.count)")
     }
 
     // MARK: - Deterministic validator (pre-AVFoundation)
 
     /// Poll one job to terminal, mirroring its status into the Story + pending row + planning sub-line. Shared
     /// by the initial poll and the stale-job re-submit recovery.
+    /// Successful status reads during the current plan poll (performance timeline only).
+    @ObservationIgnored private var pollStatusReads = 0
+
     private func pollWithStatusUpdates(jobId: String, story: StoryModel) async throws -> EditPlanJobState {
-        try await jobClient.pollUntilTerminal(
+        pollStatusReads = 0
+        return try await jobClient.pollUntilTerminal(
             jobId: jobId, maxSeconds: 900,
             shouldCancel: { [weak self] in self?.cancelRequested ?? false },
             onState: { [weak self] st in
+                self?.pollStatusReads += 1
                 story.planJobStatus = st.status.rawValue
                 self?.updatePendingStatus(story: story, jobStatus: st.status.rawValue)
                 self?.planningSubstatus = {
                     switch st.status {
-                    case .queued:           return "Queued for planning…"
-                    case .running:          return "Planning your Story…"
-                    case .cancelRequested:  return "Cancelling…"
+                    case .queued:           return L10n.t("Queued for planning…")
+                    case .running:          return L10n.t("Planning your Story…")
+                    case .cancelRequested:  return L10n.t("Cancelling…")
                     default:                return nil
                     }
                 }()
@@ -1041,11 +1179,11 @@ final class StoryCreationCoordinator {
     /// total feasible vs the summed source material; transitions in {cut,fade,dissolve}; native_audio in
     /// P1-F (Option 8-i): parse the editorial candidates + event times for a Moment from its LOCAL
     /// MomentUnderstanding JSON, for the EvidenceFrameMapper. Reads visual_candidates / narrative_candidates
-    /// (start/end/peak/confidence) + observed.events (start) — all ADVISORY, as persisted. Returns empty
+    /// (start/end/peak/confidence) + observed.events (start/end) — all ADVISORY, as persisted. Returns empty
     /// lists for an absent/older record (the mapper then uses its uniform-overview fallback). Never parses the
     /// untrusted model `evidence` string.
     static func editorialCandidates(for momentId: UUID, context: ModelContext)
-        -> (visual: [EvidenceCandidate], narrative: [EvidenceCandidate], events: [Double]) {
+        -> (visual: [EvidenceCandidate], narrative: [EvidenceCandidate], events: [EvidenceCandidate]) {
         guard let mu = (try? context.fetch(FetchDescriptor<MomentUnderstandingModel>(
             predicate: #Predicate { $0.momentId == momentId })))?.first,
             let data = mu.understandingJSON.data(using: .utf8),
@@ -1067,48 +1205,16 @@ final class StoryCreationCoordinator {
         if let ed = root["editorial"] as? [String: Any] {
             visual = cands(ed["visual_candidates"]); narrative = cands(ed["narrative_candidates"])
         }
-        var events: [Double] = []
+        var events: [EvidenceCandidate] = []
         if let observed = root["observed"] as? [String: Any],
            let evs = observed["events"] as? [[String: Any]] {
-            for ev in evs { if let s = (ev["start_time"] as? NSNumber)?.doubleValue { events.append(s) } }
+            for ev in evs {
+                guard let s = (ev["start_time"] as? NSNumber)?.doubleValue else { continue }
+                let e = (ev["end_time"] as? NSNumber)?.doubleValue ?? s     // end_time optional -> point event
+                events.append(EvidenceCandidate(start: s, end: e, peak: nil, confidence: nil))
+            }
         }
         return (visual, narrative, events)
-    }
-
-    /// MVP multimodal: assemble the adaptive-visual-budget inputs for the INCLUDED Moments (those actually in
-    /// the planner request). Source URL is resolved from the Moment's local relativePath via MediaStore;
-    /// richness uses the SAME AU useful_segments the planner sees (events aren't in the request, so eventCount
-    /// is 0 — honest, never fabricated). A Moment with no resolvable file is skipped (it is also not in the
-    /// request). Deterministic.
-    static func visualBudgetInputs(from build: EditPlanRequestBuilder.Build) -> [VisualBudgetInput] {
-        let ranges = build.auUsefulRanges   // [lowercased id: [(a,b)]]
-        var out: [VisualBudgetInput] = []
-        for m in build.includedMedia {
-            guard MediaStore.shared.fileExists(relativePath: m.relativePath) else { continue }
-            let url = MediaStore.shared.absoluteURL(for: m.relativePath)
-            let key = m.momentId.uuidString.lowercased()
-            out.append(VisualBudgetInput(
-                momentId: m.momentId, url: url, durationSeconds: m.durationSeconds,
-                usefulSegmentCount: ranges[key]?.count ?? 0, eventCount: 0))
-        }
-        return out
-    }
-
-    /// Visual-budget inputs from an EXPLICIT media set (e.g. the post-R6-restore union), so a Moment that was
-    /// cloud-only/evicted and has just been restored is included rather than dropped. A file that STILL does
-    /// not exist locally (genuinely unrestorable) is skipped — it plans text-only, honestly, never fabricated.
-    static func visualBudgetInputs(fromMedia media: [MomentMedia],
-                                   auUsefulRanges: [String: [(Double, Double)]]) -> [VisualBudgetInput] {
-        var out: [VisualBudgetInput] = []
-        for m in media {
-            guard MediaStore.shared.fileExists(relativePath: m.relativePath) else { continue }
-            let url = MediaStore.shared.absoluteURL(for: m.relativePath)
-            let key = m.momentId.uuidString.lowercased()
-            out.append(VisualBudgetInput(
-                momentId: m.momentId, url: url, durationSeconds: m.durationSeconds,
-                usefulSegmentCount: auUsefulRanges[key]?.count ?? 0, eventCount: 0))
-        }
-        return out
     }
 
     /// P0 — assemble the reconciling MomentEvidenceAccounting census (stages 1-10) from the pieces each stage
@@ -1306,13 +1412,27 @@ final class StoryCreationCoordinator {
         if let rel = partialRelativePath { cleanup(relative: rel) }
         planningSubstatus = nil
         lastFailure = error
-        state = .failed(message: error.errorDescription ?? "Creation failed.")
+        state = .failed(message: error.errorDescription ?? L10n.t("Creation failed."))
+        dropPreparingAttempt()
     }
 
     private func finishCancelled() {
         if let rel = partialRelativePath { cleanup(relative: rel) }
         planningSubstatus = nil
         state = .cancelled
+        dropPreparingAttempt()
+    }
+
+    /// An attempt that ENDED (failed / cancelled) before anything reached the server leaves nothing to resume:
+    /// delete its "preparing" row so a later foreground never re-runs a failure (e.g. insufficient material)
+    /// in a loop. Rows past submit are untouched (submitting keeps its bytes for lost-reply recovery; failures
+    /// after submit are handled by markPendingFailed).
+    private func dropPreparingAttempt() {
+        guard let sid = lastStory?.id, let row = fetchPending(storyId: sid), row.isRecoverable,
+              row.phase == "preparing", row.jobId == nil,
+              !PendingJobSubmitStore.exists(operationId: row.operationId) else { return }
+        context.delete(row)
+        try? context.save()
     }
 
     private func cleanup(relative: String) {
@@ -1404,7 +1524,54 @@ extension StoryCreationCoordinator {
     /// this to offer "resume" instead of silently re-creating, and to decide whether reopen should recover.
     func hasRecoverablePendingOperation(storyId: UUID) -> Bool {
         guard let row = fetchPending(storyId: storyId) else { return false }
-        return row.isRecoverable && row.jobId != nil
+        return Self.isResumable(row)
+    }
+
+    /// How long an attempt killed DURING PREPARATION stays resumable. Resuming it submits paid AI, so it must
+    /// never start by surprise hours later; past this window the row is discarded and the user simply creates
+    /// again.
+    static let preparingResumeWindow: TimeInterval = 30 * 60
+
+    /// Single source of truth for "can this row be resumed?" (coordinator, app-level recovery, Result banner):
+    /// a submitted job, a lost reply whose exact bytes are cached, or a recent pre-submit "preparing" attempt.
+    static func isResumable(_ row: PendingOperationModel, now: Date = .now) -> Bool {
+        guard row.isRecoverable else { return false }
+        if row.jobId != nil || PendingJobSubmitStore.exists(operationId: row.operationId) { return true }
+        return isPreparing(row) && now.timeIntervalSince(row.updatedAt) < preparingResumeWindow
+    }
+
+    /// True when the Story still points at a planning job that has ENDED (failed / cancelled / expired, or its
+    /// pending row was abandoned), so reusing it could only replay that terminal state. A handle whose job may
+    /// still be live is NOT stale: no observed terminal status and no abandoned row.
+    static func hasStaleTerminalJob(_ story: StoryModel, pending: PendingOperationModel?) -> Bool {
+        guard story.planJobId != nil || story.planOperationId != nil else { return false }
+        if let s = story.planJobStatus, ["failed", "cancelled", "expired"].contains(s) { return true }
+        if let row = pending, row.operationId == story.planOperationId, !row.isRecoverable { return true }
+        return false
+    }
+
+    /// Drop a terminal job's handles so the next attempt mints a fresh operation id and submits a new job.
+    /// Keeps planJobStatus as the advisory "last outcome". The caller saves the context.
+    static func clearTerminalJobHandles(_ story: StoryModel) {
+        story.planJobId = nil
+        story.planOperationId = nil
+    }
+
+    /// Pre-submit attempt: recorded at create start, nothing sent yet.
+    static func isPreparing(_ row: PendingOperationModel) -> Bool {
+        row.isRecoverable && row.phase == "preparing" && row.jobId == nil
+            && !PendingJobSubmitStore.exists(operationId: row.operationId)
+    }
+
+    /// Decode a JSON blob persisted on a pending row (revision context / music plan); nil when absent/invalid.
+    static func decodeStoredJSON(_ s: String?) -> JSONValue? {
+        guard let s, let d = s.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(JSONValue.self, from: d)
+    }
+
+    private static func encodeStoredJSON(_ v: JSONValue?) -> String? {
+        guard let v, let d = try? JSONEncoder().encode(v) else { return nil }
+        return String(data: d, encoding: .utf8)
     }
 
     /// Mark every recoverable pending op for a Story as abandoned (user deliberately started a new operation).
@@ -1413,6 +1580,7 @@ extension StoryCreationCoordinator {
     func abandonPendingOperations(storyId: UUID) {
         let desc = FetchDescriptor<PendingOperationModel>(predicate: #Predicate { $0.storyId == storyId })
         for row in ((try? context.fetch(desc)) ?? []) where row.isRecoverable {
+            PendingJobSubmitStore.remove(operationId: row.operationId)
             context.delete(row)
         }
         try? context.save()
@@ -1444,6 +1612,13 @@ extension StoryCreationCoordinator {
         row.nativeAudioPriority = pendingMusic?.nativeAudioPriority ?? row.nativeAudioPriority
         row.outputFormat = lastOutputFormat
         row.targetSeconds = lastTargetSeconds
+        // Resume-from-preparing inputs (only overwritten when known, so a resumed run never erases them).
+        if let rc = Self.encodeStoredJSON(pendingRevisionContext) { row.revisionContextJSON = rc }
+        row.directedByCustomize = pendingDirectedByCustomize
+        if let plan = pendingMusic?.musicPlanJSON, case .object(let o) = plan, !o.isEmpty,
+           let s = Self.encodeStoredJSON(plan) {
+            row.musicPlanJSON = s
+        }
         row.updatedAt = .now
         try? context.save()
     }
@@ -1462,8 +1637,24 @@ extension StoryCreationCoordinator {
         try? context.save()
     }
 
+    /// failure_category values for an operation the server REFUSED (never planned). The Story screen keys its copy off them.
+    static let refusedCategoryBilling = "billing_denied"
+    static let refusedCategoryQuota = "quota_denied"
+
+    /// The server definitively refused this operation (402 entitlement / 429 usage cap): a lost-reply resend can only
+    /// replay the refusal. Mark the pending row terminal (drops the cached submit bytes) and clear the job handles so
+    /// nothing resumes it and the next Create / Another Version mints a NEW operation. Retryable refusals (busy, 503)
+    /// do NOT come here: they keep the cached bytes for recovery.
+    func endRefusedOperation(story: StoryModel, category: String) {
+        markPendingFailed(story: story, category: category)
+        Self.clearTerminalJobHandles(story)
+        story.planJobStatus = "failed"
+        try? context.save()
+    }
+
     private func markPendingFailed(story: StoryModel, category: String?) {
         guard let row = fetchPending(storyId: story.id) else { return }
+        PendingJobSubmitStore.remove(operationId: row.operationId)
         row.failureCategory = category; row.jobStatus = "failed"
         // Mark the op TERMINAL (abandoned) so the app-level recovery does NOT re-resume this failed job on
         // every foreground (that caused an infinite resume->failed loop, and once planJobId was cleared it
@@ -1480,6 +1671,7 @@ extension StoryCreationCoordinator {
         let sid = story.id
         let desc = FetchDescriptor<PendingOperationModel>(predicate: #Predicate { $0.storyId == sid })
         for row in ((try? context.fetch(desc)) ?? []) {
+            PendingJobSubmitStore.remove(operationId: row.operationId)
             context.delete(row)
         }
         try? context.save()
@@ -1504,9 +1696,20 @@ extension StoryCreationCoordinator {
     @discardableResult
     func resumePendingOperation(for story: StoryModel, music: MusicSelection? = nil) -> Bool {
         guard !isCreating else { return false }                 // a run already owns this coordinator
-        guard let row = fetchPending(storyId: story.id), row.isRecoverable, let jobId = row.jobId else {
+        guard let row = fetchPending(storyId: story.id), row.isRecoverable else { return false }
+        // KILLED DURING PREPARATION: nothing reached the server, so re-run the pipeline from the start with the
+        // SAME operation id (the server's idempotency makes a duplicate impossible). Past the resume window the
+        // attempt is discarded instead — resuming submits paid AI and must never start by surprise much later.
+        let preparing = Self.isPreparing(row)
+        if preparing && !Self.isResumable(row) {
+            context.delete(row); try? context.save()
             return false
         }
+        // A LOST-REPLY attempt has no job id yet but kept its exact submit bytes: re-send them (same operation
+        // id + payload -> the server returns the SAME job, or creates it if the first POST never arrived), then
+        // resume exactly like any other in-flight job. Never a new inference.
+        let cachedSubmit = row.jobId == nil ? PendingJobSubmitStore.load(operationId: row.operationId) : nil
+        guard row.jobId != nil || cachedSubmit != nil || preparing else { return false }
         guard Self.claimActive(story.id, by: self) else { return false }  // another coordinator already resuming/creating
         // Rehydrate the in-memory operation context from the durable row so persist() keeps lineage/music/type.
         lastStory = story
@@ -1517,24 +1720,79 @@ extension StoryCreationCoordinator {
         pendingOperationType = row.operationType
         pendingEditorialType = row.editorialTypeRaw   // P1-C: resume uses the PERSISTED attempt type, not a re-derivation
         pendingParentVersionId = row.baseVersionId.flatMap(UUID.init(uuidString:))
-        pendingRevisionContext = Self.rebuildRevisionContext(for: story, row: row)
+        // The EXACT context the attempt was built with when stored (required for a pre-submit Revise, whose
+        // directives exist nowhere else); legacy rows fall back to the previous rebuild.
+        pendingRevisionContext = Self.decodeStoredJSON(row.revisionContextJSON)
+            ?? Self.rebuildRevisionContext(for: story, row: row)
+        pendingDirectedByCustomize = row.directedByCustomize ?? false
         story.planOperationId = row.operationId
-        story.planJobId = jobId
+        story.planJobId = row.jobId
         isCreating = true
         cancelRequested = false
-        Self.setKeepAwake(true)
+        Self.setKeepAwake(true, story.id)
         MediaEngineV1.beacon("editplan-recover: resume op=\(row.operationType) phase=\(row.phase) "
-            + "job=\(jobId.prefix(8)) music=\(music == nil ? "none" : "set")")
+            + "job=\(row.jobId?.prefix(8) ?? "lost-reply") music=\(music == nil ? "none" : "set")")
         task = Task { [weak self] in
-            await self?.resumeRun(story: story, row: row)
+            guard let self else { return }
+            if let cachedSubmit {
+                switch await self.recoverLostReply(cachedSubmit, story: story, row: row) {
+                case .recovered:
+                    break
+                case .refused(let error):
+                    // The server definitively refused the resend (402 / 429 cap): the row is already ended, so the
+                    // Story screen's banner clears and the next attempt mints a new operation.
+                    self.isCreating = false; self.task = nil
+                    Self.setKeepAwake(false, story.id); Self.releaseActive(story.id)
+                    self.finishFailed(error)
+                    return
+                case .unreachable:
+                    // Could not reach the server (offline): leave the row + bytes for the next foreground/reopen.
+                    self.isCreating = false; self.task = nil
+                    Self.setKeepAwake(false, story.id); Self.releaseActive(story.id)
+                    self.finishFailed(.planTransport("couldn't reach Story — reopen to continue"))
+                    return
+                }
+            }
+            await self.resumeRun(story: story, row: row)
         }
         return true
+    }
+
+    enum LostReplyOutcome { case recovered, unreachable, refused(StoryCreationError) }
+
+    /// Re-send a lost-reply submit's exact bytes (bounded retries) and adopt the returned job id. A definitive server
+    /// refusal (402 entitlement / 429 usage cap) ENDS the operation instead of being retried as "unreachable" forever.
+    private func recoverLostReply(_ prepared: PreparedJobSubmit, story: StoryModel, row: PendingOperationModel) async -> LostReplyOutcome {
+        for attempt in 0..<3 {
+            do {
+                let jid = try await jobClient.submitPrepared(prepared)
+                story.planJobId = jid; story.planJobStatus = "queued"; try? context.save()
+                row.jobId = jid; row.phase = "planning"; row.updatedAt = .now; try? context.save()
+                PendingJobSubmitStore.remove(operationId: row.operationId)
+                MediaEngineV1.beacon("editplan-recover: lost reply recovered job=\(jid.prefix(8)) attempt=\(attempt + 1)")
+                return .recovered
+            } catch let EditPlanJobError.entitlementDenied(denial) {
+                MediaEngineV1.beacon("editplan-recover: resend refused 402 code=\(denial.code.rawValue)")
+                endRefusedOperation(story: story, category: Self.refusedCategoryBilling)
+                return .refused(.entitlementDenied(denial))
+            } catch let EditPlanJobError.quotaExceeded(scope, _) {
+                MediaEngineV1.beacon("editplan-recover: resend refused 429 cap")
+                endRefusedOperation(story: story, category: Self.refusedCategoryQuota)
+                return .refused(.quotaDenied(EditPlanJobError.quotaExceeded(scope: scope, retryAfter: nil).errorDescription
+                                             ?? "You've reached a usage limit."))
+            } catch {
+                MediaEngineV1.beacon("editplan-recover: lost-reply resend failed attempt=\(attempt + 1) "
+                    + "code=\((error as NSError).code)")
+                try? await Task.sleep(nanoseconds: UInt64(800_000_000 * (attempt + 1)))
+            }
+        }
+        return .unreachable
     }
 
     /// Drive a resumed operation to completion. For plan_ready with a saved plan we SKIP planning entirely and
     /// render from the saved plan; otherwise we re-enter the normal run (which reuses jobId -> no re-inference).
     private func resumeRun(story: StoryModel, row: PendingOperationModel) async {
-        defer { isCreating = false; task = nil; Self.setKeepAwake(false); Self.releaseActive(story.id) }
+        defer { isCreating = false; task = nil; Self.setKeepAwake(false, story.id); Self.releaseActive(story.id) }
         // Fast render-resume: a saved, completed plan -> render directly (Phase 3), no poll, no re-inference.
         if row.phase == "plan_ready" || row.phase == "rendering", let json = row.planJSON,
            let data = json.data(using: .utf8),

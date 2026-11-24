@@ -128,7 +128,14 @@ class EpidemicMCPClient:
             raise EpidemicProviderError(f"mcp_{str(env['error'].get('code', 'error'))[:40]}")
         result = env.get("result") or {}
         if result.get("isError"):
-            raise EpidemicProviderError("mcp_tool_error")
+            # Keep the provider's own message (truncated, single-line) so an ops log can tell a spent download
+            # quota from a revoked key or a non-downloadable track. Never includes our credential: the key is only
+            # sent as a request header, and the provider's tool text is the only thing quoted.
+            detail = " ".join(
+                str(c.get("text", "")) for c in result.get("content", []) if c.get("type") == "text"
+            ).split()
+            msg = " ".join(detail)[:200]
+            raise EpidemicProviderError(f"mcp_tool_error: {msg}" if msg else "mcp_tool_error")
         for c in result.get("content", []):
             if c.get("type") == "text":
                 try:

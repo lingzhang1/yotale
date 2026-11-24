@@ -49,7 +49,6 @@ class _FakeClient:
 
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
-    monkeypatch.setenv("STORY_SCENE_IMAGES", "1")
     main_mod._SCENE_IMAGE_CACHE = None
     main_mod._SCENE_IMAGE_CLIENT = None
     main_mod._SCENE_IMAGE_CLIENT_FACTORY = None
@@ -61,13 +60,6 @@ def _client(fake=None):
     if fake is not None:
         main_mod._SCENE_IMAGE_CLIENT_FACTORY = lambda: fake
     return TestClient(create_app())
-
-
-def test_flag_off_returns_404(monkeypatch):
-    monkeypatch.delenv("STORY_SCENE_IMAGES", raising=False)
-    c = TestClient(create_app())
-    r = c.post("/v1/scene-image", json={"query": "city skyline"})
-    assert r.status_code == 404
 
 
 def test_returns_metadata_only_with_attribution_and_hotlink():
@@ -85,6 +77,22 @@ def test_returns_metadata_only_with_attribution_and_hotlink():
     assert "bytes" not in img and "data" not in img
 
 
+def test_camera_flow_query_only_no_provenance_resolves():
+    """Phase 1A: the live-camera Shooting Idea card reuses /v1/scene-image with a bounded query and NO
+    Guide provenance (story_id/scene_id omitted). The endpoint already treats them as optional provenance
+    (never sent to the provider), so the camera flow needs NO backend contract change. Both the omitted
+    form and an explicit-null form must resolve identically to the Guide-scoped form."""
+    fake = _FakeClient()
+    c = _client(fake)
+    # Omitted entirely (the shape the iOS camera client sends).
+    r1 = c.post("/v1/scene-image", json={"query": "close up workspace hands keyboard"})
+    assert r1.status_code == 200 and r1.json()["image"]["photo_id"] == "abc123"
+    # Explicit nulls — also accepted (Optional fields).
+    r2 = c.post("/v1/scene-image",
+                json={"query": "close up workspace hands keyboard", "story_id": None, "scene_id": None})
+    assert r2.status_code == 200 and r2.json()["image"]["photo_id"] == "abc123"
+
+
 def test_display_does_not_fire_download_tracking():
     fake = _FakeClient()
     c = _client(fake)
@@ -92,21 +100,87 @@ def test_display_does_not_fire_download_tracking():
     assert fake.track_calls == []
 
 
-@pytest.mark.parametrize("bad", [
-    "",
-    "   ",
-    "x" * 200,
-    "see http://evil.example/leak",
-    "contact me jane@example.com",
-])
-def test_bounded_query_rejected_as_text_only_fallback(bad):
+@pytest.mark.parametrize("empty", ["", "   ", "!!! 42", "http://evil.example/leak", "jane@example.com"])
+def test_query_with_no_usable_words_is_text_only(empty):
     fake = _FakeClient()
     c = _client(fake)
-    r = c.post("/v1/scene-image", json={"query": bad})
+    r = c.post("/v1/scene-image", json={"query": empty})
     assert r.status_code == 200
     assert r.json()["image"] is None
     assert r.json()["status"] == "invalid_query"
     assert fake.search_calls == 0
+
+
+class _RecordingClient(_FakeClient):
+    """Matches only the queries in `hits`; records every query actually sent to the provider."""
+
+    def __init__(self, hits=()):
+        super().__init__()
+        self.hits = set(hits)
+        self.queries = []
+
+    def search_one(self, query):
+        self.search_calls += 1
+        self.queries.append(query)
+        return _SAMPLE if query in self.hits else None
+
+
+@pytest.mark.parametrize("raw,sent", [
+    ("x" * 200, "x" * 200),                                                  # long: searched, not rejected
+    ("see http://evil.example/leak desk lamp", "see desk lamp"),             # url token removed
+    ("contact me jane@example.com about the desk", "contact me about desk"), # email token removed
+    ("Wide Shot, Living-Room (night) #2", "wide shot living-room night"),    # punctuation/digits stripped
+])
+def test_format_is_normalized_never_rejected_and_pii_tokens_never_sent(raw, sent):
+    fake = _RecordingClient(hits={sent})
+    r = _client(fake).post("/v1/scene-image", json={"query": raw})
+    assert r.status_code == 200 and r.json()["status"] == "ok"
+    assert fake.queries == [sent]
+    assert all("@" not in q and "http" not in q for q in fake.queries)
+
+
+def test_no_match_broadens_to_subject_words_and_shows_a_photo():
+    # Real device query that returned no_match on dev (Nov 4).
+    q = "medium shot window night city lights desk foreground"
+    fake = _RecordingClient(hits={"window night city"})
+    r = _client(fake).post("/v1/scene-image", json={"query": q})
+    assert r.json()["status"] == "ok" and r.json()["image"]["photo_id"] == "abc123"
+    # full query first, then camera words dropped, then shortened — subject words kept throughout
+    assert fake.queries == [q, "window night city lights desk", "window night city"]
+
+
+def test_broadening_is_bounded_and_no_match_is_cached():
+    fake = _RecordingClient(hits=())
+    c = _client(fake)
+    q = "slow pan medium wide shot guitar bookcase desk window night"
+    r = c.post("/v1/scene-image", json={"query": q})
+    assert r.json()["status"] == "no_match"
+    assert fake.search_calls == si.MAX_SEARCH_ATTEMPTS == 4
+    c.post("/v1/scene-image", json={"query": q})
+    assert fake.search_calls == 4, "a cached no-match must not re-run the broadening search"
+
+
+def test_broadening_stops_on_provider_error_never_retries_into_it():
+    fake = _FakeClient(raise_exc=si.SceneImageProviderError("unsplash rate limited (429)"))
+    r = _client(fake).post("/v1/scene-image", json={"query": "medium shot window night city"})
+    assert r.json()["status"] == "provider_error"
+    assert fake.search_calls == 1
+
+
+def test_broadening_candidates_unit():
+    assert si.broadening_candidates("close up acoustic guitar bookshelf") == [
+        "close up acoustic guitar bookshelf", "acoustic guitar bookshelf", "acoustic guitar"]
+    assert si.broadening_candidates("guitar") == ["guitar"]
+    # an all-camera-words query still searches (never empty attempts)
+    assert si.broadening_candidates("wide shot") == ["wide shot"]
+    assert len(si.broadening_candidates(" ".join(["w%d" % i for i in range(12)]))) <= si.MAX_SEARCH_ATTEMPTS
+
+
+def test_normalize_query_unit():
+    assert si.normalize_query("  Wide   shot\tSKYLINE  ") == "wide shot skyline"
+    assert si.normalize_query("the guitar on a shelf") == "guitar shelf"          # filler dropped
+    assert si.normalize_query(None) is None and si.normalize_query("...") is None
+    assert len(si.normalize_query(" ".join(["word"] * 30)).split()) == si.NORMALIZED_MAX_WORDS
 
 
 def test_sanitize_query_unit():
@@ -162,13 +236,6 @@ def test_track_fires_only_for_unsplash_host():
     r = c.post("/v1/scene-image/track", json={"download_location": "https://evil.example/internal"})
     assert r.status_code == 204
     assert len(fake.track_calls) == 1
-
-
-def test_track_flag_off_404(monkeypatch):
-    monkeypatch.delenv("STORY_SCENE_IMAGES", raising=False)
-    c = TestClient(create_app())
-    r = c.post("/v1/scene-image/track", json={"download_location": "https://api.unsplash.com/x"})
-    assert r.status_code == 404
 
 
 # --- Secret parsing: owner's real Unsplash secret shape (3 hyphenated keys) ------------------------------

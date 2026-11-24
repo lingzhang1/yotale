@@ -40,19 +40,19 @@ enum StoryImportCopy {
         if !p.finished {
             switch p.phase {
             case .preparing:
-                return "Preparing selected media…"
+                return L10n.t("Preparing selected media…")
             case .importing:
-                return p.total > 1 ? "Importing… (\(p.done) of \(p.total))" : "Importing your video…"
+                return p.total > 1 ? L10n.t("Importing… (\(p.done) of \(p.total))") : L10n.t("Importing your video…")
             case .analyzing:
-                return "Analyzing moments…"
+                return L10n.t("Analyzing moments…")
             }
         }
         // Finished.
-        if p.done == 0 { return "Couldn't add those videos. Please try again." }
+        if p.done == 0 { return L10n.t("Couldn't add those videos. Please try again.") }
         if p.failed > 0 {
-            return "Added \(p.done) · \(p.failed) couldn't be added."
+            return L10n.t("Added \(p.done) · \(p.failed) couldn't be added.")
         }
-        return p.done > 1 ? "Added \(p.done) videos." : "Added your video."
+        return p.done > 1 ? L10n.t("Added \(p.done) videos.") : L10n.t("Added your video.")
     }
 }
 
@@ -90,52 +90,10 @@ private struct PhotosPickerModifier: ViewModifier {
                           maxSelectionCount: 100, matching: .videos)
             .onChange(of: selection) { _, items in
                 guard !items.isEmpty else { return }
-                Task { await importAll(items) }
+                // The copy runs in the app-scoped PhotoImportRunner, not in this view, so it keeps going when
+                // the user navigates away, leaves the app or locks the phone (iOS 26+ continued processing).
+                PhotoImportRunner.shared.enqueue(items, onPicked: onPicked, onProgress: onProgress)
+                selection = []
             }
-    }
-
-    private func importAll(_ items: [PhotosPickerItem]) async {
-        let total = items.count
-        // Phase 5: a brief "Preparing selected media…" before the first copy begins.
-        await report(ImportProgress(total: total, done: 0, failed: 0, finished: false, phase: .preparing))
-
-        var results: [ImportedMedia] = []
-        var failed = 0
-        for item in items {
-            guard let data = try? await item.loadTransferable(type: Data.self) else {
-                failed += 1
-                await report(ImportProgress(total: total, done: results.count, failed: failed,
-                                            finished: false, phase: .importing))
-                continue
-            }
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + ".mov")
-            do {
-                try data.write(to: tmp)
-                let avAsset = AVURLAsset(url: tmp)
-                let dur = CMTimeGetSeconds(avAsset.duration)
-                // Safeguard 5: recover the ORIGINAL capture date + location from the file's OWN embedded
-                // metadata (no Photos read-auth / asset-id dependency). nil when absent ("unknown").
-                let meta = await ImportedMediaMetadata.recover(from: avAsset)
-                let rel = try MediaStore.shared.adoptCapturedFile(tempURL: tmp)
-                results.append(ImportedMedia(path: rel, duration: dur.isFinite ? dur : 0, capturedAt: meta.capturedAt, latitude: meta.latitude, longitude: meta.longitude))
-            } catch {
-                failed += 1
-            }
-            await report(ImportProgress(total: total, done: results.count, failed: failed,
-                                        finished: false, phase: .importing))
-        }
-        let final = results
-        let finalFailed = failed
-        await MainActor.run {
-            selection = []
-            if !final.isEmpty { onPicked(final) }
-            onProgress(ImportProgress(total: total, done: final.count, failed: finalFailed,
-                                      finished: true, phase: .importing))
-        }
-    }
-
-    private func report(_ p: ImportProgress) async {
-        await MainActor.run { onProgress(p) }
     }
 }

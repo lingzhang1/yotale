@@ -1,7 +1,7 @@
 """story_guide/2 REFINEMENT ("Update Guide", Guide v2.1) — additive, feature-flagged backend tests.
 
 Covers the acceptance criteria that live server-side:
-  - feature-gate (404 when STORY_GUIDE_V2 off);
+  - always available (no feature gate);
   - captured scenes survive refinement (preserved verbatim, never archived);
   - user-pinned scenes are protected (never silently removed, content untouched);
   - outdated uncaptured, unpinned scenes can be archived (recorded in change log);
@@ -154,13 +154,9 @@ def test_empty_framing_falls_back_to_current():
 # Endpoint tests (mock engine; feature gate; failure preservation).
 # --------------------------------------------------------------------------- #
 
-def _client(v2_enabled: bool, monkeypatch, mock=True) -> TestClient:
+def _client(monkeypatch, mock=True) -> TestClient:
     if mock:
         monkeypatch.setenv("STORY_GUIDE_MOCK", "1")
-    if v2_enabled:
-        monkeypatch.setenv("STORY_GUIDE_V2", "1")
-    else:
-        monkeypatch.delenv("STORY_GUIDE_V2", raising=False)
     return TestClient(create_app())
 
 
@@ -182,15 +178,15 @@ def _refine_body() -> dict:
     }
 
 
-def test_refine_available_regardless_of_flag(monkeypatch):
-    # refine (v2.1) is always available now that v2 is the sole guide path (no STORY_GUIDE_V2 gate).
-    c = _client(False, monkeypatch)
+def test_refine_available_without_any_flag(monkeypatch):
+    # refine (v2.1) is always available now that v2 is the sole guide path.
+    c = _client(monkeypatch)
     r = c.post("/v1/story-guide-refine", json=_refine_body())
     assert r.status_code == 200, r.text
 
 
 def test_refine_returns_result_with_changes_when_on(monkeypatch):
-    c = _client(True, monkeypatch)
+    c = _client(monkeypatch)
     r = c.post("/v1/story-guide-refine", json=_refine_body())
     assert r.status_code == 200, r.text
     b = r.json()
@@ -202,7 +198,6 @@ def test_refine_returns_result_with_changes_when_on(monkeypatch):
 
 def test_refine_failure_is_503_not_5xx_crash(monkeypatch):
     # A real engine whose gateway raises -> GuideUnavailableError -> 503 (current Guide preserved client-side).
-    monkeypatch.setenv("STORY_GUIDE_V2", "1")
     monkeypatch.delenv("STORY_GUIDE_MOCK", raising=False)
 
     class _BoomEngine:

@@ -39,16 +39,23 @@ enum MomentResolver {
                                      token: @escaping () async -> String?)
         async -> (media: [MomentMedia], unavailable: [(momentId: UUID, error: Error)]) {
         var unavailable: [(UUID, Error)] = []
+        let tEnsure = RenderTiming.begin("ensure_local_all")
+        var downloaded = 0
         for m in moments {
             guard let rel = m.asset?.relativePath else { continue }
             if MediaStore.shared.fileExists(relativePath: rel) { continue }   // already local
+            let tOne = RenderTiming.begin("ensure_local_one")
             do {
                 _ = try await MediaResolver.shared.ensureLocal(
                     moment: m, context: context, activeOwner: activeOwner, token: token)
+                downloaded += 1
+                tOne.end("ok=true")
             } catch {
                 unavailable.append((m.id, error))
+                tOne.end("ok=false")
             }
         }
+        tEnsure.end("moments=\(moments.count) downloaded=\(downloaded) failed=\(unavailable.count)")
         return (resolve(moments: moments), unavailable.map { ($0.0, $0.1) })
     }
 
@@ -274,9 +281,9 @@ enum EditPlanRequestBuilder {
         var errorDescription: String? {
             switch self {
             case .noUsableMoments:
-                return "No Moments with both a local video file and a completed analysis — nothing to plan."
+                return L10n.t("No Moments with both a local video file and a completed analysis — nothing to plan.")
             case .missingTarget:
-                return "No Story duration chosen — pick a duration before creating."
+                return L10n.t("No Story duration chosen — pick a duration before creating.")
             }
         }
     }
@@ -410,7 +417,13 @@ enum EditPlanRequestBuilder {
                       musicAssetId: String? = nil,
                       musicAnalysis: JSONValue? = nil,
                       revisionContext: JSONValue? = nil,
-                      editorialType: String? = nil) throws -> Build {
+                      editorialType: String? = nil,
+                      // Customize UX v2 — Policy B ("Use only selected Moments"). When non-nil, the planner
+                      // payload moments[] is RESTRICTED to this set, so a segment can physically only cite a
+                      // selected asset_id (eligibleIds == moments[].id invariant IS the enforcement — owner §6).
+                      // This is the existing eligibility mechanism, NOT a creative `exclude` directive. nil =>
+                      // Policy A / default: the full eligible set is sent (unchanged behavior).
+                      allowedSourceSet: Set<UUID>? = nil) throws -> Build {
         // Resolvable local media, keyed by Moment id (the ORIGINAL bytes on THIS device right now). Used for
         // the render-time URL resolver + diagnostics — NOT as the planner-eligibility gate (see below).
         let media = MomentResolver.resolve(moments: story.moments)
@@ -441,6 +454,13 @@ enum EditPlanRequestBuilder {
         //   • has file, no AU     -> excluded (genuine analysis delay; readiness surfaces it honestly).
         //   • no file, no AU      -> excluded (nothing to plan from).
         for m in story.moments.sorted(by: { $0.createdAt < $1.createdAt }) {
+            // Policy B (owner §6): when the user chose "Use only selected Moments", restrict the planner
+            // payload to that set. A Moment outside it is simply not sent — the planner then CANNOT produce a
+            // segment citing it (moments[].id is the only id space it may reference). This is the allowed-set
+            // enforcement by construction; it is deliberately NOT counted as an eligibility failure (the
+            // Moment is perfectly usable — the user chose to leave it out), so it does not enter the census's
+            // ineligible buckets. nil set (Policy A / default) keeps every eligible Moment.
+            if let allowed = allowedSourceSet, !allowed.contains(m.id) { continue }
             guard let mu = muByMoment[m.id] else {
                 excluded.append(m.id); census.ineligibleNoAU.append(m.id); continue   // no completed AU
             }
@@ -471,12 +491,10 @@ enum EditPlanRequestBuilder {
             ].merging(Self.evidenceField(understanding)) { _, new in new }
             // EditPlan v5.3 (flag-gated, additive): forward the Rich AU v2 editorial candidates, timestamped
             // events, and server-minted sampled_frame_ms so the planner can plan Highlights vs Full Story. All
-            // ADVISORY (backend treats intervals/peaks as hints, never clip bounds). Only when the P1 flag is ON
-            // — flag OFF keeps the v5.2 moment payload byte-identical. The untrusted model `evidence` string is
-            // dropped here too (defense-in-depth; the backend also strips it).
-            if EditorialTypeFlag.enabled {
-                for (k, v) in Self.editorialV53Fields(from: understanding) { momentObj[k] = v }
-            }
+            // ADVISORY (backend treats intervals/peaks as hints, never clip bounds). Always sent (the backend strips
+            // them itself on an explicit v5.2 rollback). The untrusted model `evidence` string is dropped here
+            // too (defense-in-depth; the backend also strips it).
+            for (k, v) in Self.editorialV53Fields(from: understanding) { momentObj[k] = v }
             moments.append(.object(momentObj))
             // includedMedia is the LOCAL render set: only Moments whose bytes are on disk NOW. A cloud-only
             // eligible Moment is in moments[] (planner) but NOT here — R6 restores it before render.
@@ -520,7 +538,7 @@ enum EditPlanRequestBuilder {
             musicAnalysis: musicAnalysis,
             soundPreference: story.effectiveSoundPreference.rawValue,   // immersive|balanced|music_led → native_audio bias
             editorialMode: story.editorialMode,                        // highlights|full|custom → selection breadth (nil = infer)
-            editorialType: EditorialTypeFlag.enabled ? editorialType : nil, // v5.3 resolved type; nil when flag OFF => v5.2 byte-identical
+            editorialType: editorialType,                                  // v5.3 resolved type (nil only for a legacy Revise base)
             revisionContext: revisionContext)                          // Creative Revision Foundation: Explore/Revise version-aware context (nil = unchanged)
 
         var finalBuild = Build(request: req, includedMedia: included, excludedMomentIds: excluded)

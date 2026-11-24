@@ -1,6 +1,6 @@
 """story_guide/2 (AI shooting script) — additive, feature-flagged backend tests.
 
-Covers: feature-gate (404 when STORY_GUIDE_V2 off), scene-based output when on, v1 UNCHANGED,
+Covers: always available (no feature gate), scene-based output when on, v1 UNCHANGED,
 server-minted canonical ids, and that the model can never inject image ids/urls/attribution.
 Mock engine only (STORY_GUIDE_MOCK=1) — no real Bedrock call, no cost.
 """
@@ -23,11 +23,7 @@ def _mock_guide(monkeypatch):
     yield
 
 
-def _client(v2_enabled: bool, monkeypatch) -> TestClient:
-    if v2_enabled:
-        monkeypatch.setenv("STORY_GUIDE_V2", "1")
-    else:
-        monkeypatch.delenv("STORY_GUIDE_V2", raising=False)
+def _client(monkeypatch) -> TestClient:
     return TestClient(create_app())
 
 
@@ -35,16 +31,16 @@ def _body() -> dict:
     return {"story_id": str(uuid.uuid4()), "creative_intent": {"summary": "Three days in New York"}, "scope": {}}
 
 
-def test_v2_available_regardless_of_flag(monkeypatch):
-    # v2 is now the SOLE generation path — no STORY_GUIDE_V2 gate. It works even with the flag unset/off.
-    c = _client(False, monkeypatch)
+def test_v2_available_without_any_flag(monkeypatch):
+    # v2 is the SOLE generation path and needs no flag.
+    c = _client(monkeypatch)
     r = c.post("/v1/story-guide-v2", json=_body())
     assert r.status_code == 200, r.text
     assert r.json()["schema_version"] == "story_guide/2"
 
 
 def test_v2_returns_scene_shooting_script_when_flag_on(monkeypatch):
-    c = _client(True, monkeypatch)
+    c = _client(monkeypatch)
     r = c.post("/v1/story-guide-v2", json=_body())
     assert r.status_code == 200, r.text
     b = r.json()
@@ -61,7 +57,7 @@ def test_v2_returns_scene_shooting_script_when_flag_on(monkeypatch):
 def test_v1_story_guide_generation_retired_410(monkeypatch):
     # v1 guide GENERATION is retired: /v1/story-guide returns 410 Gone (use v2). v1 persisted guides still
     # render client-side as a legacy fallback — only generation is removed.
-    c = _client(True, monkeypatch)
+    c = _client(monkeypatch)
     r = c.post("/v1/story-guide", json=_body())
     assert r.status_code == 410, r.text
     assert "retired" in r.json()["detail"]

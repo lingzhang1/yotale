@@ -1,43 +1,23 @@
 import Foundation
 
-// StoryMultimodalPlanning — MVP feature flag + versioned creative brief for multimodal visual edit planning.
+// StoryMultimodalPlanning — versioned creative brief + the retained critique-pass setting for multimodal
+// visual edit planning.
 //
-// OFF by default: the create flow uses the frozen text-only /v1/edit-plan path until the owner's physical
-// device acceptance (Phases 4-5) passes. When enabled, the coordinator builds bounded Tier-1 contact sheets,
-// runs the adaptive visual-budget preflight, and plans via /v1/edit-plan-mm with graceful text-only fallback.
+// P1-G0: multimodal (Visual-first) planning is STANDARD behavior — the former STORY_MULTIMODAL_PLANNING
+// kill-switch and the STORY_CRITIQUE_EXPLORE opt-in were removed. The coordinator builds bounded Tier-1
+// contact sheets, runs the adaptive visual-budget preflight, and plans through the async edit-plan job with
+// graceful text-only fallback. `critiqueRevisionEnabled` is DELIBERATELY RETAINED (owner decision) and defaults
+// OFF: a plain original create plans in ONE call. Turning it on adds the 3-call critique->revision path.
 //
 // The creative brief string + version MUST stay in sync with the backend (apps/api MM_CREATIVE_BRIEF /
 // MM_CREATIVE_BRIEF_VERSION). It is injected into the Edit Planner USER message only — never the frozen body.
 enum StoryMultimodalPlanning {
-    /// Master availability switch for the Visual-first editing approach (contact-sheet planning).
-    ///
-    /// DEFAULT ON (device-accepted on girl_with_dress + hiking: 36 / 32 sheets reached the planner, valid
-    /// plans). No launch argument or scheme env var is required anymore — Visual-first is simply offered on the
-    /// Customize screen, and the per-Story Editing Approach choice decides the path. Storytelling creates stay
-    /// fully text-only (no sheets built, no images sent), so default-ON adds ZERO cost to a Storytelling run.
-    ///
-    /// A single OPTIONAL kill-switch remains for incident response — set env `STORY_MULTIMODAL_PLANNING=0` or
-    /// UserDefaults bool `STORY_MULTIMODAL_PLANNING=false` to force it OFF without a rebuild (hides Visual-first
-    /// and routes everything text-only). Absent any override, it is ON.
-    static var enabled: Bool {
-        if ProcessInfo.processInfo.environment["STORY_MULTIMODAL_PLANNING"] == "0" { return false }
-        if UserDefaults.standard.object(forKey: flagKey) != nil {
-            return UserDefaults.standard.bool(forKey: flagKey)   // explicit override (true or false) wins
-        }
-        return _enabledDefault
-    }
-    /// UserDefaults / override key for the kill-switch (persists across launches).
-    static let flagKey = "STORY_MULTIMODAL_PLANNING"
-    /// Force the feature on/off at runtime without a rebuild (incident kill-switch / debug toggle).
-    static func setPersistentOverride(_ on: Bool) { UserDefaults.standard.set(on, forKey: flagKey) }
-    private static let _enabledDefault = true
-
-    /// Phase-6 / experiment Arm D: run ONE bounded critique->revision pass on a Visual-first plan. Arm D was
-    /// the LARGEST quality lever in the short-form creative-objective experiment (fixes the hook, finds omitted
-    /// /repetitive footage), so for the best-results MVP it is DEFAULT ON. It costs 2 extra model calls per
-    /// create (each re-sending the ~3 MB image payload) and is quota-fragile, so a kill-switch remains:
-    /// env `STORY_CRITIQUE_REVISION=0` or UserDefaults bool `STORY_CRITIQUE_REVISION=false` forces it OFF
-    /// without a rebuild. Absent any override it is ON.
+    /// Phase-6 / experiment Arm D: ONE bounded critique->revision pass on a Visual-first plan. DEFAULT OFF
+    /// (owner decision 2026-11-15): measured on dev, the pass turned a ~16 s single planning call into a 37-44 s
+    /// three-call job (about +20-28 s) and re-sends the ~3 MB image payload on every call, and no
+    /// same-footage comparison shows it improves the shipped plan. The setting is RETAINED so it can still be
+    /// turned ON without a code change: env `STORY_CRITIQUE_REVISION=1` or UserDefaults bool
+    /// `STORY_CRITIQUE_REVISION=true`. Env/UserDefaults `0`/`false` force it OFF. Absent any override it is OFF.
     static var critiqueRevisionEnabled: Bool {
         if ProcessInfo.processInfo.environment["STORY_CRITIQUE_REVISION"] == "0" { return false }
         if ProcessInfo.processInfo.environment["STORY_CRITIQUE_REVISION"] == "1" { return true }
@@ -48,23 +28,20 @@ enum StoryMultimodalPlanning {
     }
     static let critiqueFlagKey = "STORY_CRITIQUE_REVISION"
     static func setCritiqueOverride(_ on: Bool) { UserDefaults.standard.set(on, forKey: critiqueFlagKey) }
-    private static let _critiqueDefault = true
+    private static let _critiqueDefault = false
 
-    /// Phase 4 (Create Another Version latency): whether a DELIBERATE "Create Another Version" (Explore) runs
-    /// the critique pass. Default OFF — Explore's default is ONE multimodal planning call (critique roughly
-    /// doubles model calls). Images, prior-version diversity context, mandatory deterministic validation and
-    /// the worker's bounded repair are unaffected; only the automatic critique pass is gated here. Flip ON via
-    /// env `STORY_CRITIQUE_EXPLORE=1` or the UserDefaults bool, without a rebuild.
-    static var critiqueExploreEnabled: Bool {
-        if ProcessInfo.processInfo.environment["STORY_CRITIQUE_EXPLORE"] == "0" { return false }
-        if ProcessInfo.processInfo.environment["STORY_CRITIQUE_EXPLORE"] == "1" { return true }
-        if UserDefaults.standard.object(forKey: critiqueExploreFlagKey) != nil {
-            return UserDefaults.standard.bool(forKey: critiqueExploreFlagKey)
-        }
-        return false   // default: one-call Explore
+    /// PURE decision (unit-tested): does this planning call run the critique -> revision pass?
+    ///  • not multimodal, or the retained `critiqueRevisionEnabled` setting is off (the default) -> no
+    ///  • Explore ("Create Another Version") -> NEVER (one planning call; the old opt-in was removed)
+    ///  • a TARGETED revise (Path B) -> no (a bounded change, not a creative re-edit)
+    ///  • original create / full re-edit (Path C) -> yes, but ONLY when the setting has been turned on
+    static func critiqueApplies(wantMultimodal: Bool, critiqueEnabled: Bool, isExplore: Bool,
+                                reviseScope: RevisionScope?) -> Bool {
+        guard wantMultimodal && critiqueEnabled else { return false }
+        if isExplore { return false }
+        if let scope = reviseScope, scope != .fullReedit { return false }
+        return true
     }
-    static let critiqueExploreFlagKey = "STORY_CRITIQUE_EXPLORE"
-    static func setCritiqueExploreOverride(_ on: Bool) { UserDefaults.standard.set(on, forKey: critiqueExploreFlagKey) }
 
     static let creativeBriefVersion = "shortform_mvp/1"
     static let creativeBrief = """

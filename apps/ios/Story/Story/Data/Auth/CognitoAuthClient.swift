@@ -41,14 +41,14 @@ enum CognitoAuthError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach sign-in. Check your connection and try again."
-        case .badCode: return "That code is incorrect. Check it and try again."
-        case .expiredCode: return "That code has expired. Request a new one."
-        case .tooManyAttempts: return "Too many tries. Request a new code to continue."
-        case .noOTPPath: return "Couldn't send a code to that email. Check the address and try again."
-        case .accountDisabled: return "This account can't sign in. Contact support if you think this is a mistake."
+        case .transport: return L10n.t("Couldn't reach sign-in. Check your connection and try again.")
+        case .badCode: return L10n.t("That code is incorrect. Check it and try again.")
+        case .expiredCode: return L10n.t("That code has expired. Request a new one.")
+        case .tooManyAttempts: return L10n.t("Too many tries. Request a new code to continue.")
+        case .noOTPPath: return L10n.t("Couldn't send a code to that email. Check the address and try again.")
+        case .accountDisabled: return L10n.t("This account can't sign in. Contact support if you think this is a mistake.")
         case .service(let m): return m
-        case .decoding, .noChallengeSession: return "Sign-in failed. Please try again."
+        case .decoding, .noChallengeSession: return L10n.t("Sign-in failed. Please try again.")
         }
     }
 }
@@ -303,6 +303,12 @@ actor CognitoAuthClient {
         catch { throw CognitoAuthError.transport(error) }
         let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+            // S4: a 5xx, 429 or 408 says the auth server is unavailable or throttling, not that the credentials were rejected.
+            // Report it as transport so a refresh is retried later and the session is kept. 400 invalid_grant (and other 4xx)
+            // stay `.service`, which clears the session.
+            if http.statusCode >= 500 || http.statusCode == 429 || http.statusCode == 408 {
+                throw CognitoAuthError.transport(URLError(.badServerResponse))
+            }
             throw CognitoAuthError.service((obj["error_description"] as? String) ?? (obj["error"] as? String) ?? "oauth error")
         }
         return try Self.tokens(fromOAuth: obj)

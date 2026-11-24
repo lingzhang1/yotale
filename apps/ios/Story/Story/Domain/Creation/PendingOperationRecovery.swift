@@ -40,7 +40,15 @@ final class PendingOperationRecovery {
     func recoverAll() {
         guard activeAccountId != nil else { return }   // signed out → recover nothing
         let desc = FetchDescriptor<PendingOperationModel>(sortBy: [SortDescriptor(\.updatedAt, order: .reverse)])
-        let rows = ((try? context.fetch(desc)) ?? []).filter { $0.isRecoverable && $0.jobId != nil }
+        let all = (try? context.fetch(desc)) ?? []
+        // A pre-submit attempt past its resume window is discarded (resuming would start paid AI by surprise).
+        // Split BEFORE deleting: never read a SwiftData object after it was deleted.
+        let expired = all.filter { StoryCreationCoordinator.isPreparing($0) && !StoryCreationCoordinator.isResumable($0) }
+        let rows = all.filter { StoryCreationCoordinator.isResumable($0) }
+        if !expired.isEmpty {
+            for row in expired { context.delete(row) }
+            try? context.save()
+        }
         guard !rows.isEmpty else { return }
         // One resume per Story (dedupe multiple rows defensively).
         var seen = Set<UUID>()
@@ -108,7 +116,9 @@ final class PendingOperationRecovery {
             return nil
         }
         return StoryCreationCoordinator.MusicSelection(
-            musicPlanJSON: .object([:]),                 // planning is done; not used at render
+            // A post-submit resume never re-plans, so an empty plan was always enough there. A PRE-submit resume
+            // (killed during preparation) still has to plan music-aware: use the attempt's stored MusicPlan.
+            musicPlanJSON: StoryCreationCoordinator.decodeStoredJSON(row.musicPlanJSON) ?? .object([:]),
             trackId: trackId,
             analysisJSON: both.raw,
             analysis: both.analysis,
@@ -116,5 +126,47 @@ final class PendingOperationRecovery {
             soundtrackRole: row.soundtrackRole ?? "supportive",
             nativeAudioPriority: row.nativeAudioPriority ?? "selective",
             trackTitle: "Soundtrack")
+    }
+}
+
+// MARK: - Lost-reply recovery: the exact submit bytes, kept on device until the job id is known
+
+/// The prepared multipart body of a job submit whose reply has not arrived yet, keyed by operation_id. Written
+/// BEFORE the POST and deleted as soon as the job id is known (or the operation ends). If the app is suspended or
+/// killed while the reply is in flight, a later resume re-sends these exact bytes: the server matches the
+/// operation_id + payload fingerprint and returns the SAME job — never a second inference, never a 409. Local
+/// only (Caches; it holds the same contact sheets the planner receives) and short-lived.
+enum PendingJobSubmitStore {
+    private static var dir: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("pending-edit-plan-submits", isDirectory: true)
+    }
+    private static func safe(_ operationId: String) -> String {
+        String(operationId.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == "-" }
+            .map(Character.init))
+    }
+    private static func bodyURL(_ operationId: String) -> URL { dir.appendingPathComponent("\(safe(operationId)).body") }
+    private static func boundaryURL(_ operationId: String) -> URL { dir.appendingPathComponent("\(safe(operationId)).boundary") }
+
+    static func save(_ prepared: PreparedJobSubmit, operationId: String) {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? prepared.body.write(to: bodyURL(operationId), options: .atomic)
+        try? Data(prepared.boundary.utf8).write(to: boundaryURL(operationId), options: .atomic)
+    }
+
+    static func load(operationId: String) -> PreparedJobSubmit? {
+        guard let body = try? Data(contentsOf: bodyURL(operationId)),
+              let b = try? Data(contentsOf: boundaryURL(operationId)),
+              let boundary = String(data: b, encoding: .utf8), !body.isEmpty, !boundary.isEmpty else { return nil }
+        return PreparedJobSubmit(body: body, boundary: boundary)
+    }
+
+    static func exists(operationId: String) -> Bool {
+        FileManager.default.fileExists(atPath: bodyURL(operationId).path)
+    }
+
+    static func remove(operationId: String) {
+        try? FileManager.default.removeItem(at: bodyURL(operationId))
+        try? FileManager.default.removeItem(at: boundaryURL(operationId))
     }
 }

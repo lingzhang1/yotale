@@ -8,8 +8,8 @@ import Foundation
 //
 // This is a PRODUCT preference, independent of Story Length and Sound. It is persisted on StoryModel and
 // routed by StoryCreationCoordinator. It carries NO model names / endpoints / tokens — the user-facing copy is
-// deliberately non-technical. Visual-first is only OFFERED when StoryMultimodalPlanning.enabled is true (the
-// deployment safety gate): we never present an option we cannot honor. Even when offered, Visual-first keeps
+// deliberately non-technical. Visual-first is only OFFERED when the caller says it can be honored (always true since
+// P1-G0 removed the kill-switch): we never present an option we cannot honor. Even when offered, Visual-first keeps
 // the existing graceful text-only fallback, so a Story is never failed when a valid text-only edit is possible.
 enum EditingApproach: String, CaseIterable {
     case storytelling = "storytelling"
@@ -33,25 +33,25 @@ enum EditingApproach: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .storytelling: return "Storytelling"
-        case .visualFirst:  return "Visual-first"
+        case .storytelling: return L10n.t("Storytelling")
+        case .visualFirst:  return L10n.t("Visual-first")
         }
     }
 
     var detail: String {
         switch self {
         case .storytelling:
-            return "Build a meaningful story from your moments, with a clear beginning, progression, and ending."
+            return L10n.t("Build a meaningful story from your moments, with a clear beginning, progression, and ending.")
         case .visualFirst:
-            return "Look across your footage to find striking visuals, expressive moments, and compelling sequences."
+            return L10n.t("Look across your footage to find striking visuals, expressive moments, and compelling sequences.")
         }
     }
 
     /// Secondary supporting line (speed / effort hint).
     var supporting: String {
         switch self {
-        case .storytelling: return "Faster · Uses video descriptions"
-        case .visualFirst:  return "More visual analysis · May take longer"
+        case .storytelling: return L10n.t("Faster · Uses video descriptions")
+        case .visualFirst:  return L10n.t("More visual analysis · May take longer")
         }
     }
 

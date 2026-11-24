@@ -36,7 +36,7 @@ enum ActiveOwner: Equatable {
 
 /// Raised when persistent Story creation is attempted without an authenticated account (owner Decision 2).
 struct StoryCreationRequiresAuth: Error, LocalizedError {
-    var errorDescription: String? { "Sign in to create a Story." }
+    var errorDescription: String? { L10n.t("Sign in to create a Story.") }
 }
 
 @MainActor

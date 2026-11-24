@@ -97,7 +97,9 @@ struct MomentsManageView: View {
             if !created.isEmpty {
                 let auQueue = AssetUnderstandingQueue(context: context)
                 auQueue.enqueueImportedVideos(created)
-                Task { await auQueue.drain() }
+                AUContinuedProcessing.startAfterImport(queue: auQueue, context: context, momentIds: Set(created.map(\.id)))
+                // Auto Backup: back up each imported Moment when the account has it ON (no-op otherwise).
+                for m in created { MediaUploadQueue.sharedAutoEnroll(m) }
             }
         }
         .confirmationDialog("Remove this moment?",
@@ -219,7 +221,7 @@ struct MomentPreviewView: View {
                 moment: moment, context: context, activeOwner: auth.storyUserId,
                 token: { await auth.validAccessToken() })
         } catch {
-            restoreError = (error as? MediaResolveError)?.errorDescription ?? "Couldn't restore this video."
+            restoreError = (error as? MediaResolveError)?.errorDescription ?? L10n.t("Couldn't restore this video.")
         }
     }
 
@@ -282,9 +284,9 @@ struct MomentPreviewView: View {
             }
         } else {
             VStack(spacing: 10) {
-                Text(restoreError == nil ? "This media isn't available." : "Couldn't restore this video.")
+                Text(restoreError == nil ? L10n.t("This media isn't available.") : L10n.t("Couldn't restore this video."))
                     .font(StoryTheme.display(18)).foregroundStyle(StoryTheme.cream)
-                Text(restoreError ?? "The original file wasn't found on this device.")
+                Text(restoreError ?? L10n.t("The original file wasn't found on this device."))
                     .font(StoryTheme.body(13)).foregroundStyle(StoryTheme.cream.opacity(0.4))
                     .multilineTextAlignment(.center)
             }

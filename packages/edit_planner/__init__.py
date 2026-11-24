@@ -29,7 +29,8 @@ from contracts.schemas.ai_contracts import (
     MusicAlignment,
     OutputFormat,
 )
-from model_gateway import ModelGateway, StructuredOutputError, StructuredRequest, ProviderError
+from model_gateway import (ModelGateway, StructuredOutputError, StructuredRequest, ProviderError,
+                           OutputTruncatedError, classify_provider_error, sanitize_error)
 
 PROMPT_VERSION = "edit_plan/4"  # Editorial Timing significance-weighting amendment (v2/v3 preserved for reproducibility)
 TASK = "edit_plan.generate"
@@ -66,7 +67,10 @@ RENDERER_SPEED_MAX = 2.0
 # schema change. v4 is PRESERVED verbatim on disk and remains reachable (STORY_EDIT_PLAN_VERSION=4), so a
 # production surface that has NOT yet approved v5 can still pin v4. Dev-default != production approval.
 # Any value other than a directory that exists under prompts/edit_plan/ falls back to the default.
-_EDIT_PLAN_DEFAULT = "5"
+# v5.3 is the ACCEPTED NORMAL planner (editorial evidence + editorial type). STORY_EDIT_PLAN_VERSION is a
+# deliberate, documented EMERGENCY ROLLBACK override only (e.g. "5.2"); it must be set identically on the API
+# and the worker and is checked by scripts/release_config_gate.py. Never required for a normal deployment.
+_EDIT_PLAN_DEFAULT = "5.3"
 _EDIT_PLAN_VERSION = os.environ.get("STORY_EDIT_PLAN_VERSION", _EDIT_PLAN_DEFAULT).strip() or _EDIT_PLAN_DEFAULT
 _PROMPT_BASE = Path(__file__).resolve().parent.parent.parent / "prompts" / "edit_plan"
 if not (_PROMPT_BASE / _EDIT_PLAN_VERSION / "system.md").is_file():
@@ -84,6 +88,17 @@ def _v53_active() -> bool:
     unparseable (safe: treat as pre-5.3)."""
     try:
         return float(_EDIT_PLAN_VERSION) >= 5.3
+    except (TypeError, ValueError):
+        return False
+
+
+def _v55_active() -> bool:
+    """True when the SELECTED edit-plan version is >= 5.5 (Editorial vNext M1 candidate). v5.5 is an ISOLATED
+    candidate: it is never the default, never selected by CDK/beta/prod on its own, and every v5.5-only behavior
+    below is gated on this so the v5.3 prompt strings stay byte-identical (golden-tested). Parsed from the
+    resolved version string; unparseable => False."""
+    try:
+        return float(_EDIT_PLAN_VERSION) >= 5.5
     except (TypeError, ValueError):
         return False
 
@@ -158,32 +173,14 @@ ROUND_SNAP_ABS = 0.15
 
 
 # ---------------------------------------------------------------------------
-# EDITPLAN CREATIVE-FREEDOM v2 FEATURE FLAGS (owner-approved amendment v2, 2026-10-22).
-# Each is INDEPENDENTLY reversible and defaults OFF, so importing/deploying this module is a pure no-op
-# until a flag is flipped. The amendment turns imperfectly-satisfied CREATIVE directives from terminal
-# validation failures into strong editorial OBJECTIVES: a technically-valid, meaningful plan ships (with an
-# honest disclosure of material unmet instructions) instead of burning repeated Opus calls and returning an
-# "Adjust instructions" error. Technical/integrity/ownership/renderer-safety/privacy rules stay HARD.
+# EDITPLAN CREATIVE-FREEDOM v2 (owner-accepted; permanent behavior, no feature flags).
+# Imperfectly-satisfied CREATIVE directives are strong editorial OBJECTIVES (scored + disclosed), never terminal
+# validation failures: a technically-valid, meaningful plan ships (with an honest disclosure of material unmet
+# instructions) instead of burning repeated model calls and returning an "Adjust instructions" error. The best
+# technically-valid candidate across the attempt chain is always retained, and for an APPROXIMATE (not
+# user-exact) target the duration band is a runaway guard, not a hard reject. Technical/integrity/ownership/
+# renderer-safety/privacy rules stay HARD.
 # See specs implementation-plan/milestone-editplan-validation-creative-freedom-amendment-v2.md.
-def _flag(name: str) -> bool:
-    return (os.environ.get(name, "") or "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _objective_directives_on() -> bool:
-    # Opening/ending/inclusion/ordering become OBJECTIVES (scored, disclosed) rather than hard errors.
-    return _flag("STORY_EDITPLAN_OBJECTIVE_DIRECTIVES")
-
-
-def _best_valid_retention_on() -> bool:
-    # Retain the best technically-valid candidate across the whole attempt chain; ship it rather than fail.
-    return _flag("STORY_EDITPLAN_BEST_VALID_RETENTION")
-
-
-def _approx_duration_soft_on() -> bool:
-    # For an APPROXIMATE (not user-exact) target, the duration band is a runaway guard, not a hard reject.
-    return _flag("STORY_EDITPLAN_APPROX_DURATION_SOFT")
-
-
 # When the approximate-duration band is soft, we still refuse a RUNAWAY plan (a safety/quality guard, not an
 # editorial nicety): generous beyond the normal overshoot band so a longer-but-watchable video still ships.
 DURATION_RUNAWAY_GUARD = 1.00   # reject only if >+100% of an APPROXIMATE target (degenerate/runaway)
@@ -474,6 +471,16 @@ def repair_directive_placement(plan: dict, inputs: EditPlanInputs) -> dict | Non
     else:
         return None  # could not stabilize -> conflicting/cyclic ordering
 
+    # ending: the named Moment plays LAST. Moving only that one asset to the end keeps every other relationship
+    # intact — it is never the "before" of an order_after pair (that would be a contradiction the validator
+    # already rejects), so moving it last can only satisfy, never break, an order_after. An asset that is part of
+    # an adjacency chain is left where the chain put it: relocating it would split the chain, so the check below
+    # reports it unrepairable by reorder and the existing failure path handles it (unchanged behavior).
+    if (ending is not None and seq and seq[-1] != ending and ending in seq
+            and ending not in glued and ending not in follow):
+        seq.remove(ending)
+        seq.append(ending)
+
     # Placement must hold after after-fixups.
     if opening is not None and (not seq or seq[0] != opening):
         return None
@@ -749,11 +756,16 @@ def _continuity_assessment(base_plan: dict | None, revised: dict, rc: dict) -> d
         p in soft for p in ("shorten", "shorter", "make it short", "condense", "tighten"))
     authorized_change = bool(has_exclude or _selective or _shorter or authorized)
 
-    # NO-OP: the directed revise produced NO effective change at all (same clip set AND same order). An honest
-    # "couldn't apply that", never saved as a successful edit. (Order change alone is a real edit, not a no-op.)
+    # NO-OP: the directed revise produced NO effective change at all — same clip set, same order AND same shot
+    # timing. An honest "couldn't apply that", never saved as a successful edit. An order change alone is a real
+    # edit, and so is a RETIME (same clips, same order, different in/out points, shot lengths or speed): a
+    # "shorten each shot" revise that only moves timing is a genuine edit and must NOT be reported as "effectively
+    # the same" (device test 2026-11-06: every shot's timing changed, total 32.6s -> 38.2s, yet it was labelled a
+    # no-op because only clip ids/order were compared).
     reordered = base_list != rev_list and base_ids == rev_ids
-    if base_ids == rev_ids and not reordered:
-        return {"verdict": "noop", "removed": 0, "added": 0, "reordered": False,
+    retimed = _timing_changed(base_plan, revised)
+    if base_ids == rev_ids and not reordered and not retimed:
+        return {"verdict": "noop", "removed": 0, "added": 0, "reordered": False, "retimed": False,
                 "continuity_ratio": 1.0, "authorized_change": authorized_change,
                 "reason": "the requested change produced no effective edit"}
 
@@ -767,8 +779,44 @@ def _continuity_assessment(base_plan: dict | None, revised: dict, rc: dict) -> d
                            "rather than revise it")}
 
     return {"verdict": "ok", "removed": len(removed), "added": len(added), "reordered": reordered,
+            "retimed": retimed,
             "continuity_ratio": round(continuity_ratio, 3), "authorized_change": authorized_change,
             "reason": ""}
+
+
+# A timing difference smaller than this (seconds) is normalization jitter (e.g. clamping to a Moment's end), not
+# an edit the user would notice; speed differences below _SPEED_TOL are likewise ignored.
+_TIMING_TOL_SECONDS = 0.2
+_SPEED_TOL = 0.02
+
+
+def _timing_changed(base_plan: dict, revised: dict) -> bool:
+    """True when the revised plan's SHOT TIMING differs from the base plan's: per ordered segment, the source
+    in/out, the output duration or the playback speed (beyond small normalization jitter), or a different segment
+    count. Deterministic, model-free. Clip identity/order are compared separately by the caller."""
+    def _segs(p):
+        rows = []
+        for s in sorted((p.get("segments") or []), key=lambda s: s.get("order", 0)):
+            if not s.get("asset_id"):
+                continue
+            try:
+                rows.append((str(s["asset_id"]).lower(),
+                             float(s.get("source_start_seconds") or 0.0), float(s.get("source_end_seconds") or 0.0),
+                             float(s.get("output_duration_seconds") or 0.0), float(s.get("speed") or 1.0)))
+            except (TypeError, ValueError):
+                rows.append((str(s.get("asset_id")).lower(), 0.0, 0.0, 0.0, 1.0))
+        return rows
+
+    b, r = _segs(base_plan), _segs(revised)
+    if len(b) != len(r):
+        return True
+    for x, y in zip(b, r):
+        if x[0] != y[0]:
+            return True
+        if (abs(x[1] - y[1]) > _TIMING_TOL_SECONDS or abs(x[2] - y[2]) > _TIMING_TOL_SECONDS
+                or abs(x[3] - y[3]) > _TIMING_TOL_SECONDS or abs(x[4] - y[4]) > _SPEED_TOL):
+            return True
+    return False
 
 
 def _classify_unsupported_ops(instruction: str) -> dict:
@@ -900,7 +948,10 @@ def validate_plan(plan: dict, inputs: EditPlanInputs) -> list[str]:
             ma = s.get("music_alignment")
             if ma and ma.get("anchor") not in (None, "none"):
                 errs.append(f"seg{i}: music_alignment anchor '{ma.get('anchor')}' set without MusicAnalysis")
-    total_out = timeline_total_seconds(segs)  # shared arithmetic (accounts for crossfade overlap)
+    # Duration accounting uses the DELIVERED timeline: the EditPlan/2 contract drops transitions (_to_contract),
+    # so the device renders straight cuts and a model-proposed crossfade never shortens the video. (The shared
+    # timeline_total_seconds helper keeps its overlap arithmetic for iOS-authored dissolves the renderer does play.)
+    total_out = sum((s.get("output_duration_seconds") or 0.0) for s in segs)
     target = inputs.creative_intent["target_duration_seconds"]
     declared_infeasible = plan.get("feasible") is False
     # DURATION IS NEVER A BLOCKING CONSTRAINT (owner decision 2026-10-25). After the pipeline has produced a
@@ -917,13 +968,10 @@ def validate_plan(plan: dict, inputs: EditPlanInputs) -> list[str]:
         plan.setdefault("_duration_delta_fraction", round(diag_delta, 3))
     # DIRECTIVES. Split into HARD (references to unknown/unowned Moments, safety/privacy excludes, internal
     # contradictions) and OBJECTIVE (opening/ending/inclusion/ordering/adjacency/creative-exclude). HARD always
-    # fails validation. OBJECTIVE fails validation ONLY when the objective-directives flag is OFF (legacy); when
-    # ON, objective misses are scored + disclosed by assess_creative_intent, never a terminal failure. The model
-    # is still never trusted to self-certify — the hard gate is deterministic throughout.
-    hard_d, obj_d = _validate_directives_split(plan, inputs, moments)
+    # fails validation. OBJECTIVE misses are scored + disclosed by assess_creative_intent, never a terminal
+    # failure. The model is still never trusted to self-certify — the hard gate is deterministic throughout.
+    hard_d, _obj_d = _validate_directives_split(plan, inputs, moments)
     errs.extend(hard_d)
-    if not _objective_directives_on():
-        errs.extend(obj_d)
     return errs
 
 
@@ -970,8 +1018,8 @@ def _exclude_is_safety(directives: dict, mid: str) -> bool:
             return False
     if mid in _idset("exclude_creative"):
         return False
-    # No resolvable marker -> conservative default: SAFETY (fail-safe). Opt into creative handling explicitly.
-    return not _flag("STORY_EDITPLAN_EXCLUDE_DEFAULT_CREATIVE")
+    # No resolvable marker -> conservative default: SAFETY (fail-safe). Creative handling must be explicit.
+    return True
 
 
 def _validate_directives(plan: dict, inputs: EditPlanInputs, moments: dict) -> list[str]:
@@ -1189,8 +1237,8 @@ def assess_creative_intent(plan: dict, inputs: EditPlanInputs) -> dict:
                 present += 1
         present += len(_pairs(directives.get("order_after")))
         present += len(_pairs(directives.get("order_adjacent")))
-    # Approximate-duration objective counts as present when the band would otherwise bind (soft mode on).
-    _approx_present = _approx_duration_soft_on() and _duration_target_source(inputs) != "user_exact"
+    # Approximate-duration objective counts as present when the band would otherwise bind.
+    _approx_present = _duration_target_source(inputs) != "user_exact"
     if _approx_present:
         present += 1
 
@@ -1335,7 +1383,9 @@ def _build_user(inputs: EditPlanInputs) -> str:
         payload["music_analysis"] = inputs.music_analysis
     if inputs.sound_preference:
         payload["sound_preference"] = inputs.sound_preference
-    if inputs.editorial_mode:
+    _t55 = _v55_type(inputs)
+    if inputs.editorial_mode and not _t55:
+        # v5.5: when a known editorial_type is present it is the ONE authority; the legacy breadth hint is not sent.
         payload["editorial_mode"] = inputs.editorial_mode
     if inputs.editorial_type and _v53_active():
         payload["editorial_type"] = inputs.editorial_type
@@ -1357,6 +1407,10 @@ def _build_user(inputs: EditPlanInputs) -> str:
             "Moment, labeled with Moment id and source timestamp. Use them to judge visual distinctness, "
             "composition, expressiveness and precise source ranges. Frames are evidence for the SAME Moments "
             "in the JSON — never invent footage not present.\n")
+    if _t55 and _v56_active():
+        return _build_user_v56(inputs, _t55, revision_block)
+    if _t55:
+        return _build_user_v55(inputs, _t55, payload, revision_block)
     return ("Plan the EditPlan for THIS Story from the material below. Use only the given Moment ids and their "
             "real/useful ranges. Plan to the Story target duration. Respect native audio.\n"
             + brief_block
@@ -1510,6 +1564,499 @@ def diversity_diagnostics(parent_summary: dict, new_plan: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# EditPlan v5.5 (Editorial vNext M1) — ISOLATED candidate. Everything below is reachable ONLY when the selected
+# version is >= 5.5 (`_v55_active`); v5.3 prompt strings are byte-identical (golden-tested). One authoritative
+# `editorial_type` selects the strategy: a type-aware creative brief (server-owned — the client's brief text is
+# ignored when the type is known, so an older client can never feed Full Story the Highlights brief), ONE
+# type-strategy block (replacing the legacy editorial-mode line, the shared brief and the system prompt's
+# breadth/pacing bias), and a deterministic advisory budget hint. No extra model call, no schema change.
+# ---------------------------------------------------------------------------
+_V55_TYPES = ("highlights", "full_story")
+
+_V55_BRIEFS = {
+    "highlights": (
+        "Create a short-form, visually compelling highlight video: a strong visual hook, the most appealing "
+        "footage chosen by comparing similar clips, brisk purposeful pacing, visual contrast between shots and "
+        "a memorable ending. Be selective; the aim is the best footage, not coverage."),
+    "full_story": (
+        "Create a meaningful, coherent story of what actually happened: complete actions and interactions, "
+        "human experiences and context, natural sound, and a progression grounded in the footage. Do not "
+        "invent events, a journey structure, or dialogue."),
+}
+
+# Typical per-shot length tendencies used ONLY to compute the advisory shot-count hint (never a quota).
+_V55_TYPICAL_SHOT_S = {"highlights": (3.0, 5.0), "full_story": (5.0, 9.0)}
+
+
+def _v55_type(inputs: "EditPlanInputs") -> str | None:
+    """The one authoritative editorial type for a v5.5 request, or None (v5.5 inactive, no type, or unrecognized —
+    then the legacy path applies unchanged)."""
+    t = (inputs.editorial_type or "").strip().lower() if isinstance(inputs.editorial_type, str) else ""
+    return t if (_v55_active() and _v53_active() and t in _V55_TYPES) else None
+
+
+def _effective_brief(inputs: "EditPlanInputs") -> str | None:
+    """The creative-direction text actually used. v5.5 + known type => the server's type-aware brief (only when
+    the client sent a brief at all, i.e. a multimodal run — presence still gates the critique pass exactly as in
+    v5.3). Otherwise the client's brief verbatim (v5.3 behavior)."""
+    if not inputs.creative_brief:
+        return inputs.creative_brief
+    t = _v55_type(inputs)
+    return _V55_BRIEFS[t] if t else inputs.creative_brief
+
+
+def _v55_visual_windows(moment: dict) -> tuple[int, float]:
+    """(count, total seconds) of payoff-role visual candidate windows in one Moment's AU editorial block."""
+    ed = moment.get("editorial") if isinstance(moment, dict) else None
+    n, tot = 0, 0.0
+    for v in ((ed or {}).get("visual_candidates") or []) if isinstance(ed, dict) else []:
+        if isinstance(v, dict) and v.get("role") == "payoff":
+            try:
+                a, b = float(v.get("start_time")), float(v.get("end_time"))
+            except (TypeError, ValueError):
+                continue
+            if b > a:
+                n += 1; tot += b - a
+    return n, tot
+
+
+def compute_budget_hint(inputs: "EditPlanInputs", etype: str | None = None) -> dict | None:
+    """DETERMINISTIC advisory duration/shot budget for the planner (no model, no quota). From the requested target,
+    the editorial type, a typical per-shot tendency and the source material's characteristics. None when there is
+    no usable target, no type, or the request is a Revise (a Revise preserves its base edit)."""
+    t = etype or _v55_type(inputs)
+    if t not in _V55_TYPICAL_SHOT_S:
+        return None
+    if isinstance(inputs.revision_context, dict) and (inputs.revision_context.get("mode") or "").lower() == "revise":
+        return None
+    try:
+        target = float(inputs.creative_intent.get("target_duration_seconds"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if target <= 0:
+        return None
+    a, b = _typical_shot_s(t)
+    n_m = len(inputs.moments or [])
+    lo = max(1, int(round(target / b)))
+    hi = max(lo, int(round(target / a)))
+    if n_m:   # never suggest more than two shots per Moment (a small Story cannot support a long shot list)
+        cap = 2 * n_m
+        lo, hi = min(lo, cap), min(hi, cap)
+    useful = 0.0
+    payoff_n = 0
+    narr_n = 0
+    for m in inputs.moments or []:
+        try:
+            useful += sum(max(0.0, e - s) for s, e in _useful_ranges(m))
+        except Exception:
+            pass
+        payoff_n += _v55_visual_windows(m)[0]
+        ed = m.get("editorial") if isinstance(m, dict) else None
+        if isinstance(ed, dict):
+            narr_n += len([n for n in (ed.get("narrative_candidates") or []) if isinstance(n, dict)])
+    return {"type": t, "target_s": round(target, 1), "typical_shot_s": [a, b], "suggested_shots": [lo, hi],
+            "n_moments": n_m, "useful_s": round(useful, 1), "payoff_windows": payoff_n, "narrative_candidates": narr_n}
+
+
+def _budget_block(h: dict | None) -> str:
+    if not h:
+        return ""
+    name = "Highlights" if h["type"] == "highlights" else "Full Story"
+    material = (f"{h['n_moments']} Moments, {h['useful_s']:.0f}s of useful footage, {h['payoff_windows']} visual "
+                f"payoff windows" if h["type"] == "highlights" else
+                f"{h['n_moments']} Moments, {h['useful_s']:.0f}s of useful footage, {h['narrative_candidates']} "
+                f"narrative candidates")
+    lo, hi = h["suggested_shots"]
+    a, b = h["typical_shot_s"]
+    return (
+        f"\nBUDGET (advisory, not a quota): the target is {h['target_s']:g}s. {name} tends to run about "
+        f"{a:g}–{b:g}s per shot, which would suggest roughly {lo}–{hi} shots. Material: {material}. This is a "
+        "typical-pace guide only: NOT a minimum or maximum shot length, NOT a shot count, and it never overrides the "
+        "user's instructions. Fewer, stronger shots are fine: when the strongest footage runs out, let a striking "
+        "shot or a complete action run longer, or end a little under the target, rather than adding weak or "
+        "repetitive footage. Keep complete actions, meaningful sound and striking continuous shots intact. Decide "
+        f"your shots and their lengths FIRST so that the sum of output_duration_seconds lands within about ±10% of "
+        f"{h['target_s']:g}s before you finish; a payoff or continuous action may run longer than typical. A "
+        "deterministic fit will trim a plan that runs long, possibly cutting footage you valued, so aim at the "
+        "target yourself.\n")
+
+
+def _v55_strategy(etype: str) -> str:
+    """The ONE type-strategy block for v5.5 (user message). Replaces the legacy editorial-mode line and the
+    v5.3 editorial-type directive; the system prompt carries no type-specific breadth or pacing language."""
+    common_tail = (
+        "\nThis strategy guides NEW edits. When a VERSION CONTEXT above says REVISE, preserve the base edit and "
+        "change only what the user asked; explicit user directives (opening, ending, must-include, ordering) "
+        "always win over this strategy.\n")
+    if etype == "highlights":
+        return (
+            "\nTYPE STRATEGY — HIGHLIGHTS: a short-form, visually compelling video (a strong Reel or travel "
+            "short), NOT a compressed diary. It is highly selective: the goal is the best footage, not coverage.\n"
+            "1. SURVEY the visual opportunities across ALL Moments: each Moment's visual_candidates and events and, "
+            "above all, what the contact-sheet frames actually show. Candidate times are search hints, not cut "
+            "boundaries. peak_time and confidence say how sure the analysis was, NOT how appealing the footage "
+            "is. If the frames contradict a candidate, trust the frames.\n"
+            "2. COMPARE similar footage before choosing. When several Moments show the same kind of action, place "
+            "or subject, compare what each visibly delivers: subject prominence and expression, composition, "
+            "color and contrast, movement, scenic drama, and whether the payoff is clearly visible in the frames. "
+            "Keep the strongest; keep a second only when it shows a genuinely different action, place or emotion. "
+            "Do not choose by Moment order, by first or last, or by the highest confidence number.\n"
+            "3. HOOK: consider opening on the single most arresting visible payoff, reveal or expressive action "
+            "so the first seconds earn attention. Do not open on arrival, town, packing or ordinary walking "
+            "footage unless it is itself arresting.\n"
+            "4. PROGRESSION: after the hook, build contrast by varying place, scale, light, movement and subject, "
+            "and end on a memorable image. Chronology is optional.\n"
+            "5. PACING: favor short, purposeful shots that start at the action and skip lead-in. A payoff or "
+            "continuous action that needs time may run longer; a shorter strong shot beats a longer ordinary "
+            "one. This is a tendency, not a clip-length rule.\n"
+            "6. SELECT, do not cover: leave out footage that is merely adequate; using fewer Moments is correct "
+            "when the material supports it." + common_tail)
+    return (
+        "\nTYPE STRATEGY — FULL STORY: a meaningful, coherent record of what happened (a well-edited travel vlog "
+        "or personal documentary), NOT a longer Highlights montage.\n"
+        "1. UNDERSTAND what happened from the Moments' observed events and narrative_candidates, the Story Guide "
+        "and Coverage. Treat visible interactions as visual narrative evidence. Speech is not transcribed, so "
+        "never invent dialogue or exact spoken meaning.\n"
+        "2. THREAD: follow the thread the material actually supports (for example changing places and "
+        "conditions, effort, companionship, notable encounters, viewpoints, a completion or a reflection). "
+        "These are examples, not a template. Do not invent a departure, midpoint or return; footage of a "
+        "village is not necessarily the start or the end. The order of moments[] is import order, NOT "
+        "chronology.\n"
+        "3. CONTENT: retain complete meaningful actions and interactions, environmental and human context, and "
+        "emotional reactions. Give meaningful sequences room to play out and keep their original sound; short "
+        "inserts are fine where they add context.\n"
+        "4. SELECT by meaning, not by appeal alone: include footage that adds narrative, atmosphere, character "
+        "or progression; avoid repeating a shot unless it adds something; do not require every Moment; never "
+        "pad.\n"
+        "5. SHAPE: a clear beginning, development and ending supported by the material; do not force a "
+        "conventional arc." + common_tail)
+
+
+def _v55_sound_default(etype: str, pref: str | None) -> str:
+    """Type default for native audio ONLY when the user gave no Sound preference (the user's preference stays
+    authoritative and is rendered by _edit_sound_pref_directive)."""
+    if pref:
+        return _edit_sound_pref_directive(pref)
+    if etype == "highlights":
+        return ("SOUND DEFAULT = music-forward: duck routine ambience and keep native audio where a payoff or "
+                "reaction's own sound is the point.")
+    return ("SOUND DEFAULT = keep: meaningful environmental and human sound stays audible, and complete "
+            "natural-audio sequences stay whole.")
+
+
+def _build_user_v55(inputs: "EditPlanInputs", etype: str, payload: dict, revision_block: str) -> str:
+    import json
+    brief_block = ""
+    if inputs.creative_brief:
+        brief_block = ("\n=== CREATIVE DIRECTION ===\n" + _V55_BRIEFS[etype]
+                       + "\n=== END CREATIVE DIRECTION ===\n")
+    image_block = ""
+    if inputs.images and inputs.image_moment_order:
+        order = "; ".join(inputs.image_moment_order)
+        image_block = (
+            f"\n(Contact-sheet images, one tiled JPEG per Moment, in this order: {order})\n"
+            "VISUAL EVIDENCE: you receive timestamped contact-sheet frames for each Moment, labeled with Moment id "
+            "and source timestamp. They are evidence for the SAME Moments in the JSON. Use them to compare what "
+            "the footage visibly delivers (composition, subject prominence, expression, movement, color, scenic "
+            "drama) and to choose source ranges. The frames are a sparse sample: candidate times, events and "
+            "peak_time are advisory hints that can be wrong, so when the frames disagree trust the frames. Never "
+            "invent footage not present. Event and candidate times describe what is visible, not where sound can "
+            "be cut cleanly.\n")
+    sound = _v55_sound_default(etype, inputs.sound_preference)
+    return ("Plan the EditPlan for THIS Story from the material below. Use only the given Moment ids and their "
+            "real/useful ranges. Plan to the Story target duration. Respect native audio.\n"
+            + brief_block
+            + revision_block
+            + image_block
+            + (("\n" + sound + "\n") if sound else "")
+            + _v55_strategy(etype)
+            + _budget_block(compute_budget_hint(inputs, etype))
+            + "\nINPUT:\n"
+            + json.dumps(payload, indent=2) + "\n\nReturn ONLY the EditPlan via the tool.")
+
+
+
+# ---------------------------------------------------------------------------
+# EditPlan v5.6 (Editorial vNext "radical simplification") — ISOLATED candidate, reachable ONLY when the selected
+# version is >= 5.6 (`_v56_active`) AND the request carries a known editorial_type. The system prompt is shared +
+# mechanical only; the user message carries exactly ONE strategy block and ONE type-specific INPUT projection built
+# from `inputs.moments` (which, like validation, is never modified). There is no CREATIVE DIRECTION block, no legacy
+# editorial_mode line and no editorial_type field in the payload, so nothing competes with the strategy. No extra
+# model call, no schema change, no new flag. v5.3/v5.5 prompt strings are untouched (golden-tested).
+# ---------------------------------------------------------------------------
+_V56_TYPICAL_SHOT_S = {"highlights": (1.0, 2.5), "full_story": (4.0, 10.0)}
+_V56_UNDER_LENGTH_PCT = 20.0     # disclose (never reject) when the delivered cut is more than this far under target
+
+
+def _v56_active() -> bool:
+    """True when the SELECTED edit-plan version is >= 5.6 (isolated candidate; never the default)."""
+    try:
+        return float(_EDIT_PLAN_VERSION) >= 5.6
+    except (TypeError, ValueError):
+        return False
+
+
+def _typical_shot_s(etype: str) -> tuple[float, float]:
+    return (_V56_TYPICAL_SHOT_S if _v56_active() else _V55_TYPICAL_SHOT_S)[etype]
+
+
+def _clip(s, n: int) -> str:
+    s = " ".join(str(s or "").split())
+    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+
+def _num(v):
+    try:
+        return round(float(v), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _v56_candidates(m: dict, key: str) -> list[dict]:
+    ed = m.get("editorial")
+    vs = ed.get(key) if isinstance(ed, dict) else None
+    return [v for v in (vs or []) if isinstance(v, dict)]
+
+
+def _v56_events(m: dict, limit: int, chars: int) -> list[dict]:
+    out = []
+    evs = m.get("events")
+    if isinstance(evs, list) and evs:
+        for e in evs:
+            if isinstance(e, dict):
+                out.append({"start": _num(e.get("start_time")), "end": _num(e.get("end_time")),
+                            "what": _clip(e.get("description"), chars)})
+    else:
+        ev = m.get("evidence")
+        for e in ((ev or {}).get("events") or []) if isinstance(ev, dict) else []:
+            if isinstance(e, dict):
+                out.append({"start": _num(e.get("t")), "end": _num(e.get("t_end")),
+                            "what": _clip(e.get("what"), chars)})
+    return out[:limit]
+
+
+def _v56_subjects(m: dict) -> list[str]:
+    ev = m.get("evidence")
+    subs = (ev or {}).get("subjects") if isinstance(ev, dict) else None
+    return [_clip(s, 60) for s in (subs or [])[:5] if s]
+
+
+def _v56_moment_highlights(m: dict) -> dict:
+    """Image-led projection: identity + bounds + where the visual payoffs are. No narrative text, no summary, no
+    evidence block, no sampled_frame_ms (the contact sheets already burn in timestamps), no confidence."""
+    out: dict = {"id": m.get("id"), "duration_seconds": m.get("duration_seconds"),
+                 "useful_segments": m.get("useful_segments")}
+    subs = _v56_subjects(m)
+    if subs:
+        out["subjects"] = subs
+    vcs = [{"start": _num(v.get("start_time")), "end": _num(v.get("end_time")), "peak": _num(v.get("peak_time")),
+            "role": v.get("role"), "value": _clip(v.get("visual_value"), 140)}
+           for v in _v56_candidates(m, "visual_candidates")]
+    if vcs:
+        out["visual_candidates"] = vcs
+    else:   # no visual analysis for this Moment: a short factual event line is the only text hint available
+        evs = _v56_events(m, 2, 100)
+        if evs:
+            out["events"] = evs
+        elif m.get("summary"):
+            out["summary"] = _clip(m.get("summary"), 160)
+    return out
+
+
+def _v56_moment_full(m: dict) -> dict:
+    """Narrative-led projection: what happened (summary, timed events, narrative candidates) plus compact visual
+    ranges. No sampled_frame_ms, no duplicated evidence block."""
+    ev = m.get("evidence")
+    summary = (ev or {}).get("summary") if isinstance(ev, dict) else None
+    out: dict = {"id": m.get("id"), "duration_seconds": m.get("duration_seconds"),
+                 "useful_segments": m.get("useful_segments"),
+                 "summary": _clip(summary or m.get("summary"), 240)}
+    subs = _v56_subjects(m)
+    if subs:
+        out["subjects"] = subs
+    evs = _v56_events(m, 6, 120)
+    if evs:
+        out["events"] = evs
+    ncs = [{"start": _num(n.get("start_time")), "end": _num(n.get("end_time")), "role": n.get("role"),
+            "what_happens": _clip(n.get("what_happens"), 200)} for n in _v56_candidates(m, "narrative_candidates")]
+    if ncs:
+        out["narrative_candidates"] = ncs
+    vcs = [{"start": _num(v.get("start_time")), "end": _num(v.get("end_time")), "role": v.get("role")}
+           for v in _v56_candidates(m, "visual_candidates")]
+    if vcs:
+        out["visual_candidates"] = vcs
+    return out
+
+
+def _v56_guide(g) -> dict | None:
+    if not isinstance(g, dict):
+        return None
+    scenes = [{"id": s.get("id"), "title": _clip(s.get("title"), 80), "why_it_matters": _clip(s.get("why_it_matters"), 140)}
+              for s in (g.get("scenes") or []) if isinstance(s, dict)]
+    return {"framing_summary": _clip(g.get("framing_summary"), 200), "scenes": scenes}
+
+
+def _v56_coverage(c) -> dict | None:
+    if not isinstance(c, dict):
+        return None
+    suff = c.get("sufficiency") if isinstance(c.get("sufficiency"), dict) else {}
+    return {
+        "dimensions": [{"id": d.get("story_guide_dimension_id") or d.get("id"), "state": d.get("state")}
+                       for d in (c.get("dimension_coverage") or []) if isinstance(d, dict)],
+        "strengths": [_clip(s, 200) for s in (c.get("strengths") or [])[:4]],
+        "redundancies": [_clip(s, 200) for s in (c.get("redundancies") or [])[:4]],
+        "sufficiency": {"status": suff.get("status"), "reason": _clip(suff.get("reason"), 240)} if suff else None,
+    }
+
+
+def _v56_music_plan(mp) -> dict | None:
+    if not isinstance(mp, dict):
+        return None
+    ch = mp.get("character") if isinstance(mp.get("character"), dict) else {}
+    out = {"audio_strategy": mp.get("audio_strategy"),
+           "character": {"energy": ch.get("energy"), "mood_tags": ch.get("mood_tags")},
+           "energy_arc": [{"start": a.get("start_fraction"), "end": a.get("end_fraction"),
+                           "intensity": a.get("intensity"), "label": a.get("label")}
+                          for a in (mp.get("energy_arc") or []) if isinstance(a, dict)]}
+    return out
+
+
+def _v56_payload(inputs: "EditPlanInputs", etype: str) -> dict:
+    ci = {k: v for k, v in (inputs.creative_intent or {}).items() if v not in (None, [], "")}
+    mk = _v56_moment_highlights if etype == "highlights" else _v56_moment_full
+    payload: dict = {"creative_intent": ci, "target_duration_seconds": inputs.creative_intent["target_duration_seconds"]}
+    if etype == "full_story":
+        g, c = _v56_guide(inputs.story_guide), _v56_coverage(inputs.story_coverage)
+        if g:
+            payload["story_guide"] = g
+        if c:
+            payload["story_coverage"] = c
+    payload["moments"] = [mk(m) if isinstance(m, dict) else m for m in inputs.moments]
+    mp = _v56_music_plan(inputs.music_plan)
+    if mp:
+        payload["music_plan"] = mp
+    if inputs.music_analysis is not None:
+        payload["music_analysis"] = inputs.music_analysis
+    if inputs.sound_preference:
+        payload["sound_preference"] = inputs.sound_preference
+    return payload
+
+
+def _v56_music_kind(ma) -> str | None:
+    """None (no MusicAnalysis) | "grid" (it carries beat/downbeat times or a highlight window) | "tempo_only" (a track
+    analysed for tempo only: nothing exists to anchor a cut to)."""
+    if not isinstance(ma, dict):
+        return None
+    return "grid" if (ma.get("beats") or ma.get("downbeats") or ma.get("highlight_window")) else "tempo_only"
+
+
+def _v56_strategy(etype: str, has_music_analysis: str | None) -> str:
+    tail = ("\nThese strategies guide NEW edits. When a VERSION CONTEXT above says REVISE, preserve the base edit and "
+            "change only what the user asked. Explicit user directives always win.\n")
+    if etype == "highlights":
+        pace = ("Pace the cuts to the real beats of the supplied music analysis." if has_music_analysis == "grid" else
+                "Pace the cuts to the music plan's energy arc and tempo. The track analysis has no beat times, so "
+                "set no music anchors." if has_music_analysis == "tempo_only" else
+                "Pace the cuts to the music plan's energy arc.")
+        return (
+            "\nSTRATEGY — HIGHLIGHTS (image-led). MAKE THE MOST VISUALLY EXCITING SHORT VIDEO POSSIBLE.\n"
+            "- Judge the footage by the frames. Compare the visual quality of ALL Moments with each other (subject "
+            "and expression, composition, light and color, movement, scenic drama, a clearly visible payoff) and "
+            "choose the best. Confidence is not appeal; text candidates only tell you where to look.\n"
+            "- Front-load. Open on the single strongest payoff and show several distinct payoffs within the first "
+            "~10 seconds. Do not warm up.\n"
+            "- Cut fast. Typical shots run about 1–2.5 s (a preference, not a rule: a payoff that needs more time "
+            "may run longer). Start on the action and leave early. Never speed footage up to cut length: choose a "
+            "tighter sub-range and cut sooner.\n"
+            "- Be ruthless. No routine establishing shots. Do not force chronology. Do not include every Moment; a "
+            "second shot from the same place or action must show something clearly different.\n"
+            f"- {pace}\n"
+            "- Sound default: music-forward, with native audio kept only where a payoff's own sound is the point."
+            + tail)
+    return (
+        "\nSTRATEGY — FULL STORY (narrative-led). TELL THE MEANINGFUL STORY OF WHAT HAPPENED.\n"
+        "- Build a thread from the Moments' events, narrative_candidates and interactions, using the Guide and "
+        "Coverage as context. Never invent events, dialogue or a departure/arrival structure.\n"
+        "- Keep complete actions and interactions. Typical shots run about 4–10 s, or longer when an action needs "
+        "it. Do not cut an action or exchange short for pace.\n"
+        "- Preserve natural audio for meaningful sequences. Sound default: keep.\n"
+        "- Use chronology only where the material shows it (timestamps or clear visible progression). moments[] "
+        "order is import order, not chronology.\n"
+        "- Choose by meaning: context, people, effort, place, reaction. A short insert is fine when it adds "
+        "context. Do not require every Moment and do not repeat a shot without adding something."
+        + tail)
+
+
+def _budget_block_v56(h: dict | None) -> str:
+    if not h:
+        return ""
+    a, b = h["typical_shot_s"]
+    lo, hi = h["suggested_shots"]
+    return (f"\nBUDGET (advisory): target {h['target_s']:g}s; typical shots {a:g}–{b:g}s suggest roughly {lo}–{hi} "
+            f"shots from {h['n_moments']} Moments ({h['useful_s']:.0f}s of useful footage). This is a pace guide, "
+            "not a quota or a limit on shot length. If the footage you consider strong enough runs out, ending somewhat short is "
+            "acceptable; do not add weak or repeated footage just to reach the length.\n")
+
+
+def _revision_block_v56(ctx: dict | None) -> str:
+    """v5.6 rendering of the version/creative context so the USER'S OWN instructions are never lost or mis-framed.
+    Differences from `_revision_context_block` (which stays byte-identical for 5.3/5.5):
+      - EXPLORE also renders `soft_direction` (a directed Create-Another-Version carries the user's text there; the
+        older renderer printed it only for Revise).
+      - an ORIGINAL create with Customize text arrives as mode=revise WITHOUT a base plan; it is rendered as the
+        user's creative direction, not as "revise your existing edit ... the BASE PLAN below" (there is none).
+      - a REVISE with a base plan is unchanged.
+    HARD directives are rendered exactly as before (the deterministic validator enforces them)."""
+    if not isinstance(ctx, dict) or not ctx:
+        return ""
+    mode = (ctx.get("mode") or "explore").strip().lower()
+    soft = (ctx.get("soft_direction") or "").strip() if isinstance(ctx.get("soft_direction"), str) else ""
+    bp = ctx.get("base_plan")
+    has_base = isinstance(bp, dict) and bool(bp.get("segments"))
+    if mode == "revise" and has_base:
+        return _revision_context_block(ctx)
+    note = ("These are the user's own instructions. They win over the STRATEGY and every default; HARD REQUIREMENTs "
+            "are also enforced by a validator.")
+    if mode == "revise":          # an original create carrying Customize text/directives: no base edit exists
+        lines = ["\n=== USER INSTRUCTIONS ==="]
+        if soft:
+            lines.append("USER CREATIVE DIRECTION (soft): " + soft)
+        lines.extend(_directive_lines(ctx.get("directives")))
+        lines.append(note)
+        lines.append("=== END USER INSTRUCTIONS ===\n")
+        return "\n".join(lines) if (soft or ctx.get("directives")) else ""
+    block = _revision_context_block(ctx)
+    if soft:
+        end = "=== END VERSION CONTEXT ==="
+        add = "USER CREATIVE DIRECTION (soft): " + soft + "\n" + note + "\n"
+        block = block.replace(end, add + end) if end in block else block + add
+    return block
+
+
+def _build_user_v56(inputs: "EditPlanInputs", etype: str, revision_block: str = "") -> str:
+    import json
+    revision_block = _revision_block_v56(inputs.revision_context)
+    payload = _v56_payload(inputs, etype)
+    image_block = ""
+    if inputs.images and inputs.image_moment_order:
+        order = "; ".join(inputs.image_moment_order)
+        image_block = (
+            f"\n(Contact-sheet images, one tiled JPEG per Moment, in this order: {order})\n"
+            "VISUAL EVIDENCE: each sheet is a sparse sample of one Moment, labeled with its id and source "
+            "timestamps. Use it to judge the footage and to pick source ranges.\n")
+    sound = _edit_sound_pref_directive(inputs.sound_preference)
+    return ("Plan the EditPlan for THIS Story from the material below. Use only the given Moment ids and their "
+            "useful ranges.\n"
+            + revision_block
+            + image_block
+            + (("\n" + sound + "\n") if sound else "")
+            + _v56_strategy(etype, _v56_music_kind(inputs.music_analysis))
+            + _budget_block_v56(compute_budget_hint(inputs, etype))
+            + "\nINPUT:\n"
+            + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n\nReturn ONLY the EditPlan via the tool.")
+
+
 def _editorial_type_directive(etype: str | None) -> str:
     """EditPlan v5.3 editorial-TYPE strategy (advisory REQUEST context, USER message only — the frozen system
     body is untouched). Distinct from _edit_mode_directive (legacy breadth hint). Empty when unset so v5.2
@@ -1600,6 +2147,25 @@ def _edit_sound_pref_directive(pref: str | None) -> str:
     return ""
 
 
+def _repair_duration_bullet() -> str:
+    """The duration bullet of the repair turn. v5.3: unchanged text (accepts up to +50% long). v5.5: aim within
+    ~10% and never lengthen to include more footage — consistent with the never-block policy and the fitter."""
+    if _v55_active():
+        return ("- The total timeline duration (sum of output durations, minus any crossfade overlap) should land "
+                "within about ±10% of target_duration_seconds. Do NOT lengthen the plan to keep more footage: when "
+                "you must change numbers, change the smallest set and prefer shortening over adding. A technically "
+                "valid plan always ships, and a deterministic fit trims one that runs long. If the usable material "
+                "genuinely cannot reach the target, return feasible=false with a one-line infeasible_reason and "
+                "your best shorter plan — do NOT invent footage.\n")
+    return ("- The total timeline duration (sum of output durations, minus any crossfade overlap) should AIM AT "
+            "target_duration_seconds. Running somewhat LONG is acceptable (up to +"
+            f"{int(DURATION_OVERSHOOT_TOLERANCE*100)}%), "
+            f"but do NOT come in more than {int(DURATION_UNDERSHOOT_TOLERANCE*100)}% SHORT of target. Aim at the "
+            "target, not the edge. If the "
+            "usable material genuinely cannot reach the target, return feasible=false with a one-line "
+            "infeasible_reason and your best shorter plan — do NOT invent footage.\n")
+
+
 def _build_repair(inputs: EditPlanInputs, bad_plan: dict, errs: list[str]) -> str:
     """Repair turn: hand the model back ITS OWN schema-valid plan plus the deterministic validator's
     exact complaints, and ask it to correct ONLY those inconsistencies while preserving its narrative
@@ -1632,12 +2198,7 @@ def _build_repair(inputs: EditPlanInputs, bad_plan: dict, errs: list[str]) -> st
         "speed (speed defaults to 1.0). If you want a segment SHORTER, shorten its source range or raise its "
         "speed; if LONGER, extend the source range (staying within the Moment's real duration and useful "
         "segments) or lower its speed. Never leave output_duration inconsistent with the source span and speed.\n"
-        "- The total timeline duration (sum of output durations, minus any crossfade overlap) should AIM AT "
-        f"target_duration_seconds. Running somewhat LONG is acceptable (up to +{int(DURATION_OVERSHOOT_TOLERANCE*100)}%), "
-        f"but do NOT come in more than {int(DURATION_UNDERSHOOT_TOLERANCE*100)}% SHORT of target. Aim at the "
-        "target, not the edge. If the "
-        "usable material genuinely cannot reach the target, return feasible=false with a one-line "
-        "infeasible_reason and your best shorter plan — do NOT invent footage.\n"
+        + _repair_duration_bullet() +
         "- source ranges stay within each Moment's real duration and useful segments; asset_id stays a given "
         "Moment id.\n\n"
         "VALIDATOR ERRORS to fix:\n" + "\n".join(f"- {e}" for e in errs) + "\n\n"
@@ -1657,7 +2218,16 @@ def _build_critique(inputs: EditPlanInputs, plan: dict) -> str:
     5 specific questions are the ones Arm D used (hook / variation / unjustified holds / ending / expressive
     footage left on the table), citing Moment ids + source times."""
     import json
-    brief = (inputs.creative_brief or "").strip()
+    brief = (_effective_brief(inputs) or "").strip()
+    if _v55_type(inputs) == "full_story":
+        return (
+            "You produced the EditPlan below for a FULL STORY video. Critique it against the creative direction, "
+            "in <=180 words, then STOP (no tool call). Judge ONLY: (1) does it open on grounded context rather "
+            "than an invented start? (2) are meaningful actions and interactions complete, or cut off? (3) is "
+            "any shot repeated without adding something? (4) does the ending resolve what the footage actually "
+            "shows? (5) is meaningful footage left out? Be specific and cite Moment ids + source times. Do not "
+            "rewrite the plan.\n\n"
+            "=== CREATIVE DIRECTION ===\n" + brief + "\n=== END ===\n\nEDITPLAN:\n" + json.dumps(plan, indent=2))
     return (
         "You produced the EditPlan below for a SHORT-FORM SOCIAL video. Critique it against the creative "
         "direction, in <=180 words, then STOP (no tool call). Judge ONLY: (1) does the first shot hook in the "
@@ -1671,7 +2241,7 @@ def _build_revision(inputs: EditPlanInputs, plan: dict, critique: str) -> str:
     """Revise to address the critique, honoring the SAME creative direction, Moment ids/ranges and native-audio
     rules. Only improvements the critique supports; no clip-count padding. Re-emits via the frozen validator."""
     import json
-    brief = (inputs.creative_brief or "").strip()
+    brief = (_effective_brief(inputs) or "").strip()
     inv = [{"id": m.get("id"), "duration_seconds": m.get("duration_seconds"),
             "useful_segments": m.get("useful_segments")} for m in inputs.moments]
     return (
@@ -1715,6 +2285,49 @@ def _to_contract(plan: dict, inputs: EditPlanInputs) -> EditPlanV2Contract:
     )
 
 
+# --- Output-token budget (reliability; never a creative quota) -------------------------------------------------
+# One EditPlan segment serialises to about 95 output tokens: the dev 66-Moment job stored 10,529 output tokens
+# over two calls (initial plan + one repair), about 5.3k per 56-segment plan. The expected segment count follows
+# the REQUESTED DURATION and the type's typical shot length, never the Moment count.
+_TOKENS_PER_SEGMENT = 100
+_PLAN_BASE_TOKENS = 400
+_OVERPLAN_ALLOWANCE = 1.25     # the model plans past the target before the duration fitter trims it
+_HEADROOM = 1.25
+_TYPICAL_SHOT_S = {"highlights": 2.5, "full_story": 6.0}
+_TRUNCATION_STOPS = frozenset({"max_tokens", "length", "MAX_TOKENS"})
+DEFAULT_OUTPUT_FLOOR = 8192
+DEFAULT_OUTPUT_CEILING = 32768    # provider limits: gpt-5.1 128,000; gemini-3.8-flash 65,536 (documented maxima)
+
+
+# HTTP timeout for a planner generation on the async worker path. Measured: a 68-sheet (7.9 MB) request did not
+# answer within the adapters' generic 60 s on either provider (dev job fc92ea54, 2026-11-18). The allowance grows
+# with the output budget (a fixed setup cost for the image-heavy input, plus generation at a conservative rate) and
+# is capped; the adapters still clamp it to the worker deadline. Re-fit from provider_attempts latency_ms.
+PLANNER_TIMEOUT_BASE_S = 90.0
+PLANNER_TIMEOUT_TOKENS_PER_S = 75.0
+PLANNER_TIMEOUT_MAX_S = 240.0
+
+
+def planner_timeout_seconds(max_tokens: int) -> float:
+    """HTTP timeout for one planner generation with this output budget, in seconds (bounded)."""
+    return min(PLANNER_TIMEOUT_MAX_S, PLANNER_TIMEOUT_BASE_S + max(0, int(max_tokens)) / PLANNER_TIMEOUT_TOKENS_PER_S)
+
+
+def estimate_output_budget(target_seconds: float | None, editorial_type: str | None, *,
+                           floor: int = DEFAULT_OUTPUT_FLOOR, cap: int = 16384) -> int:
+    """Initial max output tokens for the planner call. Grows with the requested duration (expected shots =
+    target / typical shot length), is independent of how many Moments the Story has, never below `floor`, and
+    never above `cap`. It only sizes the allowance: it does not ask the model for more shots."""
+    try:
+        target = float(target_seconds or 0.0)
+    except (TypeError, ValueError):
+        target = 0.0
+    shot_s = _TYPICAL_SHOT_S.get(editorial_type or "", 4.0)
+    expected_shots = math.ceil(max(target, 0.0) / shot_s) * _OVERPLAN_ALLOWANCE
+    est = (_PLAN_BASE_TOKENS + _TOKENS_PER_SEGMENT * expected_shots) * _HEADROOM
+    return int(min(max(floor, math.ceil(est / 256) * 256), max(cap, floor)))
+
+
 class RealEditPlannerEngine:
     """Opus 4.6 via the generic ModelGateway. Validates deterministically; never fabricates.
 
@@ -1730,7 +2343,7 @@ class RealEditPlannerEngine:
     `last_diagnostics` records what happened for the reliability measurement / server logs."""
 
     def __init__(self, gateway: ModelGateway, *, max_tokens: int = 8192, executability_repair_attempts: int = 1,
-                 max_tokens_ceiling: int = 16384):
+                 max_tokens_ceiling: int = DEFAULT_OUTPUT_CEILING):
         self._gw = gateway
         self._system = _load_system()
         self._max_tokens = max_tokens
@@ -1740,6 +2353,29 @@ class RealEditPlannerEngine:
         self._max_tokens_ceiling = max(max_tokens, max_tokens_ceiling)
         self._exec_repairs = max(0, executability_repair_attempts)
         self.last_diagnostics: dict[str, Any] = {}
+        # Absolute wall-clock deadline (time.time()) for the whole job, set by the worker. Adapters refuse to
+        # start an attempt that cannot finish before it. None = no caller deadline.
+        self.deadline_ts: float | None = None
+
+    def _record_attempts(self, diag: dict, exc: BaseException | None) -> None:
+        """Append the gateway's safe per-attempt records (bounded) to the job diagnostics, and when a call
+        failed keep its typed category and, if the primary provider failed first, WHY. No prompts, images or raw
+        responses are recorded."""
+        recs = list(getattr(self._gw, "last_attempts", None) or [])
+        log = diag.setdefault("provider_attempts", [])
+        for r in recs:
+            if len(log) < 24:
+                log.append({**r, "prompt_version": PROMPT_VERSION})
+        if exc is not None:
+            pf = getattr(exc, "primary_failure", None)
+            diag["last_error_category"] = ("truncated" if isinstance(exc, OutputTruncatedError)
+                                           else classify_provider_error(exc))
+            diag["last_error"] = sanitize_error(exc)
+            if pf:
+                diag["primary_failure"] = pf
+        if getattr(self._gw, "last_fallback", False) and getattr(self._gw, "last_error", None):
+            diag.setdefault("primary_failure", {"category": "provider",
+                                                "error": sanitize_error(self._gw.last_error)})
 
     def generate(self, inputs: EditPlanInputs) -> EditPlanV2Contract:
         diag: dict[str, Any] = {
@@ -1758,26 +2394,53 @@ class RealEditPlannerEngine:
             # `images` defaults to the full payload; a repair may pass a SMALLER set (Phase 3) when the
             # validator errors are purely numeric/structural and re-sending every contact sheet is wasted cost.
             call_images = list(inputs.images) if images is None else images
-            caps = [self._max_tokens]
-            if self._max_tokens_ceiling > self._max_tokens:
-                caps.append(self._max_tokens_ceiling)
+            _tgt = inputs.creative_intent.get("target_duration_seconds") if isinstance(inputs.creative_intent, dict) else None
+            initial = estimate_output_budget(_tgt, inputs.editorial_type, floor=self._max_tokens,
+                                             cap=min(16384, self._max_tokens_ceiling))
+            caps = [initial]
+            # ONE escalation at most: double the budget, bounded by the ceiling. A genuinely runaway plan still
+            # fails after two generations instead of looping.
+            escalated = min(self._max_tokens_ceiling, max(initial * 2, 16384))
+            if escalated > initial:
+                caps.append(escalated)
+            diag["initial_max_tokens"] = initial
             result = None
-            for cap in caps:
+            for idx, cap in enumerate(caps):
                 req = StructuredRequest(
                     task=TASK, schema=SCHEMA, prompt_version=PROMPT_VERSION, system=self._system,
                     user_content=user_content, max_repair_attempts=2,
                     max_tokens=cap, temperature=0.0,
-                    images=call_images)
-                result = self._gw.generate_structured(req)  # raises StructuredOutputError/ProviderError
+                    images=call_images, deadline_ts=self.deadline_ts,
+                    # Only the async worker sets a deadline; there the long, budget-scaled timeout applies. The
+                    # synchronous API path keeps the adapter default (its own request timeout is far shorter).
+                    timeout_seconds=(planner_timeout_seconds(cap) if self.deadline_ts is not None else None))
+                diag["planner_timeout_s"] = req.timeout_seconds
+                try:
+                    result = self._gw.generate_structured(req)  # raises StructuredOutputError/ProviderError
+                except Exception as exc:  # noqa: BLE001 - record, then re-raise or escalate
+                    self._record_attempts(diag, exc)
+                    if isinstance(exc, OutputTruncatedError):
+                        diag["truncation_escalations"] = diag.get("truncation_escalations", 0) + 1
+                        if idx + 1 < len(caps):
+                            diag["truncation_recovery"] = "retrying"
+                            continue
+                        diag["truncation_recovery"] = "failed"
+                    self.last_diagnostics = diag
+                    raise
+                self._record_attempts(diag, None)
                 diag["model_calls"] += 1
                 u = result.usage
                 if u:
                     diag["input_tokens"] += (u.input_tokens or 0)
                     diag["output_tokens"] += (u.output_tokens or 0)
                     diag["last_output_tokens"] = u.output_tokens or 0
+                    if u.reasoning_tokens:
+                        diag["reasoning_tokens"] = diag.get("reasoning_tokens", 0) + u.reasoning_tokens
                 diag["last_stop_reason"] = result.stop_reason
                 diag["last_max_tokens_used"] = cap
-                if result.stop_reason != "max_tokens":
+                if result.stop_reason not in _TRUNCATION_STOPS:
+                    if diag.get("truncation_recovery") == "retrying":
+                        diag["truncation_recovery"] = "recovered"
                     break   # not truncated — accept this result
                 diag["truncation_escalations"] = diag.get("truncation_escalations", 0) + 1
                 # else: truncated — loop retries at the higher cap (if any left)
@@ -1804,7 +2467,7 @@ class RealEditPlannerEngine:
             req = StructuredRequest(
                 task="edit_plan.critique", schema=cs, prompt_version=PROMPT_VERSION, system=self._system,
                 user_content=user_content, max_repair_attempts=1, max_tokens=600, temperature=0.0,
-                images=list(inputs.images))
+                images=list(inputs.images), deadline_ts=self.deadline_ts)
             result = self._gw.generate_structured(req)
             diag["model_calls"] += 1
             u = result.usage
@@ -1959,11 +2622,9 @@ class RealEditPlannerEngine:
 
         def _consider_best(p: dict, attempt: str) -> None:
             nonlocal best_valid, best_sat, best_from
-            if not _best_valid_retention_on():
-                return
             if validate_plan(p, inputs) or p.get("feasible") is False:
                 return
-            sat = assess_creative_intent(p, inputs)["satisfaction"] if _objective_directives_on() else 1.0
+            sat = assess_creative_intent(p, inputs)["satisfaction"]
             # First valid wins; replace ONLY by a strictly-higher satisfaction (never a worse candidate).
             if best_valid is None or sat > best_sat:
                 import copy as _c
@@ -1980,7 +2641,7 @@ class RealEditPlannerEngine:
         def _placement_errors() -> list[str]:
             moments_l = {str(m["id"]).lower(): m for m in inputs.moments}
             _h, _o = _validate_directives_split(plan, inputs, moments_l)
-            pool = list(errs) + (_o if _objective_directives_on() else [])
+            pool = list(errs) + _o
             return [e for e in pool if any(str(e).startswith(p) for p in _ORDER_REPAIRABLE_PREFIXES)]
 
         _place = _placement_errors()
@@ -2002,22 +2663,18 @@ class RealEditPlannerEngine:
         # exception of 1 when a HARD technical defect would otherwise leave the result unrenderable. Repairs
         # carry ONLY the HARD errors — the model is never asked to chase editorial objectives.
         def _hard_only(es: list[str]) -> list[str]:
-            # In objective mode, `errs` already contains only hard errors (objectives are excluded upstream),
-            # so this is the identity; in legacy mode we repair everything as before.
+            # `errs` already contains only hard errors (objectives are excluded upstream): identity.
             return list(es)
 
         _mode = (rc.get("mode") or "").strip().lower()
         _is_revise = _mode == "revise"
-        if _objective_directives_on():
-            # Create / Create Another Version: at most 1. Revise: 0, exception 1 to recover an unrenderable
-            # HARD defect. (errs here are HARD-only by construction.)
-            if _is_revise:
-                max_repairs = 1 if errs else 0   # the exception: only if a HARD defect remains
-            else:
-                max_repairs = min(1, self._exec_repairs) if self._exec_repairs else 1
-            max_repairs = min(max_repairs, 1)   # never >=2 under v2
+        # Create / Create Another Version: at most 1. Revise: 0, exception 1 to recover an unrenderable
+        # HARD defect. (errs here are HARD-only by construction.)
+        if _is_revise:
+            max_repairs = 1 if errs else 0   # the exception: only if a HARD defect remains
         else:
-            max_repairs = self._exec_repairs     # legacy behavior unchanged
+            max_repairs = min(1, self._exec_repairs) if self._exec_repairs else 1
+        max_repairs = min(max_repairs, 1)   # never >=2 under v2
 
         diag["repair_budget"] = max_repairs
         _repairs_done = 0
@@ -2135,46 +2792,286 @@ class RealEditPlannerEngine:
                 diag["critique_applied"] = False
                 diag["critique_rejected_reason"] = f"provider_error:{type(e).__name__}"
 
+        # 6c: DETERMINISTIC DURATION FIT (no model call). The requested length is a strong objective but never a
+        # reason to reject a playable cut, so an over-long valid plan is pulled back toward the target by dropping
+        # redundant/low-value optional shots and trimming slack away from the AU payoff (duration_fit.py). Revise
+        # is exempt (it must preserve the user's base edit). The fit is ADOPTED only when the fitted plan is
+        # still technically valid and does not lower creative-objective satisfaction; otherwise the original
+        # valid plan ships unchanged. Recorded in diag["duration_fit"].
+        _dur_fit_unmet = False
+        import copy as _copy
+        _pre_fit_plan = _copy.deepcopy(plan)   # diagnostics only: what the planner proposed before the deterministic fit
+        if not _is_revise:
+            from .duration_fit import fit_plan_duration, FIT_BAND
+            _protected = _directive_authorized_ids((rc or {}).get("directives"))
+            _fit_kw = {"grid_aware_anchors": True} if _v56_active() else {}   # 5.3/5.5 call is byte-for-byte the historical one
+            fitted, frep = fit_plan_duration(plan, inputs, protected_ids=_protected, **_fit_kw)
+            if frep.get("applied"):
+                f_errs = validate_plan(fitted, inputs)
+                sat_before = assess_creative_intent(plan, inputs)["satisfaction"]
+                sat_after = assess_creative_intent(fitted, inputs)["satisfaction"]
+                if not f_errs and sat_after >= sat_before - 1e-9:
+                    plan = fitted
+                    frep["adopted"] = True
+                else:
+                    # Report what ACTUALLY shipped: the original plan, unchanged. The proposal is kept apart.
+                    frep["adopted"] = False
+                    frep["rejected_reason"] = "invalid_after_fit" if f_errs else "satisfaction_drop"
+                    frep["proposed"] = {"after_s": frep["after_s"], "trimmed": frep["trimmed"],
+                                        "dropped": frep["dropped"], "changes": frep["changes"]}
+                    frep.update(after_s=frep["before_s"], trimmed=0, dropped=[], changes=[],
+                                within_band=frep["before_s"] <= frep["target_s"] * (1 + FIT_BAND) + 1e-6)
+            diag["duration_fit"] = frep
+            _dur_fit_unmet = frep.get("within_band") is False
+
         # v2 PARTIAL-SUCCESS DISCLOSURE (owner §9). The plan is technically valid and shippable. Score the
         # creative objectives (deterministic, no model) and record Complete vs Partial + the material unmet
         # instructions, so the device renders a SUCCESS (with a concise disclosure) rather than an "Adjust
         # instructions" error. Complete = valid + every present objective satisfied; Partial = valid + some
         # objective unmet. The result is ALWAYS a playable plan either way.
-        if _objective_directives_on():
-            cre = assess_creative_intent(plan, inputs)
-            diag["creative_satisfaction"] = cre["satisfaction"]
-            diag["creative_objective_count"] = cre["objective_count"]
-            if cre["material_unmet"]:
-                diag["material_unmet"] = cre["material_unmet"]
-                diag["final"] = "executable"
-                diag["completion"] = "partial"
-                _parts = ["Your video is ready. A few of your creative requests couldn't all be applied: "
-                          + "; ".join(sorted({m["code"] for m in cre["material_unmet"]})) + "."]
-                if _continuity_disclosure:
-                    _parts.append(_continuity_disclosure)
-                diag["partial_disclosure"] = " ".join(_parts)
-            elif _continuity_disclosure:
-                # No unmet creative objective, but a noop/wholesale continuity signal MUST be disclosed so an
-                # unchanged (or wholesale-changed) revise is never shown as a plain successful revision.
-                diag["final"] = "executable"
-                diag["completion"] = "partial"
-                diag["partial_disclosure"] = _continuity_disclosure
-            else:
-                diag["final"] = "executable"
-                diag["completion"] = "complete"
-            diag["used_fallback"] = bool(getattr(self._gw, "last_fallback", False))
-            self.last_diagnostics = diag
-            return _to_contract(plan, inputs)
-
-        # Objective-directives flag OFF (legacy path): still honor the never-mislead rule for a noop/wholesale
-        # revise — ship, but disclose honestly rather than claiming a clean success.
-        if _continuity_disclosure:
+        cre = assess_creative_intent(plan, inputs)
+        if _dur_fit_unmet:
+            # Honest reporting: the cut still runs materially long after the deterministic fit (only
+            # payoff / directive / music-anchored shots remain). The video ships; the miss is disclosed.
+            fr = diag["duration_fit"]
+            cre = dict(cre, material_unmet=list(cre["material_unmet"]) + [{
+                "code": "approx_duration",
+                "detail": f"plan {fr['after_s']:.1f}s vs target {fr['target_s']:.1f}s"}])
+        _under = _under_length(plan, inputs) if (_v56_active() and not _is_revise) else None
+        if _under:
+            # v5.6: honest disclosure (never a rejection) when the playable cut ends well short of the target.
+            cre = dict(cre, material_unmet=list(cre["material_unmet"]) + [{
+                "code": "approx_duration", "detail": f"plan {_under[0]:.1f}s vs target {_under[1]:.1f}s"}])
+        diag["creative_satisfaction"] = cre["satisfaction"]
+        diag["creative_objective_count"] = cre["objective_count"]
+        if cre["material_unmet"]:
+            diag["material_unmet"] = cre["material_unmet"]
+            diag["final"] = "executable"
+            diag["completion"] = "partial"
+            _codes = sorted({m["code"] for m in cre["material_unmet"]} - {"approx_duration"})
+            _parts = ["Your video is ready."]
+            if _codes:
+                _parts.append("A few of your creative requests couldn't all be applied: " + "; ".join(_codes) + ".")
+            if _dur_fit_unmet:
+                _parts.append(_duration_disclosure(diag["duration_fit"]))
+            if _under:
+                _parts.append(_under_length_disclosure(*_under))
+            if _continuity_disclosure:
+                _parts.append(_continuity_disclosure)
+            diag["partial_disclosure"] = " ".join(_parts)
+        elif _continuity_disclosure:
+            # No unmet creative objective, but a noop/wholesale continuity signal MUST be disclosed so an
+            # unchanged (or wholesale-changed) revise is never shown as a plain successful revision.
+            diag["final"] = "executable"
             diag["completion"] = "partial"
             diag["partial_disclosure"] = _continuity_disclosure
-        diag["final"] = "executable"
+        else:
+            diag["final"] = "executable"
+            diag["completion"] = "complete"
         diag["used_fallback"] = bool(getattr(self._gw, "last_fallback", False))
+        try:   # diagnostics must never break a Story
+            diag["selection"] = selection_diagnostics(plan, inputs, diag, _pre_fit_plan)
+        except Exception:
+            diag["selection"] = None
         self.last_diagnostics = diag
         return _to_contract(plan, inputs)
+
+
+# ---------------------------------------------------------------------------
+# Deterministic, privacy-safe selection diagnostics (Editorial vNext D3). NO model call and NO model-written
+# rationale: every number below is computed from the final plan, the request and the AU evidence the planner was
+# given. Recorded on every version (so v5.3 baselines and v5.5 candidates are compared on identical metrics).
+# Moment references are the first 8 hex chars of the opaque Moment id; no media, no prompts, no user text.
+# ---------------------------------------------------------------------------
+_SEL_MAX_USED = 80
+_SEL_MAX_UNUSED = 40
+
+
+def _shot_stats(outs: list[float]) -> dict:
+    if not outs:
+        return {"n": 0}
+    s = sorted(outs)
+    n = len(s)
+    med = s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+    return {"n": n, "mean_s": round(sum(s) / n, 2), "median_s": round(med, 2),
+            "min_s": round(s[0], 2), "max_s": round(s[-1], 2),
+            "p25_s": round(s[n // 4], 2), "p75_s": round(s[(3 * n) // 4], 2)}
+
+
+def _seg_outs(plan: dict) -> list[float]:
+    out = []
+    for sg in (plan or {}).get("segments", []) or []:
+        try:
+            out.append(float(sg.get("output_duration_seconds")))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _payoff_overlap(moment: dict, a: float, b: float) -> tuple[bool, str | None]:
+    """(overlaps a payoff-role visual candidate, role of the best-overlapping candidate) for a source range."""
+    ed = moment.get("editorial") if isinstance(moment, dict) else None
+    best_role, best_ov, pay = None, 0.0, False
+    for v in ((ed or {}).get("visual_candidates") or []) if isinstance(ed, dict) else []:
+        if not isinstance(v, dict):
+            continue
+        try:
+            s, e = float(v.get("start_time")), float(v.get("end_time"))
+        except (TypeError, ValueError):
+            continue
+        ov = max(0.0, min(b, e) - max(a, s))
+        if ov > 0 and v.get("role") == "payoff":
+            pay = True
+        if ov > best_ov:
+            best_ov, best_role = ov, (v.get("role") if isinstance(v.get("role"), str) else None)
+    return pay, best_role
+
+
+def _short_refs(ids, min_len: int = 8) -> dict[str, str]:
+    """Collision-safe short references for one job: each id maps to the shortest prefix (>= min_len chars) that no
+    OTHER id in the job shares. Deterministic; random UUIDs stay at 8 chars, deterministic/similar ids lengthen
+    until they are unique, so two different Moments can never share a reference within a job."""
+    uniq = sorted({str(i).lower() for i in ids if i})
+    refs: dict[str, str] = {}
+    for i in uniq:
+        n = min_len
+        while n < len(i) and any(o != i and o.startswith(i[:n]) for o in uniq):
+            n += 1
+        refs[i] = i[:n]
+    return refs
+
+
+_PACING_OPENING_S = 10.0
+_PACING_SHORT_S = 2.5
+
+
+def _pacing_stats(segs: list[dict], by_id: dict) -> dict:
+    """Deterministic pacing numbers for a final plan (segments already ordered). Opening window = the first
+    _PACING_OPENING_S seconds of OUTPUT time; a shot counts when it starts inside the window. A "payoff shot" overlaps a
+    payoff-role visual candidate; distinct payoffs = distinct Moments with a payoff shot in the opening."""
+    outs, t = [], 0.0
+    open_shots = open_pay = 0
+    open_moments: set[str] = set()
+    for sg in segs:
+        try:
+            o = float(sg.get("output_duration_seconds"))
+        except (TypeError, ValueError):
+            continue
+        outs.append(o)
+        if t < _PACING_OPENING_S:
+            open_shots += 1
+            mid = str(sg.get("asset_id")).lower()
+            try:
+                a, b = float(sg.get("source_start_seconds")), float(sg.get("source_end_seconds"))
+            except (TypeError, ValueError):
+                a = b = 0.0
+            if _payoff_overlap(by_id.get(mid) or {}, a, b)[0]:
+                open_pay += 1
+                open_moments.add(mid)
+        t += o
+    n = len(outs)
+    buckets = {"le1": 0, "1_2.5": 0, "2.5_4": 0, "4_10": 0, "gt10": 0}
+    for o in outs:
+        k = ("le1" if o <= 1.0 else "1_2.5" if o <= 2.5 else "2.5_4" if o <= 4.0 else "4_10" if o <= 10.0 else "gt10")
+        buckets[k] += 1
+    return {"cuts": max(0, n - 1), "share_le_2_5": round(sum(1 for o in outs if o <= _PACING_SHORT_S) / n, 3) if n else None,
+            "buckets": buckets, "opening": {"window_s": _PACING_OPENING_S, "shots": open_shots, "payoff_shots": open_pay,
+                                             "distinct_payoffs": len(open_moments)}}
+
+
+def selection_diagnostics(plan: dict, inputs: "EditPlanInputs", diag: dict, pre_fit_plan: dict | None = None) -> dict:
+    by_id = {str(m.get("id")).lower(): m for m in (inputs.moments or []) if isinstance(m, dict)}
+    _refs = _short_refs(list(by_id) + [str(sg.get("asset_id")).lower()
+                                       for sg in ((plan or {}).get("segments") or []) + ((pre_fit_plan or {}).get("segments") or [])])
+    segs = sorted((plan or {}).get("segments", []) or [], key=lambda x: x.get("order", 0))
+    used, used_ids = [], set()
+    for sg in segs:
+        mid = str(sg.get("asset_id")).lower()
+        used_ids.add(mid)
+        try:
+            a, b = float(sg.get("source_start_seconds")), float(sg.get("source_end_seconds"))
+        except (TypeError, ValueError):
+            a = b = 0.0
+        pay, role = _payoff_overlap(by_id.get(mid) or {}, a, b)
+        try:
+            out = round(float(sg.get("output_duration_seconds")), 2)
+        except (TypeError, ValueError):
+            out = None
+        if len(used) < _SEL_MAX_USED:
+            used.append({"m": _refs.get(mid, mid[:8]), "r": [round(a, 2), round(b, 2)], "o": out, "p": pay, "role": role})
+    unused = []
+    for mid, m in by_id.items():
+        if mid in used_ids:
+            continue
+        n, tot = _v55_visual_windows(m)
+        if n:
+            ed = m.get("editorial") or {}
+            confs = [v.get("confidence") for v in ed.get("visual_candidates", [])
+                     if isinstance(v, dict) and v.get("role") == "payoff" and isinstance(v.get("confidence"), (int, float))]
+            unused.append({"m": _refs.get(mid, mid[:8]), "payoff_windows": n, "payoff_s": round(tot, 1),
+                           "conf": round(max(confs), 2) if confs else None,
+                           "dur_s": round(float(m.get("duration_seconds") or 0), 1)})
+    unused.sort(key=lambda x: -(x["conf"] or 0))
+    fit = diag.get("duration_fit") if isinstance(diag.get("duration_fit"), dict) else {}
+    try:
+        target = float(inputs.creative_intent.get("target_duration_seconds"))
+    except (TypeError, ValueError, AttributeError):
+        target = None
+    pre_outs = _seg_outs(pre_fit_plan if pre_fit_plan is not None else plan)
+    pre_total = round(sum(pre_outs), 2)
+    delivered = round(sum(_seg_outs(plan)), 2)
+
+    def pct(x):
+        return round((x / target - 1.0) * 100.0, 1) if target and target > 0 else None
+    etype = _v55_type(inputs) or (inputs.editorial_type if isinstance(inputs.editorial_type, str) else None)
+    imgs = list(inputs.images or [])
+    return {
+        "v": 1, "prompt_version": PROMPT_VERSION, "editorial_type": etype,
+        "brief": ("type_aware" if (inputs.creative_brief and _v55_type(inputs)) else
+                  ("client" if inputs.creative_brief else None)),
+        "shots": dict(_shot_stats(_seg_outs(plan)), distinct=len(used_ids)),
+        "pre_fit": dict(_shot_stats(pre_outs), total_s=pre_total,
+                        distinct=len({str(s.get("asset_id")).lower() for s in (pre_fit_plan or plan).get("segments", []) or []})),
+        "budget": {"target_s": target, "pre_fit_total_s": pre_total, "pre_fit_overshoot_pct": pct(pre_total),
+                   "delivered_s": delivered, "delivered_overshoot_pct": pct(delivered),
+                   "hint": compute_budget_hint(inputs) if _v55_type(inputs) else None},
+        "pacing": _pacing_stats(segs, by_id) if _v56_active() else None,
+        "opening": (used[0] if used else None),
+        "used": used,
+        "unused_payoff": unused[:_SEL_MAX_UNUSED],
+        "n_moments": len(by_id),
+        "sheets": {"count": len(imgs), "bytes": int(sum(len(getattr(i, "data", b"") or b"") for i in imgs))},
+        "fit": {"applied": bool(fit.get("applied")), "adopted": fit.get("adopted"),
+                "before_s": fit.get("before_s"), "after_s": fit.get("after_s"),
+                "changes": len(fit.get("changes") or []), "dropped": len(fit.get("dropped") or [])},
+    }
+
+
+def _under_length(plan: dict, inputs: "EditPlanInputs") -> tuple[float, float] | None:
+    """(delivered_s, target_s) when the delivered cut is more than _V56_UNDER_LENGTH_PCT short of the target, else None.
+    v5.6 only. Disclosure, never a rejection: ending short on the strongest footage is a valid result."""
+    try:
+        target = float(inputs.creative_intent.get("target_duration_seconds"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    delivered = sum(_seg_outs(plan))
+    if target > 0 and delivered > 0 and (delivered / target - 1.0) * 100.0 < -_V56_UNDER_LENGTH_PCT:
+        return round(delivered, 1), round(target, 1)
+    return None
+
+
+def _under_length_disclosure(delivered: float, target: float) -> str:
+    """Neutral, factual note. It states only the measured difference: it does not claim the footage was exhausted
+    or that nothing better existed (the planner cannot prove that)."""
+    return f"It runs about {delivered:.0f}s instead of the requested {target:.0f}s."
+
+
+def _duration_disclosure(fit: dict) -> str:
+    """Plain-language, non-blocking note for a cut that still runs materially long after the duration fit."""
+    if _v56_active():   # measured difference only: the fitter's own report does not prove WHY nothing more could go
+        return f"It runs about {fit['after_s']:.0f}s instead of the requested {fit['target_s']:.0f}s."
+    return (f"It runs about {fit['after_s']:.0f}s instead of the requested {fit['target_s']:.0f}s — "
+            "shortening it further would cut key moments.")
 
 
 class MockEditPlannerEngine:

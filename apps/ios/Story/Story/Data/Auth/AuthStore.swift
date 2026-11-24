@@ -52,10 +52,15 @@ final class AuthStore: NSObject {
 
     // ---- launch restore ------------------------------------------------------------------------------
     func restore() async {
+        // Account deletion: once acceptance is established this device never restores the session again.
+        guard AccountDeletionFiles.wipeIntent() == nil else { signOutLocal(); return }
         guard let data = KeychainStore.load(),
               var t = try? JSONDecoder().decode(AuthTokens.self, from: data) else { return }
         if t.isExpired {
-            do { t = try await refreshed(from: t) } catch { signOutLocal(); return }
+            do { t = try await refreshed(from: t) }
+            catch CognitoAuthError.transport {}        // S4: auth server unreachable/unavailable: stay signed in; the next
+            catch is URLError {}                       // fetchAccessToken refreshes (or reports .offline). Never sign out for it.
+            catch { signOutLocal(); return }
         }
         // R1.1 — a token blob persisted by a PRE-R1.1 build carries the Cognito `sub` (not the canonical
         // story_user_id) and `canonicalResolved == false`. We MUST NOT restore a session keyed on the sub, so
@@ -74,6 +79,8 @@ final class AuthStore: NSObject {
                 return
             }
         }
+        // A deletion accepted while this restore was in flight (lost-response recovery) wins.
+        guard AccountDeletionFiles.wipeIntent() == nil else { signOutLocal(); return }
         tokens = t
         storyUserId = t.storyUserId
         state = .signedIn
@@ -86,6 +93,13 @@ final class AuthStore: NSObject {
     func startEmailAuth(email: String) async throws -> OTPChallenge {
         state = .authenticating
         do { return try await client.startEmailAuth(email: email) }
+        catch CognitoAuthError.accountDisabled where AccountDeletionFiles.pendingRequest() != nil {
+            // Cognito disables the user at the start of deletion: say so instead of the generic message.
+            state = .signedOut
+            let msg = L10n.t("This account is being deleted. After deletion finishes, this email can create a new account.")
+            lastError = msg
+            throw CognitoAuthError.service(msg)
+        }
         catch { state = .signedOut; lastError = (error as? LocalizedError)?.errorDescription; throw error }
     }
 
@@ -104,17 +118,47 @@ final class AuthStore: NSObject {
         } catch { state = .signedOut; lastError = (error as? LocalizedError)?.errorDescription; throw error }
     }
 
-    // ---- Apple (OAuth code + PKCE via ASWebAuthenticationSession) ------------------------------------
+    // ---- Apple / Google (Cognito hosted OAuth code + PKCE via ASWebAuthenticationSession) -------------
     func signInWithApple() async throws {
         guard StoryAuthConfig.appleSignInAvailable else {
-            throw CognitoAuthError.service("Apple sign-in isn't available in this build yet.")
+            throw CognitoAuthError.service(L10n.t("Apple sign-in isn't available in this build yet."))
         }
+        try await signInWithHostedProvider(StoryAuthConfig.appleProviderName,
+                                           failure: L10n.t("Apple sign-in was cancelled or failed."))
+    }
+
+    func signInWithGoogle() async throws {
+        guard StoryAuthConfig.googleSignInAvailable else {
+            throw CognitoAuthError.service(L10n.t("Google sign-in isn't available in this build yet."))
+        }
+        try await signInWithHostedProvider(StoryAuthConfig.googleProviderName,
+                                           failure: L10n.t("Google sign-in was cancelled or failed."))
+    }
+
+    /// One flow for every federated provider: Cognito `/oauth2/authorize?identity_provider=<provider>` in an
+    /// ephemeral `ASWebAuthenticationSession`, state check, then code + PKCE verifier exchange at Cognito.
+    private func signInWithHostedProvider(_ provider: String, failure: String) async throws {
         state = .authenticating
+        do {
+            let t = try await hostedProviderTokens(provider, failure: failure)
+            try await finishSignIn(with: t)
+        } catch where AccountDeletionFiles.pendingRequest() != nil {
+            // Cognito disables the user while its deletion runs: say so instead of the generic failure.
+            state = .signedOut
+            let msg = L10n.t("This account is being deleted. After deletion finishes, this email can create a new account.")
+            lastError = msg
+            throw CognitoAuthError.service(msg)
+        } catch { state = .signedOut; lastError = (error as? LocalizedError)?.errorDescription; throw error }
+    }
+
+    /// The hosted OAuth round trip only: returns fresh tokens and changes NO session state (shared by sign-in and
+    /// account-deletion re-authentication).
+    private func hostedProviderTokens(_ provider: String, failure: String) async throws -> AuthTokens {
         let verifier = AuthHelpers.randomCodeVerifier()
         let challenge = AuthHelpers.codeChallenge(for: verifier)
         let st = AuthHelpers.randomState()
         pkceVerifier = verifier; pkceState = st
-        let url = StoryAuthConfig.authorizeURL(state: st, codeChallenge: challenge)
+        let url = StoryAuthConfig.authorizeURL(provider: provider, state: st, codeChallenge: challenge)
         let scheme = URL(string: StoryAuthConfig.redirectURI)!.scheme!
 
         let code: String = try await withCheckedThrowingContinuation { cont in
@@ -125,20 +169,82 @@ final class AuthStore: NSObject {
                       let returnedState = comps.queryItems?.first(where: { $0.name == "state" })?.value,
                       returnedState == self?.pkceState,
                       let c = comps.queryItems?.first(where: { $0.name == "code" })?.value else {
-                    cont.resume(throwing: CognitoAuthError.service("Apple sign-in was cancelled or failed."))
+                    cont.resume(throwing: CognitoAuthError.service(failure))
                     return
                 }
                 cont.resume(returning: c)
             }
             session.presentationContextProvider = self
-            session.prefersEphemeralWebBrowserSession = false
+            // Ephemeral: no shared Safari cookies. Otherwise Cognito's hosted-session cookie outlives an in-app
+            // sign-out and the next federated sign-in silently re-issues a code for the PREVIOUS provider
+            // account without contacting the provider (no account switch, no consent/email choice) for ~1 hour.
+            session.prefersEphemeralWebBrowserSession = true
             self.webAuthSession = session
             session.start()
         }
-        do {
-            let t = try await client.exchangeAuthCode(code, codeVerifier: verifier)
-            try await finishSignIn(with: t)
-        } catch { state = .signedOut; lastError = (error as? LocalizedError)?.errorDescription; throw error }
+        return try await client.exchangeAuthCode(code, codeVerifier: verifier)
+    }
+
+    // ---- account deletion re-authentication (design 5.1 step 3) ------------------------------------------
+    /// What the client knows about the signed-in account, from the UNVERIFIED id token (routing hints only).
+    struct AccountHint: Equatable {
+        let sub: String?
+        let email: String?
+        /// "SignInWithApple" / "Google" for a federated account, nil for email one-time-code accounts.
+        let federatedProvider: String?
+    }
+
+    var accountHint: AccountHint? {
+        guard let t = tokens, let claims = AuthHelpers.unverifiedClaims(fromJWT: t.idToken) else { return nil }
+        var provider: String?
+        if let ids = claims["identities"] as? [[String: Any]] {
+            provider = ids.first?["providerName"] as? String
+        } else if let raw = claims["identities"] as? String, let data = raw.data(using: .utf8),
+                  let ids = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            provider = ids.first?["providerName"] as? String
+        }
+        return AccountHint(sub: AuthHelpers.unverifiedSub(fromJWT: t.accessToken), email: claims["email"] as? String,
+                           federatedProvider: provider)
+    }
+
+    enum ReauthError: LocalizedError {
+        case notSignedIn, differentAccount, unavailable
+        var errorDescription: String? {
+            switch self {
+            case .notSignedIn: return L10n.t("You're signed out. Sign in again to delete your account.")
+            case .differentAccount: return L10n.t("That sign-in was for a different account. Sign in with the account you're deleting.")
+            case .unavailable: return L10n.t("This sign-in method isn't available in this build.")
+            }
+        }
+    }
+
+    /// Email accounts: send a fresh code to THIS account's address (never an address the user types).
+    func reauthStartEmail() async throws -> OTPChallenge {
+        guard let email = accountHint?.email, !email.isEmpty else { throw ReauthError.notSignedIn }
+        return try await client.startSignInOTP(email: email)
+    }
+
+    /// Email accounts: verify the code. Returns a FRESH access token for the deletion request only. Does not adopt
+    /// or re-key local content, does not replace the session, and refuses a token for any other account.
+    func reauthVerifyEmail(code: String, challenge: OTPChallenge) async throws -> String {
+        let fresh = try await client.verifyCode(code, challenge: challenge)
+        return try sameAccountToken(fresh)
+    }
+
+    /// Apple / Google accounts: a fresh hosted sign-in with the SAME provider (ephemeral session), same rules.
+    func reauthFederated() async throws -> String {
+        guard let provider = accountHint?.federatedProvider else { throw ReauthError.notSignedIn }
+        let available = provider == StoryAuthConfig.appleProviderName ? StoryAuthConfig.appleSignInAvailable
+            : provider == StoryAuthConfig.googleProviderName ? StoryAuthConfig.googleSignInAvailable : false
+        guard available else { throw ReauthError.unavailable }
+        let fresh = try await hostedProviderTokens(provider, failure: L10n.t("Sign-in was cancelled or failed."))
+        return try sameAccountToken(fresh)
+    }
+
+    private func sameAccountToken(_ fresh: AuthTokens) throws -> String {
+        guard let current = accountHint?.sub else { throw ReauthError.notSignedIn }
+        guard AuthHelpers.unverifiedSub(fromJWT: fresh.accessToken) == current else { throw ReauthError.differentAccount }
+        return fresh.accessToken
     }
 
     // ---- silent refresh ------------------------------------------------------------------------------
@@ -146,12 +252,22 @@ final class AuthStore: NSObject {
     /// request. On refresh failure the session is cleared (the user must re-auth) — never falls back to an
     /// unauthenticated identity.
     func validAccessToken() async -> String? {
-        guard var t = tokens else { return nil }
-        if t.isExpired {
+        if case .token(let t) = await fetchAccessToken() { return t }
+        return nil
+    }
+
+    /// Billing V2: like `validAccessToken` but tells "no session" apart from "could not reach the auth server". Only a refresh the
+    /// auth server REJECTED clears the session; a network failure keeps it (airplane mode must not sign the user out).
+    /// `forceRefresh` is for the one retry after a 401 (the server rejected a token the device still thought was valid).
+    func fetchAccessToken(forceRefresh: Bool = false) async -> AccessTokenFetch {
+        guard var t = tokens else { return .signedOut }
+        if t.isExpired || forceRefresh {
             do { t = try await refreshed(from: t); tokens = t; persist(t) }
-            catch { signOutLocal(); return nil }
+            catch CognitoAuthError.transport { return .offline }
+            catch is URLError { return .offline }
+            catch { signOutLocal(); return .signedOut }
         }
-        return t.accessToken
+        return .token(t.accessToken)
     }
 
     private func refreshed(from t: AuthTokens) async throws -> AuthTokens {
@@ -188,7 +304,7 @@ final class AuthStore: NSObject {
             canonicalId = try await identity.resolveCanonicalId(accessToken: t.accessToken)
         } catch {
             signOutLocal()
-            lastError = (error as? LocalizedError)?.errorDescription ?? "Couldn't finish signing in. Please try again."
+            lastError = (error as? LocalizedError)?.errorDescription ?? L10n.t("Couldn't finish signing in. Please try again.")
             throw error
         }
         t.storyUserId = canonicalId
@@ -221,4 +337,10 @@ extension AuthStore: ASWebAuthenticationPresentationContextProviding {
         return ASPresentationAnchor()
         #endif
     }
+}
+
+enum AccessTokenFetch: Equatable {
+    case token(String)
+    case signedOut
+    case offline
 }

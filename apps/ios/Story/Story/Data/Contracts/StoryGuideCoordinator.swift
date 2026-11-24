@@ -74,7 +74,8 @@ final class StoryGuideCoordinator {
 
         let request = StoryGuideRequestDTO(
             storyId: story.id, creativeIntent: intentValue, scope: .object(scope),
-            sourceCreativeIntentVersion: nil)
+            sourceCreativeIntentVersion: nil,
+            contentLanguage: ContentLanguageResolver.requestValue(for: story))
         do {
             let dto = try await service.generate(request)
             persist(dto, for: story.id)
@@ -146,7 +147,8 @@ final class StoryGuideCoordinator {
 
         let request = StoryGuideRequestDTO(
             storyId: story.id, creativeIntent: intentValue, scope: .object(scope),
-            sourceCreativeIntentVersion: nil)
+            sourceCreativeIntentVersion: nil,
+            contentLanguage: ContentLanguageResolver.requestValue(for: story))
         do {
             let dto = try await v2Service.generate(request)
             persistV2(dto, for: story.id)
@@ -296,7 +298,8 @@ final class StoryGuideCoordinator {
             capturedSceneIds: captured, pinnedSceneIds: pinned,
             userInstruction: instr.isEmpty ? nil : instr,
             eventContext: eventCtx.isEmpty ? nil : eventCtx,
-            sourceCreativeIntentVersion: nil)
+            sourceCreativeIntentVersion: nil,
+            contentLanguage: ContentLanguageResolver.requestValue(for: story, instruction: instr, eventContext: eventCtx))
 
         do {
             let result = try await refineService.refine(request)

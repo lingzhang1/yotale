@@ -20,19 +20,17 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
  *    identities, NEVER the primary key. No automatic email-based account merge (linking is explicit, below).
  *
  * aws-cdk-lib 2.160.0 compatibility: the L2 `UserPool` lacks `featurePlan` and `signInPolicy`, and there is
- * no Apple-IdP L2 or generic-IdP property for EMAIL. Those are applied via `addPropertyOverride` on the
- * underlying CfnUserPool, and Apple is added as a raw `CfnUserPoolIdentityProvider`. This avoids bumping the
- * CDK lib (which would risk the accepted api-stack synth).
+ * no generic-IdP property for EMAIL. Those are applied via `addPropertyOverride` on the underlying
+ * CfnUserPool. Apple is a raw `CfnUserPoolIdentityProvider` (kept raw for a stable logical id; its secrets
+ * are Secrets Manager dynamic references). This avoids bumping the CDK lib (which would risk the accepted
+ * api-stack synth).
  */
 export interface StoryAuthStackProps extends cdk.StackProps {
   readonly environment: string;
-  /** Apple Services ID (client_id). Supplied at provision time; left as a context value for synth. */
-  readonly appleServicesId?: string;
-  /** Apple Team ID. */
-  readonly appleTeamId?: string;
-  /** Apple Sign-in key id. */
-  readonly appleKeyId?: string;
 }
+
+/** JSON fields the per-environment Apple Sign in secret must hold (Secrets Manager, same account as the pool). */
+export const APPLE_SIGNIN_SECRET_FIELDS = ["services_id", "team_id", "key_id", "private_key"] as const;
 
 export class StoryAuthStack extends cdk.Stack {
   public readonly userPool: cognito.UserPool;
@@ -108,28 +106,53 @@ export class StoryAuthStack extends cdk.Stack {
     // SES identity in beta+ (set via the EmailConfiguration override above when `-c sesFromEmail=` is given).
 
     // ---- Sign in with Apple (federated IdP) -----------------------------------------------------------
-    // Raw Cfn because 2.160.0 has no Apple L2. Credentials are passed at provision time (context/Secrets),
-    // never committed. Apple's `sub` is the provider identity; the Apple relay email is a contact attribute
-    // only — never the Story identity.
-    // Correction 9 / dev-provision reality: Apple creds are NOT yet available (Apple Developer portal step).
-    // The Apple IdP is created ONLY when a real private key is supplied (-c applePrivateKey=...), so the dev
-    // auth stack can be provisioned NOW (pool + EMAIL_OTP + tables + domain) and Apple is added later without
-    // a rebuild. Email OTP is fully functional without it.
-    const applePrivateKey = this.node.tryGetContext("applePrivateKey") as string | undefined;
-    const appleEnabled = !!applePrivateKey && applePrivateKey !== "PLACEHOLDER_PRIVATE_KEY";
+    // Raw Cfn (stable logical id `AppleIdp`). Apple's `sub` is the provider identity; the Apple relay email
+    // is a contact attribute only — never the Story identity.
+    // The IdP is created ONLY when `-c appleSecretName=<name>` names a Secrets Manager secret (same account)
+    // holding services_id, team_id, key_id and private_key. Every value is a CloudFormation dynamic reference
+    // (`{{resolve:secretsmanager:...}}`), so the .p8 key never appears in the synthesized template, cdk.out,
+    // the deploy command line or shell history. Without the context value the pool still works (EMAIL_OTP).
+    const appleSecretName = this.node.tryGetContext("appleSecretName") as string | undefined;
+    const appleEnabled = !!appleSecretName;
     let appleIdp: cognito.CfnUserPoolIdentityProvider | undefined;
-    if (appleEnabled) {
+    if (appleSecretName) {
+      const appleField = (jsonField: (typeof APPLE_SIGNIN_SECRET_FIELDS)[number]) =>
+        cdk.SecretValue.secretsManager(appleSecretName, { jsonField }).unsafeUnwrap(); // token only, never a value
       appleIdp = new cognito.CfnUserPoolIdentityProvider(this, "AppleIdp", {
         userPoolId: this.userPool.userPoolId,
         providerName: "SignInWithApple",
         providerType: "SignInWithApple",
         attributeMapping: { email: "email", email_verified: "email_verified" },
         providerDetails: {
-          client_id: props.appleServicesId ?? this.node.tryGetContext("appleServicesId"),
-          team_id: props.appleTeamId ?? this.node.tryGetContext("appleTeamId"),
-          key_id: props.appleKeyId ?? this.node.tryGetContext("appleKeyId"),
-          private_key: applePrivateKey,
+          client_id: appleField("services_id"),
+          team_id: appleField("team_id"),
+          key_id: appleField("key_id"),
+          private_key: appleField("private_key"),
           authorize_scopes: "email name",
+        },
+      });
+    }
+
+    // ---- Google (federated IdP) -----------------------------------------------------------------------
+    // Same pattern as Apple: created ONLY with `-c googleSecretName=<name>`, a same-account Secrets Manager
+    // secret holding client_id and client_secret of a Google OAuth client of type "Web application" whose
+    // redirect URI is https://<cognito domain>/oauth2/idpresponse. Both values are dynamic references.
+    // App Store Guideline 4.8: an app offering Google sign-in must also offer Sign in with Apple, so Google
+    // without Apple fails synth.
+    const googleSecretName = this.node.tryGetContext("googleSecretName") as string | undefined;
+    let googleIdp: cognito.UserPoolIdentityProviderGoogle | undefined;
+    if (googleSecretName) {
+      if (!appleEnabled) {
+        throw new Error("googleSecretName requires appleSecretName: App Store Guideline 4.8 needs Sign in with Apple alongside Google");
+      }
+      googleIdp = new cognito.UserPoolIdentityProviderGoogle(this, "GoogleIdp", {
+        userPool: this.userPool,
+        clientId: cdk.SecretValue.secretsManager(googleSecretName, { jsonField: "client_id" }).unsafeUnwrap(),
+        clientSecretValue: cdk.SecretValue.secretsManager(googleSecretName, { jsonField: "client_secret" }),
+        scopes: ["openid", "email", "profile"],
+        attributeMapping: {
+          email: cognito.ProviderAttribute.GOOGLE_EMAIL,
+          custom: { email_verified: cognito.ProviderAttribute.other("email_verified") },
         },
       });
     }
@@ -158,18 +181,18 @@ export class StoryAuthStack extends cdk.Stack {
         callbackUrls: [callbackScheme],
         logoutUrls: [callbackScheme],
       },
-      supportedIdentityProviders: appleEnabled
-        ? [
-            cognito.UserPoolClientIdentityProvider.custom("SignInWithApple"),
-            cognito.UserPoolClientIdentityProvider.COGNITO,
-          ]
-        : [cognito.UserPoolClientIdentityProvider.COGNITO], // EMAIL_OTP path works without Apple
+      supportedIdentityProviders: [
+        ...(appleEnabled ? [cognito.UserPoolClientIdentityProvider.custom("SignInWithApple")] : []),
+        ...(googleIdp ? [cognito.UserPoolClientIdentityProvider.GOOGLE] : []),
+        cognito.UserPoolClientIdentityProvider.COGNITO, // EMAIL_OTP path works without any federated IdP
+      ],
       accessTokenValidity: cdk.Duration.minutes(60),
       idTokenValidity: cdk.Duration.minutes(60),
       refreshTokenValidity: cdk.Duration.days(30),
       preventUserExistenceErrors: true,
     });
     if (appleIdp) this.userPoolClient.node.addDependency(appleIdp);
+    if (googleIdp) this.userPoolClient.node.addDependency(googleIdp);
     const cfnClient = this.userPoolClient.node.defaultChild as cognito.CfnUserPoolClient;
     // Correction 3: ONLY USER_AUTH (carries EMAIL_OTP) + REFRESH. No ALLOW_USER_SRP_AUTH, no password flow.
     cfnClient.addPropertyOverride("ExplicitAuthFlows", ["ALLOW_USER_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]);

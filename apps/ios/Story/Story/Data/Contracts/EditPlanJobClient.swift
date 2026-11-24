@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // EditPlanJobClient — Phase 2 ASYNC Edit Planning client. Replaces the synchronous /v1/edit-plan[-mm] calls
 // in Story creation with submit -> poll -> fetch against the durable job API (backend Phase 1). This removes
@@ -25,6 +26,8 @@ enum EditPlanJobFailure: String {
     case providerError = "provider_error"
     case enqueueLost = "enqueue_lost"
     case internalError = "internal"
+    case billingDenied = "billing_denied"   // the submit was refused with a 402 (a resend adopts the refused job)
+    case quotaDenied = "quota_denied"       // the submit was refused by the operational usage cap (429)
     case unknown = ""
     static func from(_ raw: String?) -> EditPlanJobFailure { EditPlanJobFailure(rawValue: raw ?? "") ?? .unknown }
 }
@@ -46,30 +49,37 @@ enum EditPlanJobError: Error, LocalizedError {
     case pollTimeout                    // bounded polling elapsed without a terminal state (job may still run)
     case quotaExceeded(scope: String, retryAfter: Int?)   // 429 quota_exceeded — user hit an allowance cap
     case quotaStoreUnavailable(retryAfter: Int?)          // 503 quota_store_unavailable — accounting outage
+    case entitlementDenied(BillingDenial)                 // 402 — the plan's allowance/trial does not permit this video (Billing V1)
+    case busy(retryAfter: Int?)                           // Billing V2: 429 `busy: true` — temporary capacity (active jobs, shared
+                                                          // breaker, rate limit). RETRYABLE; never "out of credits".
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach Story. Check your connection and try again."
-        case .conflict: return "This Story is already being created."
-        case .badStatus(let c): return "Unexpected response (\(c))."
-        case .decoding: return "The plan response couldn't be read."
-        case .pollTimeout: return "Still working on your Story — it's taking longer than usual."
+        case .transport: return L10n.t("Couldn't reach Story. Check your connection and try again.")
+        case .conflict: return L10n.t("This Story is already being created.")
+        case .badStatus(let c): return L10n.t("Unexpected response (\(c)).")
+        case .decoding: return L10n.t("The plan response couldn't be read.")
+        case .pollTimeout: return L10n.t("Still working on your Story — it's taking longer than usual.")
         case .quotaExceeded(let scope, _):
             // A real allowance cap — NOT a technical failure. Honest, scope-specific, and never a plain retry.
             switch scope {
             case "user_daily_gens":
-                return "You've reached today's limit for creating videos. Please try again tomorrow."
+                return L10n.t("You've reached today's limit for creating videos. Please try again tomorrow.")
             case "user_monthly_usd":
-                return "You've reached this month's usage limit for AI video creation. It resets next month."
+                return L10n.t("You've reached this month's usage limit for AI video creation. It resets next month.")
             case "active_jobs":
-                return "You already have videos being created. Let those finish, then try again."
+                return L10n.t("You already have videos being created. Let those finish, then try again.")
             case "global_monthly_usd":
-                return "Story is at capacity for AI video creation right now. Please try again later."
+                return L10n.t("Story is at capacity for AI video creation right now. Please try again later.")
             default:
-                return "You've reached a usage limit for AI video creation. Please try again later."
+                return L10n.t("You've reached a usage limit for AI video creation. Please try again later.")
             }
         case .quotaStoreUnavailable:
-            return "Story can't start a new video right now. Please try again in a moment."
+            return L10n.t("Story can't start a new video right now. Please try again in a moment.")
+        case .entitlementDenied(let denial):
+            return denial.message
+        case .busy:
+            return L10n.t("YoTale is busy right now. Please try again in a moment.")
         }
     }
 }
@@ -86,9 +96,34 @@ protocol EditPlanJobClienting {
                            shouldCancel: @MainActor () -> Bool,
                            onState: @MainActor (EditPlanJobState) -> Void) async throws -> EditPlanJobState
     func cancel(jobId: String) async
+    // Lost-reply recovery seam (requirements so the real client's implementation is dispatched; the extension
+    // below supplies inert defaults for test fakes).
+    func prepareSubmit(_ request: EditPlanRequestDTO, operationId: String, owner: String,
+                       approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
+                       critiqueRevision: Bool, evidenceAccounting: [String: Any]?,
+                       buildProvenance: [String: Any]?) -> PreparedJobSubmit?
+    func submitPrepared(_ prepared: PreparedJobSubmit) async throws -> String
+}
+
+/// The exact multipart bytes of one job submit. Re-sending THESE bytes with the same operation_id is what makes a
+/// lost-reply recovery safe: the server's payload fingerprint matches, so it returns the SAME job (or creates it if
+/// the first attempt never arrived) — never a second inference and never a 409.
+struct PreparedJobSubmit {
+    let body: Data
+    let boundary: String
 }
 
 extension EditPlanJobClienting {
+    /// Encode a submit without sending it. nil when the client cannot (test fakes) -> no lost-reply cache.
+    func prepareSubmit(_ request: EditPlanRequestDTO, operationId: String, owner: String,
+                       approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
+                       critiqueRevision: Bool, evidenceAccounting: [String: Any]?,
+                       buildProvenance: [String: Any]?) -> PreparedJobSubmit? { nil }
+    /// Send previously prepared bytes. Default (fakes): unsupported -> a transport error the caller handles.
+    func submitPrepared(_ prepared: PreparedJobSubmit) async throws -> String {
+        throw EditPlanJobError.transport(URLError(.unsupportedURL))
+    }
+
     /// Back-compat default so existing call sites / fakes that do not supply P0 diagnostics keep compiling.
     func submit(_ request: EditPlanRequestDTO, operationId: String, owner: String,
                 approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
@@ -102,9 +137,21 @@ extension EditPlanJobClienting {
 final class EditPlanJobClient: EditPlanJobClienting {
     private let baseURL: URL
     private let session: URLSession
-    init(baseURL: URL = StoryBackend.baseURL, session: URLSession = StoryBackend.longSession) {
+    /// Whether the user is looking at the app (foreground + active). Polls faster only then. Injectable for tests.
+    private let isForeground: @MainActor () -> Bool
+    init(baseURL: URL = StoryBackend.baseURL, session: URLSession = StoryBackend.jobSession,
+         isForeground: @escaping @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }) {
         self.baseURL = baseURL
         self.session = session
+        self.isForeground = isForeground
+    }
+
+    /// Poll delay schedule (perf milestone 2026-11-18). While the user waits in the foreground the delay grows
+    /// 2 -> 3 -> 4 -> 5 s and stays at 5 s, so a finished plan is noticed within ~5 s. Otherwise (inactive or
+    /// background) it keeps the previous exponential 2 -> 4 -> 8 -> 15 s schedule. A status read is one cheap
+    /// authenticated DynamoDB GET; the job itself is unaffected by polling.
+    static func nextPollDelay(after current: Double, foreground: Bool) -> Double {
+        foreground ? min(current + 1, 5) : min(current * 2, 15)
     }
 
     /// Submit (idempotent on operation_id). Returns the job_id. A 409 means the same operation_id was used
@@ -113,11 +160,23 @@ final class EditPlanJobClient: EditPlanJobClienting {
                 approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
                 critiqueRevision: Bool, evidenceAccounting: [String: Any]? = nil,
                 buildProvenance: [String: Any]? = nil) async throws -> String {
+        guard let prepared = prepareSubmit(request, operationId: operationId, owner: owner, approach: approach,
+                                           sheets: sheets, creativeBrief: creativeBrief,
+                                           critiqueRevision: critiqueRevision,
+                                           evidenceAccounting: evidenceAccounting,
+                                           buildProvenance: buildProvenance) else {
+            throw EditPlanJobError.transport(URLError(.cannotDecodeContentData))
+        }
+        return try await submitPrepared(prepared)
+    }
+
+    /// Encode the multipart submit body (no network). Deterministic for a given request instance, so the bytes
+    /// cached for lost-reply recovery are the bytes sent.
+    func prepareSubmit(_ request: EditPlanRequestDTO, operationId: String, owner: String = "dev",
+                       approach: EditingApproach, sheets: [MomentContactSheet], creativeBrief: String?,
+                       critiqueRevision: Bool, evidenceAccounting: [String: Any]? = nil,
+                       buildProvenance: [String: Any]? = nil) -> PreparedJobSubmit? {
         let boundary = "story.job.\(UUID().uuidString)"
-        var req = URLRequest(url: baseURL.appendingPathComponent("v1/edit-plan-jobs"))
-        StoryBackend.authorize(&req)  // P0 auth seam: bearer token when signed in
-        req.httpMethod = "POST"
-        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
         let bodyJSON: Data
         let orderJSON: Data
@@ -125,7 +184,7 @@ final class EditPlanJobClient: EditPlanJobClienting {
         do {
             bodyJSON = try StoryContractCoding.encoder().encode(request)
             orderJSON = try JSONSerialization.data(withJSONObject: order)
-        } catch { throw EditPlanJobError.transport(error) }
+        } catch { return nil }
 
         var body = Data()
         func field(_ name: String, _ value: Data, contentType: String? = nil) {
@@ -161,7 +220,16 @@ final class EditPlanJobClient: EditPlanJobClienting {
             body.append(s.jpeg); body.append("\r\n".data(using: .utf8)!)
         }
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-        req.httpBody = body
+        return PreparedJobSubmit(body: body, boundary: boundary)
+    }
+
+    /// POST prepared bytes (idempotent on the operation_id inside them). Returns the job_id.
+    func submitPrepared(_ prepared: PreparedJobSubmit) async throws -> String {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/edit-plan-jobs"))
+        StoryBackend.authorize(&req)  // P0 auth seam: bearer token when signed in
+        req.httpMethod = "POST"
+        req.setValue("multipart/form-data; boundary=\(prepared.boundary)", forHTTPHeaderField: "Content-Type")
+        req.httpBody = prepared.body
 
         let data: Data, resp: URLResponse
         do { (data, resp) = try await session.data(for: req) }
@@ -173,11 +241,15 @@ final class EditPlanJobClient: EditPlanJobClienting {
             do { return try JSONDecoder().decode(R.self, from: data).job_id }
             catch { throw EditPlanJobError.decoding(error) }
         case 409: throw EditPlanJobError.conflict
+        case 402:
+            // Billing V1 entitlement denial (distinct from the 429 operational quota below): typed code + the server's allowances.
+            throw EditPlanJobError.entitlementDenied(BillingDenial.parse(data))
         case 429:
             // Quota denial (enforce mode). Parse the scope + Retry-After for an honest, specific message.
-            struct Q: Decodable { let error: String?; let scope: String?; let retry_after_seconds: Int? }
+            struct Q: Decodable { let error: String?; let scope: String?; let retry_after_seconds: Int?; let busy: Bool? }
             let q = try? JSONDecoder().decode(Q.self, from: data)
             let ra = q?.retry_after_seconds ?? http.value(forHTTPHeaderField: "Retry-After").flatMap { Int($0) }
+            if q?.busy == true { throw EditPlanJobError.busy(retryAfter: ra) }   // temporary capacity: retryable
             // Distinguish a quota cap from a Phase-3 rate-limit (both are 429 but carry different `error`).
             throw EditPlanJobError.quotaExceeded(scope: q?.scope ?? q?.error ?? "", retryAfter: ra)
         case 503:
@@ -220,7 +292,7 @@ final class EditPlanJobClient: EditPlanJobClienting {
                            shouldCancel: @MainActor () -> Bool = { false },
                            onState: @MainActor (EditPlanJobState) -> Void = { _ in }) async throws -> EditPlanJobState {
         let start = Date()
-        var delay: UInt64 = 2
+        var delay: Double = 2
         while Date().timeIntervalSince(start) < Double(maxSeconds) {
             if await shouldCancel() { throw CancellationError() }
             do {
@@ -228,8 +300,11 @@ final class EditPlanJobClient: EditPlanJobClienting {
                 await onState(st)
                 if st.status.isTerminal { return st }
             } catch EditPlanJobError.transport { /* keep polling — the job is unaffected */ }
-            try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
-            delay = min(delay * 2, 15)   // bounded exponential backoff, cap 15s
+            // A background->foreground switch takes effect at the next wait; the current one is never extended.
+            let fg = await isForeground()
+            delay = fg ? min(delay, 5) : delay
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            delay = Self.nextPollDelay(after: delay, foreground: await isForeground())
         }
         throw EditPlanJobError.pollTimeout
     }

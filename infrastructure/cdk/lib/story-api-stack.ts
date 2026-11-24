@@ -10,8 +10,10 @@ import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
+import * as fs from "fs";
 import * as path from "path";
 import { Observability } from "./observability";
+import { AccountDeletion } from "./account-deletion";
 
 export interface StoryApiStackProps extends cdk.StackProps {
   /** Deployment environment name (development | staging | production). */
@@ -22,6 +24,11 @@ export interface StoryApiStackProps extends cdk.StackProps {
    * `-c observability=true` (and optionally `-c alarmDestination=...`, `-c monthlyBudgetUsd=...`) when the
    * owner is ready to provision it. Nothing is provisioned at synth time.
    */
+  /** TEST SEAM for the emergency planner rollback; production reads release/release.json (planner.emergency_override).
+   *  `null` forces "no override" regardless of the manifest. */
+  readonly plannerEmergencyOverride?: string | null;
+  /** TEST SEAM: replaces the parsed release/release.json (production always reads the committed file). */
+  readonly releaseManifestForTest?: any;
   readonly enableObservability?: boolean;
   readonly alarmDestination?: string;
   readonly monthlyBudgetUsd?: number;
@@ -48,6 +55,16 @@ export class StoryApiStack extends cdk.Stack {
     super(scope, id, props);
 
     const { environment } = props;
+    // Account deletion (design 7.5, 8.12): environments where the request table, worker and routes exist. Beta added
+    // 2026-11-23 (Ling: "rollout to beta"). Production stays a separate decision.
+    const ACCOUNT_DELETION_ENVIRONMENTS = ["development", "test", "beta"];
+    // Sign in with Apple Services ID per environment (not secret; the key lives in Secrets Manager). The API checks
+    // it as the `aud` of Apple's server-to-server notifications (D7). Unset -> the route rejects every payload.
+    const APPLE_SIGNIN_SERVICES_ID: Record<string, string> = {
+      development: "com.lingzhang.story.signin.dev",
+      beta: "com.lingzhang.story.signin.beta",
+    };
+    const appleServicesId = APPLE_SIGNIN_SERVICES_ID[environment];
 
     // Immutable deploy: the pipeline passes `-c imageDigest=sha256:...` so App Runner is pinned to an
     // exact digest (auto-deploy off). Absent (legacy/local synth) -> mutable :latest fallback.
@@ -159,6 +176,8 @@ export class StoryApiStack extends cdk.Stack {
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:YoTale-OpenAI-API-Key-??????`,
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:YoTale-Gemini-API-Key-??????`,
       `arn:aws:secretsmanager:${this.region}:${this.account}:secret:Unsplash-API-Key-??????`,
+      // Pixabay video API key for the /v1/scene-video proxy (Phase 1B reference videos).
+      `arn:aws:secretsmanager:${this.region}:${this.account}:secret:Pixabay_Video_API_KEY-??????`,
     ];
     instanceRole.addToPolicy(
       new iam.PolicyStatement({
@@ -274,6 +293,45 @@ export class StoryApiStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // The ONLY EditPlan-version control: the emergency rollback recorded in release/release.json
+    // (planner.emergency_override), a reviewed + committed decision. Normal deployments emit NOTHING (v5.3 is the
+    // code default). Because it lives in the repo and not on a command line, a LATER deploy cannot silently drop
+    // an intentional rollback, and it reaches API and worker identically. scripts/release_config_gate.py rejects
+    // an override with no approved_overrides entry, or a manifest override this stack failed to apply.
+    const releaseManifest = props.releaseManifestForTest ?? JSON.parse(
+      fs.readFileSync(path.join(__dirname, "..", "..", "..", "release", "release.json"), "utf8"));
+    // A per-environment entry (planner.environment_overrides[<environment>]) pins ONE environment (e.g. a time-boxed
+    // development evaluation) and never reaches another; otherwise the global emergency_override applies to all.
+    // scripts/release_config_gate.py mirrors this exact rule (manifest_planner_override).
+    const plannerManifest = releaseManifest?.planner ?? {};
+    const perEnv = plannerManifest.environment_overrides ?? {};
+    const manifestEditPlanOverride: string | undefined =
+      (Object.prototype.hasOwnProperty.call(perEnv, environment) ? perEnv[environment] : plannerManifest.emergency_override)
+      ?? undefined;
+    const emergencyEditPlanVersion: string | undefined = props.plannerEmergencyOverride !== undefined
+      ? (props.plannerEmergencyOverride ?? undefined)
+      : manifestEditPlanOverride;
+    const emergencyEditPlanVersionEnv: Record<string, string> =
+      emergencyEditPlanVersion ? { STORY_EDIT_PLAN_VERSION: String(emergencyEditPlanVersion) } : {};
+
+    // Per-environment OPERATIONAL POLICY, defined here once (never re-stated in a deploy workflow's env: a deploy
+    // from a shell without those vars used to silently synthesize beta as "observe"). development/test observe;
+    // beta/gamma/production ENFORCE (fail-closed). There is deliberately NO override input: changing a posture is a
+    // reviewed edit to this file + release/release.json, which scripts/release_config_gate.py enforces.
+    const observeOnly = environment === "development" || environment === "test";
+    const quotaMode = observeOnly ? "observe" : "enforce";
+    const throttleMode = observeOnly ? "observe" : "enforce";
+    // Billing V1 posture comes from the SAME manifest the release gate validates (release/release.json
+    // environments.<env>.billing_mode): one source of truth, no override input. Unset means off. A value outside
+    // off|observe|enforce fails the synth instead of silently deploying a disabled (or wrongly enabled) billing gate.
+    const billingModeRaw = releaseManifest?.environments?.[environment]?.billing_mode;
+    const billingMode: string = billingModeRaw === undefined || billingModeRaw === null ? "off" : String(billingModeRaw);
+    if (!["off", "observe", "enforce"].includes(billingMode)) {
+      throw new Error(`release/release.json environments.${environment}.billing_mode=${JSON.stringify(billingModeRaw)} ` +
+        `is invalid; expected one of off|observe|enforce`);
+    }
+    const userMonthlyUsdDefault = environment === "beta" ? "50" : "8";
+
     // Worker Lambda — DOCKER-FREE zip asset (the sandbox cannot run Docker). scripts/build_worker_asset.sh
     // pre-stages app/ + packages/ + contracts/ + prompts/ + the Linux cp312 pydantic wheels into
     // infrastructure/cdk/.worker-asset (boto3 is in the Lambda runtime). The planner resolves prompts at
@@ -305,61 +363,25 @@ export class StoryApiStack extends cdk.Stack {
         STORY_JOBS_QUEUE_URL: jobsQueue.queueUrl,
         STORY_STAGING_BUCKET: stagingBucket.bucketName,
         STORY_WORKER_DEADLINE_S: "840",
-        // EditPlan planner version. DEV + BETA run v5.3 (consumes Rich AU v2 editorial candidates +
-        // editorial_type); gamma/prod stay on v5.2 until promoted. DURABLE in CDK — a manual console/CLI env
-        // flip is wiped by the next `cdk deploy` (App Runner/Lambda env is a full replace), which is exactly
-        // how dev silently reverted 5.3->5.2 after P1-C set it by hand. Override with `-c editPlanVersion=5.2`
-        // to roll a given env back.
-        STORY_EDIT_PLAN_VERSION: (this.node.tryGetContext("editPlanVersion") as string)
-          ?? ((environment === "development" || environment === "beta") ? "5.3" : "5.2"),
-        STORY_LLM_FALLBACK_MODEL: "us.anthropic.claude-sonnet-4-6",
-        // P0 direct-provider mode: default DIRECT (OpenAI/Gemini) for ALL envs. Anthropic revoked Bedrock
-        // model access on an abuse determination, so Bedrock is no longer a viable default anywhere — the
-        // ModelGateway routes to OpenAI/Gemini direct APIs. Override per-deploy with `-c modelProvider=bedrock`
-        // only if Bedrock access is restored. Keys are read in-process from Secrets Manager (YoTale-OpenAI-API-Key,
-        // YoTale-Gemini-API-Key); both the API instance role and the worker role are granted GetSecretValue.
-        STORY_MODEL_PROVIDER: (this.node.tryGetContext("modelProvider") as string) ?? "direct",
-        // Model ids MUST match the service defaults (lines below in the App Runner env): in `direct` mode the
+        // EditPlan planner version: NOT configured for a normal deployment — v5.3 is the code default
+        // (packages/edit_planner). `emergencyEditPlanVersion` is the ONE deliberate, documented rollback
+        // override (release/release.json planner.emergency_override); it is emitted identically to API and worker
+        // below and must carry an approved_overrides entry (checked by scripts/release_config_gate.py).
+        ...emergencyEditPlanVersionEnv,
+        // STORY_MODEL_PROVIDER is intentionally NOT set: the code default is "direct" (OpenAI/Gemini via the
+        // provider router, which refuses Anthropic). Any value set here is rejected by the release gate.
+        // Model ids MUST match the service defaults (lines below in the App Runner env): the
         // async worker needs its own model id or the ModelGateway falls back to a hardcoded gpt-4o — which is
         // exactly what happened on beta (worker planned on gpt-4o while the service used gpt-5.1). Set the same
         // unconditional defaults here, still overridable per-deploy via `-c openaiModel=`/`-c geminiModel=`.
         STORY_OPENAI_MODEL: (this.node.tryGetContext("openaiModel") as string) ?? "gpt-5.1",
         STORY_GEMINI_MODEL: (this.node.tryGetContext("geminiModel") as string) ?? "gemini-3.8-flash",
-        // Reconcile the deployed-vs-source drift (Phase B/C finding): the live dev worker carries the four
-        // EditPlan v2 creative-freedom flags = "1". They are part of the FROZEN EditPlan v2 behavior and must
-        // not be dropped by this deploy. Context-gated (editplanV2Flags), defaulting ON so the dev deploy
-        // preserves the live values; the escape hatch stays off. GATED to development/beta ONLY — a default
-        // or `test` stack must carry NONE of these flags (the gate is (development || beta), same as the
-        // editplanV2 block below), so this never leaks into unrelated environments.
-        ...((environment === "development" || environment === "beta")
-            && ((this.node.tryGetContext("editplanV2Flags") as string) ?? "1") === "1"
-          ? {
-              STORY_EDITPLAN_OBJECTIVE_DIRECTIVES: "1",
-              STORY_EDITPLAN_BEST_VALID_RETENTION: "1",
-              STORY_EDITPLAN_APPROX_DURATION_SOFT: "1",
-            }
-          : {}),
         // P0 Beta Security Phase 4: the worker settles/releases the AI quota reservation on terminal. It
         // needs the UserUsage table name; STORY_QUOTA_MODE is carried for parity (settle/release behave the
         // same in observe/enforce — they only reverse what reserve recorded).
         STORY_USER_USAGE_TABLE: `story-${environment}-user-usage`,
-        STORY_QUOTA_MODE: process.env.STORY_QUOTA_MODE ?? "observe",
-        // EditPlan Creative Freedom v2 (owner-approved 2026-10-22: DEV then BETA enablement). Each flag is
-        // INDEPENDENTLY reversible and defaults OFF (absent => the planner behaves exactly as before), so this
-        // block is inert unless `-c editplanV2=true` is passed at deploy. The APPROVED combination turns
-        // creative directives into objectives, retains the best valid candidate, and softens the
-        // approximate-duration band + source-outside-useful — but leaves EXCLUDE_DEFAULT_CREATIVE OFF so an
-        // unmarked exclude stays SAFETY (fail-safe) and preserves the strict cost-aware repair policy. Enabled
-        // for the `development` and `beta` environments only (never gamma/prod without a separate approval).
-        ...((this.node.tryGetContext("editplanV2") === true
-             || this.node.tryGetContext("editplanV2") === "true")
-            && (environment === "development" || environment === "beta")
-          ? {
-              STORY_EDITPLAN_OBJECTIVE_DIRECTIVES: "1",
-              STORY_EDITPLAN_BEST_VALID_RETENTION: "1",
-              STORY_EDITPLAN_APPROX_DURATION_SOFT: "1",
-            }
-          : {}),
+        STORY_QUOTA_MODE: quotaMode,
+        STORY_BILLING_MODE: billingMode,
       },
     });
     worker.addEventSource(new lambdaEventSources.SqsEventSource(jobsQueue, {
@@ -501,7 +523,6 @@ export class StoryApiStack extends cdk.Stack {
               { name: "STORY_JOBS_TABLE", value: jobsTable.tableName },
               { name: "STORY_JOBS_QUEUE_URL", value: jobsQueue.queueUrl },
               { name: "STORY_STAGING_BUCKET", value: stagingBucket.bucketName },
-              { name: "STORY_JOBS_API_ENABLED", value: "1" },
               // R2/R3 cloud media (private original-media storage).
               { name: "STORY_MEDIA_TABLE", value: mediaTable.tableName },
               { name: "STORY_MEDIA_BUCKET", value: mediaBucket.bucketName },
@@ -510,28 +531,29 @@ export class StoryApiStack extends cdk.Stack {
               // P0 Beta Security Phase 3: per-user throttle counters table + rollout mode (observe = emit
               // metrics, never 429; enforce = return 429). Default observe for the beta rollout window.
               { name: "STORY_RATE_LIMIT_TABLE", value: rateLimitTable.tableName },
-              { name: "STORY_THROTTLE_MODE", value: process.env.STORY_THROTTLE_MODE ?? "observe" },
+              // Account deletion (D3): the request table, only where it exists (ACCOUNT_DELETION_ENVIRONMENTS).
+              // Unset elsewhere, so the deletion routes fail closed with 503.
+              ...(ACCOUNT_DELETION_ENVIRONMENTS.includes(environment)
+                ? [{ name: "STORY_ACCOUNT_DELETIONS_TABLE", value: `story-${environment}-account-deletions` }] : []),
+              ...(appleServicesId ? [{ name: "STORY_APPLE_SIGNIN_AUDIENCE", value: appleServicesId }] : []),
+              { name: "STORY_THROTTLE_MODE", value: throttleMode },
               // P0 Beta Security Phase 4: AI quota + spend protection. STORY_USER_USAGE_TABLE points the
               // reserve/settle/release at the (auth-stack-owned) durable UserUsage table; STORY_QUOTA_MODE
               // defaults observe (emit QuotaWouldDeny, never deny) for the beta rollout — enforcement is a
               // later env flip after observing real traffic, like the throttle. The $60 GLOBAL breaker is a
               // PROPOSAL (below the $100 beta AWS Budget alert), overridable per env.
               { name: "STORY_USER_USAGE_TABLE", value: userUsageTableName },
-              { name: "STORY_QUOTA_MODE", value: process.env.STORY_QUOTA_MODE ?? "observe" },
-              { name: "STORY_QUOTA_USER_MONTHLY_USD", value: process.env.STORY_QUOTA_USER_MONTHLY_USD ?? "8" },
+              { name: "STORY_QUOTA_MODE", value: quotaMode },
+              { name: "STORY_BILLING_MODE", value: billingMode },
+              { name: "STORY_QUOTA_USER_MONTHLY_USD", value: process.env.STORY_QUOTA_USER_MONTHLY_USD ?? userMonthlyUsdDefault },
               { name: "STORY_QUOTA_USER_DAILY_GENS", value: process.env.STORY_QUOTA_USER_DAILY_GENS ?? "500" },
               { name: "STORY_QUOTA_MAX_ACTIVE_JOBS", value: process.env.STORY_QUOTA_MAX_ACTIVE_JOBS ?? "2" },
               { name: "STORY_QUOTA_GLOBAL_MONTHLY_USD", value: process.env.STORY_QUOTA_GLOBAL_MONTHLY_USD ?? "60" },
               // Music provider (Epidemic) — without these the provider is disabled and /v1/music/candidates 404s.
               { name: "STORY_EPIDEMIC_MODE", value: "prototyping" },
               { name: "STORY_MUSIC_PROVIDER", value: "mcp" },
-              // Frozen edit-planner prompt pin + model fallback (so the sync + async paths both use v5.2).
-              // EditPlan planner version — DEV v5.3, other envs v5.2 (see the worker env note above). Durable
-              // in CDK; `-c editPlanVersion=5.2` rolls dev back.
-              { name: "STORY_EDIT_PLAN_VERSION",
-                value: (this.node.tryGetContext("editPlanVersion") as string)
-                  ?? ((environment === "development" || environment === "beta") ? "5.3" : "5.2") },
-              { name: "STORY_LLM_FALLBACK_MODEL", value: "us.anthropic.claude-sonnet-4-6" },
+              // EditPlan version: code default (v5.3); only an explicit emergency rollback context is emitted.
+              ...Object.entries(emergencyEditPlanVersionEnv).map(([name, value]) => ({ name, value })),
               // P1-F reusable AU visual evidence — SERVER persistence gate (default OFF everywhere). This is the
               // authoritative kill-switch: when "0" the AU endpoint writes NO durable personal-frame package
               // even if an authed client sends a content_sha256 claim. DURABLE in CDK (an App Runner env is a
@@ -539,29 +561,26 @@ export class StoryApiStack extends cdk.Stack {
               // Enable for DEV + BETA (owner promoted beta 2026-10-27 for TestFlight reusable-evidence
               // testing); gamma/prod stay OFF until a retention/account-deletion policy is approved. NOTE:
               // account-deletion is still design-only — beta now durably stores testers' personal frames.
-              // Override a given env with `-c evidencePersist=0` to roll back. Pair with the iOS Run-scheme flag
-              // STORY_REUSABLE_EVIDENCE=1 (device-side; this server flag alone only persists, it does not make
-              // the client reuse).
+              // Override a given env with `-c evidencePersist=0` to roll back. This is an OPERATIONAL PRIVACY
+              // KILL-SWITCH, not a product-feature flag: cache reuse (always on in the iOS client since PR #102)
+              // gracefully falls back to full re-analysis when persistence is off. Turning it off is a degraded
+              // state that the release gate flags and promotion must explicitly approve.
               { name: "STORY_EVIDENCE_PERSIST_ENABLED",
                 value: ((this.node.tryGetContext("evidencePersist") as string) === "1"
                         || ((environment === "development" || environment === "beta")
                             && (this.node.tryGetContext("evidencePersist") as string) !== "0")) ? "1" : "0" },
-              // P0 direct-provider mode (Anthropic-Bedrock-revocation contingency). DURABLE in CDK so a
-              // redeploy does not silently drop it back to bedrock (that regression broke all dev AI once —
-              // a CLI `update-service` env set is wiped by the next `cdk deploy`, which is a FULL env replace).
-              // Context-gated: dev defaults to direct; beta/gamma/prod default to bedrock until explicitly
-              // flipped via `-c modelProvider=direct`. Model ids are config-driven, verified against the live
-              // provider catalogs.
-              { name: "STORY_MODEL_PROVIDER",
-                value: (this.node.tryGetContext("modelProvider") as string) ?? "direct" },
+              // Provider routing: STORY_MODEL_PROVIDER is intentionally NOT set (code default "direct" =
+              // OpenAI/Gemini; Anthropic/Bedrock refused). The two model ids below are the only provider knobs.
               { name: "STORY_OPENAI_MODEL", value: (this.node.tryGetContext("openaiModel") as string) ?? "gpt-5.1" },
               { name: "STORY_GEMINI_MODEL", value: (this.node.tryGetContext("geminiModel") as string) ?? "gemini-3.8-flash" },
-              // Guide v2.1 (AI shooting script) + Unsplash scene images — feature-gated; dev-on, higher envs
-              // off until rolled out. Also DURABLE here (previously CLI-set, hence wiped by a cdk deploy).
-              { name: "STORY_GUIDE_V2",
-                value: (this.node.tryGetContext("guideV2") as string) ?? "1" },
-              { name: "STORY_SCENE_IMAGES",
-                value: (this.node.tryGetContext("sceneImages") as string) ?? "1" },
+              // Phase 1B reference-media mode (image=Unsplash photo | video=Pixabay clip). DURABLE here so a
+              // plain `cdk deploy` keeps it (a CLI-only env set is wiped by the next deploy). Default reverted
+              // to "image" for ALL envs (owner 2026-11-06: video relevance/duplication not good enough — the
+              // Pixabay keyword search returned scenery over subject/action and repeated clips across scenes).
+              // Opt a deploy INTO video explicitly with `-c referenceMedia=video`. The scene-video endpoint and
+              // IAM grant remain in place, so re-enabling later is a flag flip once the selector is improved.
+              { name: "STORY_REFERENCE_MEDIA_MODE",
+                value: (this.node.tryGetContext("referenceMedia") as string) ?? "image" },
               // P0 Beta Auth Increment 3: wire the (separately-provisioned) dev Cognito pool + identity
               // tables. These are non-secret resource identifiers (NOT credentials), read from context so prod
               // supplies its own; dev defaults match the provisioned story-development-auth stack.
@@ -703,6 +722,13 @@ export class StoryApiStack extends cdk.Stack {
 
       // App Runner: describe/update/start scoped to the dev service ARN; ListServices has no
       // resource-level support (AWS limitation) so it is a separate `*`-scoped read-only statement.
+      // Post-deploy release gate (scripts/release_config_gate.py post): confirms every federated sign-in provider the
+      // build bakes in exists on this environment's pool. Read-only, scoped to the one pool the API uses.
+      deployRole.addToPolicy(new iam.PolicyStatement({
+        sid: "ReleaseGateIdentityProviders",
+        actions: ["cognito-idp:ListIdentityProviders"],
+        resources: [`arn:aws:cognito-idp:${this.region}:${this.account}:userpool/${cognitoUserPoolId ?? "us-east-1_AzfHOEdA5"}`],
+      }));
       deployRole.addToPolicy(new iam.PolicyStatement({
         sid: "AppRunnerList",
         actions: ["apprunner:ListServices"],
@@ -831,8 +857,7 @@ export class StoryApiStack extends cdk.Stack {
 
     // P0 Beta Observability (opt-in via context, default OFF so a plain synth is unchanged). Provisions
     // nothing at synth time; the owner enables it on deploy after B0 beta infra is accepted.
-    if (props.enableObservability) {
-      new Observability(this, "Observability", {
+    const observability = props.enableObservability ? new Observability(this, "Observability", {
         environment,
         jobsQueue,
         dlq,
@@ -841,7 +866,39 @@ export class StoryApiStack extends cdk.Stack {
         alarmDestination: props.alarmDestination,
         monthlyBudgetUsd: props.monthlyBudgetUsd ?? (environment === "beta" ? 100 : undefined),
         createBudget: props.createBudget,
+      }) : undefined;
+
+    // Account deletion D2 (design 5.2, 5.4, 5.11): request table + scheduled worker + its role. DEVELOPMENT ONLY
+    // until Ling approves beta (design 7.5, 8.12): extending this list to "beta" is that reviewed change. Inert
+    // until D3 adds the routes: only the operator CLI can create a request.
+    if (ACCOUNT_DELETION_ENVIRONMENTS.includes(environment)) {
+      const deletion = new AccountDeletion(this, "AccountDeletion", {
+        environment,
+        mediaTable, storiesTable, understandingTable, rateLimitTable, jobsTable, mediaBucket, stagingBucket,
+        usersTableName: storyUsersTableName,
+        identityClaimsTableName,
+        userUsageTableName,
+        // The same value App Runner gets: dev falls back to the dev pool; non-dev already failed synth above
+        // without an explicit -c cognitoUserPoolId.
+        userPoolId: cognitoUserPoolId ?? "us-east-1_AzfHOEdA5",
+        alarmTopic: observability?.alarmTopic,
       });
+      // D3: the API accepts a request in ONE transaction (request item + receipt pointer + the users-row flip,
+      // which the identity-table statement above already covers) and reads it back. No UpdateItem/DeleteItem on
+      // the request table: only the worker advances a request.
+      instanceRole.addToPolicy(new iam.PolicyStatement({
+        sid: "AccountDeletionAccept", effect: iam.Effect.ALLOW,
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
+        resources: [deletion.table.tableArn],
+      }));
+    }
+    if (appleServicesId) {
+      // D7: an Apple consent-revoked / account-delete notification signs the federated user out everywhere.
+      instanceRole.addToPolicy(new iam.PolicyStatement({
+        sid: "AppleSignInRevocation", effect: iam.Effect.ALLOW,
+        actions: ["cognito-idp:AdminUserGlobalSignOut"],
+        resources: [`arn:aws:cognito-idp:${this.region}:${this.account}:userpool/${cognitoUserPoolId ?? "us-east-1_AzfHOEdA5"}`],
+      }));
     }
   }
 }

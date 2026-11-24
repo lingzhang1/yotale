@@ -84,7 +84,7 @@ class InMemoryLimiter(RateLimiter):
 def _app(mode="enforce", limiter=None, metrics=None):
     os.environ.update({"STORY_ENVIRONMENT": "beta", "STORY_COGNITO_USER_POOL_ID": POOL,
                        "STORY_COGNITO_APP_CLIENT_ID": CLIENT_ID, "STORY_THROTTLE_MODE": mode,
-                       "STORY_EPIDEMIC_MODE": "prototyping", "STORY_JOBS_API_ENABLED": "1"})
+                       "STORY_EPIDEMIC_MODE": "prototyping"})
     app = create_app()
     app.state._jwt_verifier_override = FakeVerifier()
     app.state._identity_store_override = FakeIdentity()
@@ -97,7 +97,7 @@ def _app(mode="enforce", limiter=None, metrics=None):
 @pytest.fixture(autouse=True)
 def _restore_env():
     keys = ["STORY_ENVIRONMENT", "STORY_THROTTLE_MODE", "STORY_COGNITO_USER_POOL_ID",
-            "STORY_COGNITO_APP_CLIENT_ID", "STORY_EPIDEMIC_MODE", "STORY_JOBS_API_ENABLED",
+            "STORY_COGNITO_APP_CLIENT_ID", "STORY_EPIDEMIC_MODE", 
             "STORY_THROTTLE_READ_PER_MIN", "STORY_THROTTLE_AI_SYNC_PER_MIN"]
     saved = {k: os.environ.get(k) for k in keys}
     yield

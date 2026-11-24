@@ -31,17 +31,14 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
+from language_policy import contains_han
+
 BASE = "https://api.unsplash.com"
 SECRET_ENV = "UNSPLASH_SECRET_ID"            # Secrets Manager id; default below
 DEFAULT_SECRET_ID = "Unsplash-API-Key"
-FLAG_ENV = "STORY_SCENE_IMAGES"              # must == "1" to enable the endpoint
 APP_UTM = "yotale"                            # utm_source for attribution links (Unsplash requirement)
 QUERY_MAX_LEN = 120                           # bounded — a scene composition phrase, not free search
 PROVIDER_TIMEOUT_SECONDS = 4.0                # bounded provider call; never hang the request
-
-
-class SceneImageDisabledError(RuntimeError):
-    """The endpoint is not enabled (STORY_SCENE_IMAGES != '1')."""
 
 
 class SceneImageAuthError(RuntimeError):
@@ -54,10 +51,6 @@ class SceneImageProviderError(RuntimeError):
 
 class SceneImageQueryError(ValueError):
     """The query was empty, too long, or contained disallowed content (URL/email/control chars)."""
-
-
-def enabled() -> bool:
-    return os.environ.get(FLAG_ENV, "").strip() == "1"
 
 
 # Reject anything that could carry personal data / user media references into the provider.
@@ -80,6 +73,81 @@ def sanitize_query(raw: str) -> str:
     if _URL_RE.search(q) or _EMAIL_RE.search(q):
         raise SceneImageQueryError("query must be a generic scene description (no URLs or emails)")
     return q
+
+
+# ---- "Always show something" query handling -----------------------------------------------------
+# Owner rule: a reference photo must never be withheld because of query FORMAT (length, punctuation,
+# word count). We NORMALIZE instead of rejecting, and on a provider no-match we BROADEN the query a
+# bounded number of times. Only a query with no usable words left yields text-only.
+_TOKEN_URL_RE = re.compile(r"(https?://\S+|www\.\S+)", re.IGNORECASE)
+_TOKEN_EMAIL_RE = re.compile(r"\S+@\S+")
+_NON_WORD_RE = re.compile(r"[^a-z\- ]+")          # keep letters, hyphen, space; everything else -> space
+NORMALIZED_MAX_WORDS = 12                         # silent truncation, never a rejection
+MAX_SEARCH_ATTEMPTS = 4                           # full query + at most 3 broadened retries on no-match
+
+_FILLER_WORDS = frozenset({
+    "a", "an", "the", "of", "on", "in", "at", "by", "to", "with", "and", "or", "for", "from", "into",
+    "onto", "near", "some", "its", "their", "your", "his", "her", "is", "are", "be",
+})
+# Camera/composition vocabulary: useful for ranking in the FIRST attempt, but the usual cause of a
+# no-match when stacked ("slow pan medium wide shot ..."), so broadened attempts drop it first.
+_CAMERA_WORDS = frozenset({
+    "shot", "shots", "close", "closeup", "close-up", "up", "medium", "wide", "tight", "slow", "pan",
+    "panning", "tilt", "static", "still", "steady", "handheld", "frame", "framing", "framed", "angle",
+    "low", "high", "overhead", "eye", "level", "view", "foreground", "background", "detail", "macro",
+    "establishing", "tracking", "over-the-shoulder", "pov",
+})
+
+
+def normalize_query(raw) -> str | None:
+    """Turn ANY query string into a clean generic keyword phrase, or None if no usable words remain.
+    Never raises. URL/email tokens are REMOVED (privacy) rather than failing the whole query; control
+    chars, digits and punctuation become spaces; filler words are dropped; long phrases are truncated."""
+    if raw is None:
+        return None
+    if contains_han(str(raw)):
+        # Stock-photo search is English-keyword only. A query that still carries Han characters would reach the
+        # provider as garbage (the old behaviour silently stripped the Han and sent a half-query) -> treat as
+        # unusable so the caller takes the existing graceful text-only path (status "invalid_query"). Never raises.
+        return None
+    q = _CONTROL_RE.sub(" ", str(raw))
+    q = _TOKEN_URL_RE.sub(" ", q)
+    q = _TOKEN_EMAIL_RE.sub(" ", q)
+    q = _NON_WORD_RE.sub(" ", q.lower())
+    words = [w.strip("-") for w in q.split()]
+    words = [w for w in words if w and w not in _FILLER_WORDS]
+    if not words:
+        return None
+    return " ".join(words[:NORMALIZED_MAX_WORDS])
+
+
+def broadening_candidates(query: str) -> list[str]:
+    """Ordered, de-duplicated search attempts for a normalized query (at most MAX_SEARCH_ATTEMPTS):
+    1) the full query; 2) subject/setting words only (camera words dropped); 3) the first 3 subject
+    words; 4) the first 2. Keeps the SUBJECT the longest, so a broadened photo stays about the shot."""
+    words = query.split()
+    subject = [w for w in words if w not in _CAMERA_WORDS] or words
+    attempts = [words, subject, subject[:3], subject[:2]]
+    out: list[str] = []
+    for a in attempts:
+        phrase = " ".join(a).strip()
+        if phrase and phrase not in out:
+            out.append(phrase)
+    return out[:MAX_SEARCH_ATTEMPTS]
+
+
+def search_broadening(client, query: str):
+    """Search via any client exposing `search_one(query)`, broadening on no-match.
+    Returns (image | None, matched_attempt | None, attempts_made). Bounded to MAX_SEARCH_ATTEMPTS calls.
+    Provider/auth errors propagate unchanged so the caller's fail-soft handling still applies — we never
+    retry INTO a rate limit or an auth failure."""
+    attempts = 0
+    for attempt in broadening_candidates(query):
+        attempts += 1
+        img = client.search_one(attempt)
+        if img is not None:
+            return img, attempt, attempts
+    return None, None, attempts
 
 
 def load_key(secret_id: str | None = None) -> str:
@@ -252,10 +320,12 @@ class UnsplashClient:
 
 
 __all__ = [
-    "BASE", "SECRET_ENV", "DEFAULT_SECRET_ID", "FLAG_ENV", "APP_UTM",
+    "BASE", "SECRET_ENV", "DEFAULT_SECRET_ID", "APP_UTM",
     "QUERY_MAX_LEN", "PROVIDER_TIMEOUT_SECONDS",
-    "SceneImageDisabledError", "SceneImageAuthError", "SceneImageProviderError", "SceneImageQueryError",
-    "enabled", "sanitize_query", "load_key", "SceneImage", "UnsplashClient",
+    "SceneImageAuthError", "SceneImageProviderError", "SceneImageQueryError",
+    "sanitize_query", "normalize_query", "broadening_candidates", "search_broadening",
+    "NORMALIZED_MAX_WORDS", "MAX_SEARCH_ATTEMPTS",
+    "load_key", "SceneImage", "UnsplashClient",
     "MetadataCache",
 ]
 

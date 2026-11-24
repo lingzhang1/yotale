@@ -23,7 +23,8 @@ RUN pip install --prefix=/install/deps \
     "pydantic>=2" \
     "boto3" \
     "python-multipart" \
-    "pyjwt[crypto]>=2.8,<3"
+    "pyjwt[crypto]>=2.8,<3" \
+    "app-store-server-library==3.1.2"
 
 # ---- runtime ------------------------------------------------------------
 FROM public.ecr.aws/docker/library/python:3.12-slim AS runtime
@@ -46,6 +47,10 @@ COPY apps/api/ /app/apps/api/
 # Versioned engine prompts (creative_intent/v1/system.md, ...). The engine
 # resolves these at <repo>/prompts/..., so they must be in the image.
 COPY prompts/ /app/prompts/
+# Code revision of THIS image (deploy workflows pass --build-arg BUILD_SHA=<git sha>); "unknown" otherwise.
+# Read at runtime by observability.build_sha() for job provenance.
+ARG BUILD_SHA=unknown
+RUN printf '%s' "$BUILD_SHA" > /app/BUILD_SHA
 
 EXPOSE 8080
 

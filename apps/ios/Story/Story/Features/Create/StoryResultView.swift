@@ -58,8 +58,8 @@ enum MusicPresentation: Equatable {
 
     var copy: String {
         switch self {
-        case .createdWithoutMusic:   return "Created without music"
-        case .soundtrackUnavailable: return "Music wasn't available for this version"
+        case .createdWithoutMusic:   return L10n.t("Created without music")
+        case .soundtrackUnavailable: return L10n.t("Music wasn't available for this version")
         }
     }
 
@@ -122,6 +122,9 @@ struct StoryResultView: View {
     // the status card shows the actual stage, never a made-up % or ETA. nil when no op is in flight.
     @State private var generationPhase: String?
     @State private var generationFailed: String?        // failureCategory of a failed op (honest message)
+    @State private var showPlusFromRefusal = false       // Billing V2: a background attempt was refused with a 402
+    @State private var preflightDenial: BillingDenial?   // Billing V2: a revise the server would refuse (no video left)
+    @Environment(BillingStore.self) private var billing
     @State private var showExport = false                // consolidated Save-or-Share sheet
     // R7-D — cloud-restore of the generated MP4 when the local file is absent but a verified backup exists.
     @State private var restoring = false
@@ -138,7 +141,7 @@ struct StoryResultView: View {
     }
 
     private var lengthLabel: String {
-        "\(Int(output.durationSeconds.rounded())) sec"
+        L10n.t("\(Int(output.durationSeconds.rounded())) sec")
     }
 
     private var isStale: Bool {
@@ -146,6 +149,10 @@ struct StoryResultView: View {
     }
 
     var body: some View {
+        resultBody
+    }
+
+    private var resultBody: some View {
         ZStack {
             StoryTheme.ink.ignoresSafeArea()
             switch playback {
@@ -213,9 +220,9 @@ struct StoryResultView: View {
                     VideoPlayer(player: player)
                         .onDisappear {
                             player.pause()
-                            // Release the playback audio session so it does not clobber the capture session
-                            // (camera uses .record/.playAndRecord). Best-effort; never throws into the UI.
-                            try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+                            // Release the playback audio session (off the main actor) so it does not clobber
+                            // the capture session (camera uses .record/.playAndRecord). Never blocks the UI.
+                            Task { await AudioSessionCoordinator.shared.apply(.deactivate) }
                         }
                 } else {
                     StoryTheme.surface
@@ -235,13 +242,14 @@ struct StoryResultView: View {
                 // The app records video (AVAudioSession left in .record/.playAndRecord), and a bare AVPlayer
                 // inherits that category, which does not route playback to the speaker. Put the session into
                 // .playback (movie playback) and activate it BEFORE creating the player so the preview is
-                // audible. Best-effort: a failure never blocks playback or the UI. Released in onDisappear.
-                let session = AVAudioSession.sharedInstance()
-                try? session.setCategory(.playback, mode: .moviePlayback)
-                try? session.setActive(true)
+                // audible. The activation runs OFF the main actor (AudioSessionCoordinator) so it never blocks
+                // the UI; the player is created back on the main actor after it returns. Released in onDisappear.
+                await AudioSessionCoordinator.shared.apply(.moviePlayback)
                 player = AVPlayer(url: RenderOutputStore.shared.absoluteURL(for: relativePath))
             }
             .task { await observePendingRecovery() }
+            .sheet(isPresented: $showPlusFromRefusal) { PlusSubscriptionView() }
+            .sheet(item: $preflightDenial) { denial in PlusSubscriptionView(denial: denial) }
 
             versionChipRow
             actionPanel
@@ -261,7 +269,7 @@ struct StoryResultView: View {
         if let idx = versions.firstIndex(where: { ($0.versionId ?? $0.id) == currentId }) {
             return "V\(idx + 1)"
         }
-        return "this version"
+        return L10n.t("this version")
     }
 
     /// Inline version selector (redesign MVP). Simplest UI for the version count: nothing for 1 version, a
@@ -292,7 +300,7 @@ struct StoryResultView: View {
                             .clipShape(Capsule())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Version \(idx + 1)\(selected ? ", selected" : "")")
+                        .accessibilityLabel(selected ? L10n.t("Version \(idx + 1), selected") : L10n.t("Version \(idx + 1)"))
                     }
                     if pendingInFlight {
                         HStack(spacing: 5) {
@@ -382,6 +390,10 @@ struct StoryResultView: View {
                 }
                 Text(failureMessage(failed)).font(StoryTheme.body(12))
                     .foregroundStyle(StoryTheme.cream.opacity(0.6))
+                if failed == StoryCreationCoordinator.refusedCategoryBilling {
+                    StoryPrimaryButton(title: "See YoTale Plus") { showPlusFromRefusal = true }
+                        .padding(.top, 6)
+                }
             }
             .padding(14)
             .background(StoryTheme.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 14))
@@ -413,19 +425,24 @@ struct StoryResultView: View {
     /// unsatisfiable directive set).
     private func failureMessage(_ category: String) -> String {
         switch category {
+        case StoryCreationCoordinator.refusedCategoryBilling:
+            // Billing V2: the server refused the attempt (402). The current version is untouched; no plain retry.
+            return L10n.t("Upgrade to keep creating. Your current version is saved.")
+        case StoryCreationCoordinator.refusedCategoryQuota:
+            return L10n.t("You've reached a usage limit. Your current version is saved.")
         case "invalid_after_repair":
             // This category alone does NOT tell us the instruction was at fault (it also covers mechanical
             // planner errors and requests with no directives). Don't blame the user's instruction or tell them
             // to "exclude fewer Moments" — give an honest, non-blaming message. The coordinator path, which
             // knows whether hard directives were present and the specific failure detail, phrases the rare
             // genuine directive-conflict case more specifically.
-            return "I couldn't put together a valid edit this time — this is on my side, not your footage. Please try again."
+            return L10n.t("I couldn't put together a valid edit this time — this is on my side, not your footage. Please try again.")
         case "material_infeasible":
-            return "There isn't enough usable footage for that length — try a shorter video."
+            return L10n.t("There isn't enough usable footage for that length — try a shorter video.")
         case "unsupported_operation":
-            return "That kind of edit isn't supported yet — this app can re-cut, re-time, reorder, set transitions and change the soundtrack, but not color, filters or visual effects. Your current version was kept."
+            return L10n.t("That kind of edit isn't supported yet — this app can re-cut, re-time, reorder, set transitions and change the soundtrack, but not color, filters or visual effects. Your current version was kept.")
         default:
-            return "Something went wrong creating the new version. You can try again."
+            return L10n.t("Something went wrong creating the new version. You can try again.")
         }
     }
 
@@ -447,6 +464,15 @@ struct StoryResultView: View {
             let desc = FetchDescriptor<PendingOperationModel>(predicate: #Predicate { $0.storyId == sid })
             return (try? context.fetch(desc))?.first { $0.isRecoverable }
         }
+        // Refused-attempt rows touched since this screen started observing (an older refusal is not re-announced).
+        let observeStart = Date.now.addingTimeInterval(-120)
+        func refusedRow() -> PendingOperationModel? {
+            let desc = FetchDescriptor<PendingOperationModel>(predicate: #Predicate { $0.storyId == sid })
+            return ((try? context.fetch(desc)) ?? []).filter {
+                !$0.isRecoverable && ($0.failureCategory == StoryCreationCoordinator.refusedCategoryBilling
+                                      || $0.failureCategory == StoryCreationCoordinator.refusedCategoryQuota)
+            }.max { $0.updatedAt < $1.updatedAt }
+        }
         baselineOutputCount = freshOutputs().count
         let probe = StoryCreationCoordinator(planner: EditPlannerService(), context: context)
         for _ in 0..<150 {   // ~5 min at 2s
@@ -466,6 +492,11 @@ struct StoryResultView: View {
             // Done with nothing new: the op finished/failed/abandoned (pending row gone) and no extra output.
             if !hasPending && outs.count <= baselineOutputCount {
                 pendingInFlight = false; generationPhase = nil
+                // Billing V2: a refused attempt (402 / 429 cap) ends its row as abandoned, so the recoverable-row read
+                // above sees nothing. Surface the refusal instead of the banner silently vanishing.
+                if let refused = refusedRow(), refused.updatedAt >= observeStart {
+                    generationFailed = refused.failureCategory
+                }
                 return
             }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -476,9 +507,10 @@ struct StoryResultView: View {
     /// Human-readable stage for a persisted phase — the REAL stage, no percentage, no ETA (owner rule).
     private func stageLabel(_ phase: String?) -> String {
         switch phase {
-        case "submitted", "planning": return "Planning your edit…"
-        case "plan_ready", "rendering": return "Rendering your video…"
-        default: return "Working…"
+        case "preparing": return L10n.t("Preparing your moments…")
+        case "submitted", "planning": return L10n.t("Planning your edit…")
+        case "plan_ready", "rendering": return L10n.t("Rendering your video…")
+        default: return L10n.t("Working…")
         }
     }
 
@@ -497,9 +529,9 @@ struct StoryResultView: View {
             // EDITING — the central Story features, first-class. Both need a persisted executable plan.
             let canEdit = output.editPlanJSON != nil
             HStack(spacing: 10) {
-                editingCard(icon: "pencil.and.scribble", title: "Revise", subtitle: "Describe changes",
+                editingCard(icon: "pencil.and.scribble", title: L10n.t("Revise"), subtitle: L10n.t("Describe changes"),
                             enabled: canEdit) { showRevise = true }
-                editingCard(icon: "music.note", title: "Music", subtitle: "Change soundtrack",
+                editingCard(icon: "music.note", title: L10n.t("Music"), subtitle: L10n.t("Change soundtrack"),
                             enabled: canEdit) { showChangeMusic = true }
             }
 
@@ -546,6 +578,7 @@ struct StoryResultView: View {
         }
     }
 
+
     /// A first-class editing tile (Revise / Music). Disabled (dimmed) when the output has no persisted plan.
     @ViewBuilder
     private func editingCard(icon: String, title: String, subtitle: String,
@@ -563,17 +596,17 @@ struct StoryResultView: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .accessibilityHint(enabled ? "" : "Not available for this video")
+        .accessibilityHint(enabled ? "" : L10n.t("Not available for this video"))
     }
 
     @ViewBuilder
     private func saveStatusLine(_ outcome: PhotosSaveOutcome) -> some View {
         let text: String = {
             switch outcome {
-            case .saved: return "Saved to Photos."
-            case .permissionDenied: return "Photos access is needed to save. Enable it in Settings."
-            case .failed: return "Couldn't save to Photos. Please try again."
-            case .skipped: return "Nothing to save yet."
+            case .saved: return L10n.t("Saved to Photos.")
+            case .permissionDenied: return L10n.t("Photos access is needed to save. Enable it in Settings.")
+            case .failed: return L10n.t("Couldn't save to Photos. Please try again.")
+            case .skipped: return L10n.t("Nothing to save yet.")
             }
         }()
         Text(text).font(StoryTheme.body(12)).foregroundStyle(StoryTheme.cream.opacity(0.45))
@@ -635,7 +668,7 @@ struct StoryResultView: View {
             // Success: the resolver stamped relativeFilePath; reset the player so playableBody loads it.
             player?.pause(); player = nil; isPlaying = false
         } catch {
-            restoreError = (error as? LocalizedError)?.errorDescription ?? "Couldn't restore this video."
+            restoreError = (error as? LocalizedError)?.errorDescription ?? L10n.t("Couldn't restore this video.")
         }
         restoring = false
     }
@@ -664,30 +697,34 @@ struct StoryResultView: View {
     private func togglePlay() {
         guard let player else { return }
         if isPlaying { player.pause() } else {
-            // ROBUST AUDIO (v2): the first fix set the session at player CREATION, but the capture session
-            // (AVCaptureSession manages the app audio session) or a version-swap can leave/reset it to a
-            // non-playback, inactive, or silenced state by the time the user taps play. Reassert .playback +
-            // active RIGHT HERE, every play, and ensure the player itself is audible. Best-effort; never blocks.
-            let session = AVAudioSession.sharedInstance()
-            try? session.setCategory(.playback, mode: .moviePlayback, options: [])
-            try? session.setActive(true)
+            // ROBUST AUDIO (v3): the capture session (AVCaptureSession manages the app audio session) or a
+            // version-swap can leave/reset the session to a non-playback / inactive / silenced state by the
+            // time the user taps play, so reassert .playback + active on EVERY play. The reassertion runs OFF
+            // the main actor (AudioSessionCoordinator) so it never blocks the tap; we then play back on main.
+            // invalidate() first because an external owner (capture) may have changed the session underneath us.
             player.isMuted = false
             player.volume = 1.0
-            #if DEBUG
-            // INSTRUMENT (owner lesson: print resolved values, do not keep guessing). Surfaces the REAL audio
-            // state at play time so a device run tells us the true cause if this still fails.
-            let item = player.currentItem
-            let aTracks = item?.tracks.filter { $0.assetTrack?.mediaType == .audio }.count ?? -1
-            StoryCreativeRefinement.lastMusicNote =
-                "preview play: cat=\(session.category.rawValue) mode=\(session.mode.rawValue) "
-                + "outVol=\(session.outputVolume) playerVol=\(player.volume) muted=\(player.isMuted) "
-                + "itemAudioTracks=\(aTracks) status=\(item?.status.rawValue ?? -1)"
-            print("AUDIO-DIAG \(StoryCreativeRefinement.lastMusicNote)")
-            #endif
             if player.currentTime() >= (player.currentItem?.duration ?? .zero) {
                 player.seek(to: .zero)
             }
-            player.play()
+            Task {
+                await AudioSessionCoordinator.shared.invalidate()
+                await AudioSessionCoordinator.shared.apply(.moviePlayback)
+                await MainActor.run {
+                    #if DEBUG
+                    // INSTRUMENT (owner lesson: print resolved values). Surfaces the REAL audio state at play.
+                    let session = AVAudioSession.sharedInstance()
+                    let item = player.currentItem
+                    let aTracks = item?.tracks.filter { $0.assetTrack?.mediaType == .audio }.count ?? -1
+                    StoryCreativeRefinement.lastMusicNote =
+                        "preview play: cat=\(session.category.rawValue) mode=\(session.mode.rawValue) "
+                        + "outVol=\(session.outputVolume) playerVol=\(player.volume) muted=\(player.isMuted) "
+                        + "itemAudioTracks=\(aTracks) status=\(item?.status.rawValue ?? -1)"
+                    print("AUDIO-DIAG \(StoryCreativeRefinement.lastMusicNote)")
+                    #endif
+                    player.play()
+                }
+            }
         }
         isPlaying.toggle()
     }
@@ -751,6 +788,12 @@ struct StoryResultView: View {
         reviseWorking = true
         reviseError = nil
         Task { @MainActor in
+            // Billing V2 preflight: a revise is a new video; with none left, show the upgrade screen instead of starting it.
+            if let denial = await billing.videoPreflightDenial() {
+                reviseWorking = false
+                preflightDenial = denial
+                return
+            }
             // Carry the base version's soundtrack into the revise so the revised video keeps its music
             // (reviseVersion with no music would render silent). My Music resolves locally; a provider track
             // is re-resolved live (download + analysis) exactly as Change Music does. Nil => honestly no music.

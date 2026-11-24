@@ -16,14 +16,14 @@ enum StorySyncError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Network error during sync."
-        case .unauthorized: return "Sync session expired."
-        case .notFound: return "Story not found for this account."
-        case .tooLarge: return "Story is too large to sync."
-        case .mutationPayloadMismatch: return "Sync retry payload mismatch."
-        case .conflict: return "This Story changed on another device."
-        case .badStatus(let c): return "Unexpected sync response (\(c))."
-        case .decoding: return "Unexpected sync response shape."
+        case .transport: return L10n.t("Network error during sync.")
+        case .unauthorized: return L10n.t("Sync session expired.")
+        case .notFound: return L10n.t("Story not found for this account.")
+        case .tooLarge: return L10n.t("Story is too large to sync.")
+        case .mutationPayloadMismatch: return L10n.t("Sync retry payload mismatch.")
+        case .conflict: return L10n.t("This Story changed on another device.")
+        case .badStatus(let c): return L10n.t("Unexpected sync response (\(c)).")
+        case .decoding: return L10n.t("Unexpected sync response shape.")
         }
     }
 }

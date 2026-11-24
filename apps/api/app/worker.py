@@ -59,6 +59,17 @@ _ENV = os.environ.get("STORY_ENVIRONMENT", "development")
 # quota wiring and a packaging gap must never break plan execution). user_quota is a bundled package; the
 # worker CANNOT import app.* (FastAPI not bundled), so it uses the pure module directly.
 try:
+    from model_gateway import call_context as _call_context, set_call_context as _set_call_context
+except Exception:  # noqa: BLE001 — attribution is best-effort; never break plan execution
+    from contextlib import nullcontext as _nc
+
+    def _call_context(**_kw):  # type: ignore[misc]
+        return _nc()
+
+    def _set_call_context(**_kw):  # type: ignore[misc]
+        return None
+
+try:
     from user_quota import UserQuota as _UserQuota
 except Exception:  # noqa: BLE001
     _UserQuota = None
@@ -78,7 +89,33 @@ def _served_model_id(diag: dict) -> str:
         served = (calls[-1] or {}).get("served_by")
         if served:
             return str(served)
-    return _FALLBACK_MODEL if diag.get("any_fallback") else _PRIMARY_MODEL
+    primary, fallback = _planner_models()
+    return fallback if diag.get("any_fallback") else primary
+
+
+_EDITORIAL_TYPES = ("highlights", "full_story")
+
+
+def _editorial_diag(body: dict, prompt_version: str, v53_active: bool) -> dict:
+    """Which editorial type this job was planned as — PURE, persisted on the job item and logged, so a run can
+    PROVE Highlights vs Full Story after the staged request is deleted.
+
+      requested  the request's `editorial_type` exactly as the device sent it (None = not sent, e.g. a legacy
+                 Revise base with no stamped type), normalized to a known value or "unrecognized"
+      effective  what the planner was actually told: the requested type when v5.3 is active, else None (a
+                 v5.2 rollback strips it, so it is reported as NOT applied rather than claimed)
+      applied    True only when the planner received an editorial-type directive
+      legacy_mode  the legacy `editorial_mode` breadth hint (highlights|full|custom), kept for comparison
+    Only these closed-vocabulary strings are recorded: no Story content, no Moment ids."""
+    raw = body.get("editorial_type") if isinstance(body, dict) else None
+    req = None
+    if isinstance(raw, str) and raw.strip():
+        req = raw.strip().lower() if raw.strip().lower() in _EDITORIAL_TYPES else "unrecognized"
+    eff = req if (v53_active and req in _EDITORIAL_TYPES) else None
+    mode = body.get("editorial_mode") if isinstance(body, dict) else None
+    return {"requested": req, "effective": eff, "applied": eff is not None,
+            "legacy_mode": mode if mode in ("highlights", "full", "custom") else None,
+            "prompt_version": prompt_version}
 
 
 def _evidence_diag(env: dict, plan_dict: dict, order: list) -> dict:
@@ -169,10 +206,78 @@ def _quota_release_job(job: dict, *, incurred_usd: float = 0.0) -> None:
             q.release_allowance(uid, scoped_op, gens=1, incurred_usd=incurred_usd)
         finally:
             q.release_slot(uid, job_id)
+        # Drop the now-terminal markers (user + global). A job the store later RE-OPENS for the same operation id (bounded
+        # recovery of a transient coverage failure, or a retry after a denied submit) must reserve its allowance and slot
+        # afresh; a lingering `released` marker would make it look already reserved. Spend totals are never modified.
+        try:
+            q.prune_terminal_markers(uid)
+            from user_quota import GLOBAL_PK as _GPK
+            q.prune_terminal_markers(_GPK)
+        except Exception:  # noqa: BLE001 — pruning is housekeeping; the release above is what matters
+            pass
     except Exception:  # noqa: BLE001
         pass
-_PRIMARY_MODEL = os.environ.get("STORY_EDIT_PLANNER_MODEL", "us.anthropic.claude-opus-4-6-v1")
-_FALLBACK_MODEL = os.environ.get("STORY_LLM_FALLBACK_MODEL", "us.anthropic.claude-sonnet-4-6")
+
+
+# Billing V1 — worker-side video-credit settlement. Independent of the operational quota above: it only acts when
+# STORY_BILLING_MODE is observe|enforce, only for jobs that hold a billing reservation (coverage jobs never do, so
+# the calls are harmless no-ops for them), and never raises into the worker.
+from billing import (BillingLedger as _BillingLedger, billing_mode as _billing_mode,
+                     validate_billing_config as _validate_billing_config)
+
+
+def _billing_ledger():
+    mode = _billing_mode()
+    if mode == "off" or not _quota_usage_table():
+        return None
+    return _BillingLedger(table=_quota_usage_table(), shadow=(mode == "observe"))
+
+
+def _billing_finish_job(job: dict, *, completed: bool) -> None:
+    """A job reached a terminal state. COMPLETED -> settle the video credit (the result is durably recorded, so the
+    credit is owed even on an SQS redelivery); anything else -> release it. Idempotent (state-guarded)."""
+    uid, scoped_op = job.get("owner"), job.get("operation_id")
+    if not uid or not scoped_op or uid == "dev":
+        return
+    try:
+        led = _billing_ledger()
+        if led is not None:
+            led.reconcile_video_job(uid, scoped_op, "completed" if completed else "failed")
+    except Exception as e:  # noqa: BLE001 — billing drift is reconcilable by the sweep; never break the worker
+        print(json.dumps({"msg": "worker_billing_error", "error": f"{type(e).__name__}: {e}"[:200]}))
+
+
+def _billing_authorize_job(job: dict) -> tuple[bool, str]:
+    """Pre-run authorization (enforce only). The API reserves the video credit when it creates the job, but a crash between the job
+    row and the reservation (or a job queued before enforcement was switched on) can leave a job with NO reservation. Before any model
+    work, make sure one exists: `reserve_video` is idempotent (an existing reservation is a no-op), reserves now when none exists, and
+    raises BillingDenied when the entitlement no longer permits the video. Returns (ok, category).
+    A billing-STORE error fails OPEN here (the job proceeds): the API already failed closed at submit, so only a double fault (the crash
+    window AND a store outage) can reach an unreserved run, and failing a paying customer's job on a transient outage is worse."""
+    if _billing_mode() != "enforce":
+        return True, ""
+    uid, scoped_op = job.get("owner"), job.get("operation_id")
+    if not uid or not scoped_op or uid == "dev":
+        return True, ""
+    try:
+        led = _billing_ledger()
+        if led is None:
+            return True, ""
+        led.reserve_video(uid, scoped_op)
+        return True, ""
+    except Exception as e:  # noqa: BLE001
+        if type(e).__name__ == "BillingDenied":
+            return False, getattr(e, "code", "billing_denied")
+        print(json.dumps({"msg": "worker_billing_authorize_error", "error": f"{type(e).__name__}: {e}"[:200]}))
+        return True, ""
+
+
+def _planner_models() -> tuple[str, str]:
+    """(primary, fallback) edit-plan model ids from the ACTIVE provider route (e.g. gpt-5.1 / gemini-*), used
+    only when the gateway did not report a served model. Never an obsolete Anthropic identifier."""
+    from model_gateway.provider import served_model_ids
+    p, f = served_model_ids("edit_plan")
+    return (p or "unknown", f or p or "unknown")
 
 
 def _emit_ai_metrics(diag: dict, *, op_type: str, stage: str = "edit_plan", story_user_id: str | None = None) -> None:
@@ -232,36 +337,33 @@ def _emit_ai_metrics(diag: dict, *, op_type: str, stage: str = "edit_plan", stor
         pass
 
 
+def _build_sha() -> str:
+    """Code revision baked into this worker zip at build time (scripts/build_worker_asset.sh writes BUILD_SHA);
+    "unknown" when the artifact carries none."""
+    from observability import build_sha
+    return build_sha()
+
+
+def _effective_prompt_version() -> str:
+    import edit_planner as _ep
+    return getattr(_ep, "PROMPT_VERSION", "edit_plan/?")
+
+
 def _build_engine():
-    """Mirror apps/api/app/deps.get_edit_planner_engine so the worker runs the IDENTICAL model path
-    (direct OpenAI/Gemini in STORY_MODEL_PROVIDER=direct, else Opus primary -> Sonnet fallback)."""
-    model = os.environ.get("STORY_EDIT_PLANNER_MODEL", "us.anthropic.claude-opus-4-6-v1")
-    if (os.environ.get("STORY_MODEL_PROVIDER", "bedrock") or "bedrock").strip().lower() == "direct":
-        from model_gateway.provider import make_gateway
-        gw = make_gateway("edit_plan")
-    else:
-        from model_gateway import BedrockModelGateway, FallbackModelGateway
-        fb = os.environ.get("STORY_LLM_FALLBACK_MODEL", "us.anthropic.claude-sonnet-4-6")
-        primary = BedrockModelGateway(model_id=model)
-        gw = primary if (not fb or fb == model) else FallbackModelGateway(primary, BedrockModelGateway(model_id=fb))
-    return RealEditPlannerEngine(gw, executability_repair_attempts=2)
+    """Mirror apps/api/app/deps.get_edit_planner_engine so the worker runs the IDENTICAL model path (the
+    provider router; direct OpenAI/Gemini). Uses the same provider-mode validation as the API."""
+    from edit_planner import MODEL_ID as _EP_MODEL
+    from model_gateway.provider import routed_gateway
+    return RealEditPlannerEngine(routed_gateway("edit_plan", _EP_MODEL), executability_repair_attempts=2)
 
 
 def _build_coverage_engine():
     """Mirror apps/api/app/deps.get_story_coverage_v2_engine so the worker runs the IDENTICAL two-call
-    Coverage path (direct OpenAI/Gemini in STORY_MODEL_PROVIDER=direct, else Opus->Sonnet). Frozen
-    prompts/contract untouched."""
-    from story_coverage_v2 import RealStoryCoverageV2Engine
-    model = os.environ.get("STORY_COVERAGE_MODEL", "us.anthropic.claude-opus-4-6-v1")
-    if (os.environ.get("STORY_MODEL_PROVIDER", "bedrock") or "bedrock").strip().lower() == "direct":
-        from model_gateway.provider import make_gateway
-        gw = make_gateway("story_coverage")
-    else:
-        from model_gateway import BedrockModelGateway, FallbackModelGateway
-        fb = os.environ.get("STORY_LLM_FALLBACK_MODEL", "us.anthropic.claude-sonnet-4-6")
-        primary = BedrockModelGateway(model_id=model)
-        gw = primary if (not fb or fb == model) else FallbackModelGateway(primary, BedrockModelGateway(model_id=fb))
-    return RealStoryCoverageV2Engine(gw, model_id=model)
+    Coverage path. Frozen prompts/contract untouched."""
+    from story_coverage_v2 import RealStoryCoverageV2Engine, DEFAULT_COVERAGE_MODEL
+    from model_gateway.provider import routed_gateway
+    return RealStoryCoverageV2Engine(routed_gateway("story_coverage", DEFAULT_COVERAGE_MODEL),
+                                     model_id=DEFAULT_COVERAGE_MODEL)
 
 
 def _validator_error_codes(errs: list[str]) -> list[str]:
@@ -351,15 +453,20 @@ def _run_one(store: _jobs.JobStore, job_id: str) -> str:
     if not job:
         return "missing"
     op = job.get("operation_type", _jobs.OP_EDIT_PLAN)
+    # B0 cost attribution: every model_call_usage line emitted while this job runs carries the job owner, job id
+    # and operation (opaque ids / closed vocabulary only). story_id is added once the request body is parsed.
     if op == _jobs.OP_COVERAGE_V2:
-        result = _run_coverage(store, job_id, job)
+        with _call_context(story_user_id=job.get("owner"), job_id=job_id, operation="worker:coverage_v2"):
+            result = _run_coverage(store, job_id, job)
     elif op == _jobs.OP_EDIT_PLAN:
-        result = _run_edit_plan(store, job_id, job)
+        with _call_context(story_user_id=job.get("owner"), job_id=job_id, operation="worker:edit_plan"):
+            result = _run_edit_plan(store, job_id, job)
     else:
         # Unknown operation: fail the job safely (never execute an unrecognized payload against any engine).
         store.fail(job_id, "unknown_operation",
                    f"operation_type={op!r} not in {sorted(_jobs.KNOWN_OPERATIONS)}")
         _quota_release_job(job, incurred_usd=0.0)
+        _billing_finish_job(job, completed=False)
         return "failed:unknown_operation"
     # Phase 4: a CANCELLED terminal (any of the several cancel return points in the run paths) refunds the
     # user allowance + releases the active-job slot, each EXACTLY ONCE. Idempotent, so this is safe even if a
@@ -368,6 +475,7 @@ def _run_one(store: _jobs.JobStore, job_id: str) -> str:
     # engine did not publish a billed result; any mid-run spend is a reconcilable under-count, not a charge).
     if isinstance(result, str) and result.startswith("cancelled"):
         _quota_release_job(job, incurred_usd=0.0)
+        _billing_finish_job(job, completed=False)
     return result
 
 
@@ -397,6 +505,7 @@ def _run_coverage(store: _jobs.JobStore, job_id: str, job: dict) -> str:
             # staged coverage body is written as body.json; load_request returns (body, sheets)
 
         b = json.loads(body_json)
+        _set_call_context(story_id=b.get("story_id"))
 
         # ACCEPTANCE HOOK (test-only, env-gated): deterministic long-run simulation without model cost.
         if os.environ.get("STORY_WORKER_ALLOW_TEST_DELAY") == "1":
@@ -419,7 +528,8 @@ def _run_coverage(store: _jobs.JobStore, job_id: str, job: dict) -> str:
             creative_intent=b.get("creative_intent", {}),
             scope=b.get("scope", {}),
             moment_understandings=b.get("moment_understandings", []),
-            pending_count=int(b.get("pending_count", 0)))
+            pending_count=int(b.get("pending_count", 0)),
+            content_language=b.get("content_language"))
 
         t0 = time.monotonic()
         engine = _build_coverage_engine()
@@ -471,9 +581,17 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
     token = store.claim_lease(job_id)
     if not token:
         return "lease_held"   # another worker owns it; drop this delivery
+    _job_started = time.time()
 
     prefix = job["request_ref"]["staging_prefix"]
     order = json.loads(job["request_ref"]["sheet_order"])
+    _authorized, _why = _billing_authorize_job(job)
+    if not _authorized:
+        # No model work has started: terminalise, free any operational-quota hold, and drop the staged inputs.
+        store.fail(job_id, "billing_denied", f"entitlement does not permit this video ({_why})", token)
+        store.delete_staging(prefix)
+        _quota_release_job(job, incurred_usd=0.0)
+        return "failed:billing_denied"
     try:
         envelope_raw, sheets = store.load_request(prefix, order)
         env = json.loads(envelope_raw)
@@ -482,6 +600,8 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
         # The body was already validated at submit time by the endpoint's EditPlanRequest model. The worker
         # parses the raw dict directly — it must NOT import app.main (that pulls FastAPI/uvicorn, not bundled).
         b = json.loads(env["body"])
+        _rc = b.get("revision_context") if isinstance(b.get("revision_context"), dict) else {}
+        _set_call_context(story_id=b.get("story_id"), operation=f"worker:edit_plan:{_rc.get('mode') or 'original'}")
         inputs = EditPlanInputs(
             story_id=str(b["story_id"]), creative_intent_id=str(b["creative_intent_id"]),
             creative_intent=b["creative_intent"], story_guide=b.get("story_guide", {}),
@@ -513,6 +633,9 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                     store.mark_cancelled(job_id); store.delete_staging(prefix); return "cancelled_during_delay"
 
         engine = _build_engine()
+        # Overall wall-clock budget for provider calls: the worker deadline minus a margin for validation,
+        # fitting and publishing. Adapters refuse to start an attempt that cannot finish before it.
+        engine.deadline_ts = _job_started + EXEC_DEADLINE_S - 45
         plan = engine.generate(inputs)   # SAME core: v5.2 + validator + fallback + bounded critique
         diag = getattr(engine, "last_diagnostics", {}) or {}
 
@@ -532,7 +655,16 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                                              "completion", "partial_disclosure", "material_unmet",
                                              "creative_satisfaction", "creative_objective_count",
                                              "shipped_retained_candidate", "best_valid_from_attempt",
-                                             "structural_repair", "repair_budget")}
+                                             "structural_repair", "repair_budget",
+                                             # deterministic duration fit: before/after/target, what changed
+                                             "duration_fit",
+                                             # Editorial vNext D3: deterministic selection diagnostics (no media,
+                                             # no prompts, opaque 8-char Moment refs; computed, not model-written)
+                                             # provider reliability (safe metadata only)
+                                             "provider_attempts", "initial_max_tokens",
+                                             "truncation_escalations", "truncation_recovery",
+                                             "reasoning_tokens", "primary_failure", "planner_timeout_s",
+                                             "selection")}
         diag_out["planning_mode"] = "multimodal" if images else "text_only"
         diag_out["sheet_count"] = len(images)
         # P0 EVIDENCE ACCOUNTING (Editorial Pipeline v2). Persist the device's reconciling funnel census (stages
@@ -549,6 +681,12 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
         diag_out["input_tokens"] = int(diag.get("input_tokens") or 0)
         diag_out["output_tokens"] = int(diag.get("output_tokens") or 0)
         diag_out["model_id"] = _served_model_id(diag)
+        # PROVENANCE: the prompt version this worker actually ran and the deployed code revisions (API revision
+        # stamped into the envelope at submit). Version strings only — no media, no user content.
+        diag_out["prompt_version"] = _effective_prompt_version()
+        diag_out["worker_build_sha"] = _build_sha()
+        if isinstance(env.get("api_build_sha"), str) and env["api_build_sha"]:
+            diag_out["api_build_sha"] = env["api_build_sha"]
         # DIRECTIVE visibility: what revision_context the worker ACTUALLY received, the resolved opening id,
         # and whether the produced plan's first segment honored it. This is the only way to tell apart "the app
         # sent no/stale directive" from "the directive was sent but not enforced" from "Moment N resolved to an
@@ -571,6 +709,12 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
             "dur_src": _rc.get("duration_target_source"),
         }
         diag_out["rev_diag"] = rev_diag
+        # EDITORIAL TYPE visibility: Highlights vs Full Story, as requested and as the planner actually received it.
+        try:
+            import edit_planner as _ep
+            diag_out["editorial"] = _editorial_diag(b, diag_out["prompt_version"], bool(_ep._v53_active()))
+        except Exception:
+            pass   # diagnostics must never break a job
         # Greppable diagnostics line (CloudWatch): which model served each call, first-pass validator errors,
         # and WHY the primary failed over — so Opus-vs-Sonnet reject behavior is analyzable without DynamoDB.
         print(json.dumps({"msg": "worker_plan_diag", "job_id": job_id,
@@ -581,6 +725,7 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                           "first_fallback_error": diag_out.get("first_fallback_error"),
                           "calls": diag_out.get("calls"),
                           "rev_diag": rev_diag,
+                          "editorial": diag_out.get("editorial"),
                           "revision_path": diag_out.get("revision_path"),
                           "retime_reject_errors": diag_out.get("retime_reject_errors"),
                           "input_tokens": diag_out.get("input_tokens"),
@@ -601,6 +746,7 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
         if ok:
             # Phase 4: settle the ACTUAL incurred Bedrock spend + release the active-job slot (exactly once).
             _quota_settle_job(job, actual_usd=_job_cost_usd(diag_out))
+            _billing_finish_job(job, completed=True)     # Billing V1: the video credit is earned only now
         return "completed" if ok else "publish_lost_lease"
     except Exception as exc:  # noqa: BLE001 — classify everything into a terminal failure
         cat, detail = _classify(exc, locals().get("inputs"))
@@ -649,10 +795,11 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
                               {"env": _ENV, "service": "worker", "op_type": _op, "error_category": _ec})
                 if _ec == "throttle":
                     _emit_metrics({"BedrockThrottles": 1.0},
-                                  {"env": _ENV, "service": "worker", "model_id": _PRIMARY_MODEL})
+                                  {"env": _ENV, "service": "worker", "model_id": _planner_models()[0]})
             except Exception:  # noqa: BLE001
                 pass
-        store.fail(job_id, cat, detail, token)
+        detail = _with_primary_failure(detail, exc)
+        store.fail(job_id, cat, detail, token, diagnostics=_failure_diagnostics(_diag, exc))
         store.delete_staging(prefix)
         # Phase 4: FAILED generation refunds the user allowance but KEEPS incurred Bedrock spend (correction
         # 3/4). Release the active-job slot (exactly once).
@@ -662,7 +809,33 @@ def _run_edit_plan(store: _jobs.JobStore, job_id: str, job: dict) -> str:
         except Exception:  # noqa: BLE001
             _incurred = 0.0
         _quota_release_job(job, incurred_usd=_incurred)
+        _billing_finish_job(job, completed=False)        # Billing V1: a failed generation returns the credit
         return f"failed:{cat}"
+
+
+def _with_primary_failure(detail: str, exc: BaseException) -> str:
+    """Append WHY the primary provider failed when a fallback ran and also failed (bounded, sanitized)."""
+    pf = getattr(exc, "primary_failure", None)
+    if isinstance(pf, dict) and pf.get("category"):
+        return f"{detail} | primary provider: {pf.get('category')}"[:400]
+    return detail
+
+
+_FAILURE_DIAG_KEYS = ("provider_attempts", "initial_max_tokens", "planner_timeout_s", "truncation_escalations", "truncation_recovery",
+                      "last_error_category", "last_error", "primary_failure", "model_calls", "input_tokens",
+                      "output_tokens", "reasoning_tokens", "executability_repairs_used")
+
+
+def _failure_diagnostics(diag: dict, exc: BaseException) -> dict:
+    """Safe provider-attempt metadata for a FAILED job (no prompts, images, raw output or credentials), so a
+    failure is as inspectable as a success. Always returns a small dict."""
+    out = {k: diag.get(k) for k in _FAILURE_DIAG_KEYS if diag.get(k) is not None}
+    out["prompt_version"] = _effective_prompt_version()
+    out["error_type"] = type(exc).__name__
+    pf = getattr(exc, "primary_failure", None)
+    if isinstance(pf, dict):
+        out["primary_failure"] = pf
+    return out
 
 
 def _plan_to_dict(plan) -> dict:
@@ -677,6 +850,9 @@ def _plan_to_dict(plan) -> dict:
 def handler(event, context):
     """SQS batch handler. Returns partial-batch failures so a single bad message doesn't re-drive the batch.
     Also handles the EventBridge reconcile sentinel {reconcile:true} (concern 6: lost-enqueue recovery)."""
+    # Billing V1: an invalid STORY_BILLING_MODE must fail LOUDLY (the SQS record retries / dead-letters) rather than let
+    # jobs run with the billing posture silently ignored. Unset means off.
+    _validate_billing_config()
     store = _jobs.JobStore()
     if isinstance(event, dict) and event.get("reconcile") is True:
         reenq = store.reconcile_lost_enqueue()
@@ -691,6 +867,10 @@ def handler(event, context):
             for o in orphans:
                 _quota_release_job({"owner": o["owner"], "operation_id": o["operation_id"],
                                     "job_id": o["job_id"]}, incurred_usd=0.0)
+                # Billing V1: drive the credit to what the job's DURABLE terminal status demands. A job that
+                # completed but whose worker died before settling is SETTLED here, never refunded.
+                _billing_finish_job({"owner": o["owner"], "operation_id": o["operation_id"]},
+                                    completed=(o.get("terminal_status") == "completed"))
         except Exception as e:  # noqa: BLE001 — sweep is best-effort; never break the reconcile tick
             print(json.dumps({"msg": "worker_quota_sweep_error", "error": f"{type(e).__name__}: {e}"[:300]}))
         print(json.dumps({"msg": "worker_reconcile", "reenqueued": reenq,

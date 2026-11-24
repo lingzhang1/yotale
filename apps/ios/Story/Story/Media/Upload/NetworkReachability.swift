@@ -15,13 +15,19 @@ final class NetworkReachability {
     private(set) var isExpensive = true       // cellular / personal hotspot (conservative default until known)
     private(set) var isConstrained = false    // Low Data Mode
 
+    /// Fired on the main actor when the path goes from unusable to usable (e.g. Wi-Fi regained). Used to resume
+    /// the AU queue. The first usable path after launch also fires (isSatisfied starts false until reported).
+    var onBecameSatisfied: (() -> Void)?
+
     private init() {
         monitor.pathUpdateHandler = { [weak self] path in
             let satisfied = path.status == .satisfied
             let expensive = path.isExpensive
             let constrained = path.isConstrained
             Task { @MainActor in
+                let was = self?.isSatisfied ?? false
                 self?.isSatisfied = satisfied
+                if satisfied && !was { self?.onBecameSatisfied?() }
                 self?.isExpensive = expensive
                 self?.isConstrained = constrained
             }

@@ -14,6 +14,10 @@ extension String {
     }
 }
 
+// LOCALIZATION: components below take plain `String` titles. Call sites pass English literals (or already-localized
+// text from L10n.t). `Text(LocalizedStringKey(x))` looks the literal up in the String Catalog; text that is not a key
+// (user-created titles, AI-generated content, already-localized strings) renders verbatim, unchanged.
+//
 // StoryComponents — the small set of reusable UI patterns the frozen Figma UX
 // repeats. Only patterns actually reused are extracted (no generic framework).
 // C3.5 Figma UX convergence.
@@ -26,7 +30,7 @@ struct StoryPrimaryButton: View {
     var action: () -> Void
     var body: some View {
         Button(action: action) {
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(StoryTheme.body(15, .semibold))
                 .frame(maxWidth: .infinity).padding(.vertical, 16)
                 .background(StoryTheme.cream)
@@ -43,7 +47,7 @@ struct StorySecondaryButton: View {
     var action: () -> Void
     var body: some View {
         Button(action: action) {
-            Text(title).font(StoryTheme.body(15, .medium))
+            Text(LocalizedStringKey(title)).font(StoryTheme.body(15, .medium))
                 .frame(maxWidth: .infinity).padding(.vertical, 12)
                 .foregroundStyle(StoryTheme.gold)
         }
@@ -58,13 +62,13 @@ struct StoryUnavailableButton: View {
     var note: String? = nil          // optional short reason shown under it
     var body: some View {
         VStack(spacing: 4) {
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(StoryTheme.body(15, .medium))
                 .frame(maxWidth: .infinity).padding(.vertical, 16)
                 .foregroundStyle(StoryTheme.textMuted)
                 .overlay(Capsule().stroke(StoryTheme.cream.opacity(0.12), lineWidth: 1))
             if let note {
-                Text(note).font(StoryTheme.body(11)).foregroundStyle(StoryTheme.textMuted)
+                Text(LocalizedStringKey(note)).font(StoryTheme.body(11)).foregroundStyle(StoryTheme.textMuted)
             }
         }
         .allowsHitTesting(false)
@@ -132,11 +136,11 @@ struct StoryImageCard: View {
             .overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: 3) {
                     if !eyebrow.isEmpty { StoryEyebrow(text: eyebrow) }
-                    Text(title).font(StoryTheme.display(titleSize))
+                    Text(LocalizedStringKey(title)).font(StoryTheme.display(titleSize))
                         .foregroundStyle(enabled ? StoryTheme.cream : StoryTheme.cream.opacity(0.55))
                         .shadow(color: .black.opacity(0.6), radius: 8, y: 1)
                     if !sub.isEmpty {
-                        Text(sub).font(StoryTheme.body(12))
+                        Text(LocalizedStringKey(sub)).font(StoryTheme.body(12))
                             .foregroundStyle(StoryTheme.cream.opacity(0.78))
                             .shadow(color: .black.opacity(0.55), radius: 6, y: 1)
                     }
@@ -184,7 +188,8 @@ struct StoryMosaicStrip: View {
 struct StoryEyebrow: View {
     let text: String
     var body: some View {
-        Text(text.uppercased())
+        Text(LocalizedStringKey(text))
+            .textCase(.uppercase)
             .font(StoryTheme.eyebrow())
             .tracking(2)
             .foregroundStyle(StoryTheme.textMuted)
@@ -194,7 +199,7 @@ struct StoryEyebrow: View {
 struct StorySectionHeader: View {
     let text: String
     var body: some View {
-        Text(text).font(StoryTheme.body(15, .medium)).foregroundStyle(StoryTheme.gold)
+        Text(LocalizedStringKey(text)).font(StoryTheme.body(15, .medium)).foregroundStyle(StoryTheme.gold)
     }
 }
 
@@ -202,7 +207,7 @@ struct StorySectionHeader: View {
 struct StoryStatusPill: View {
     let status: StoryStatus
     var body: some View {
-        Text(status == .completed ? "Completed" : "Active")
+        Text(status == .completed ? L10n.t("Completed") : L10n.t("Active"))
             .font(StoryTheme.body(11, .medium))
             .padding(.horizontal, 10).padding(.vertical, 4)
             .foregroundStyle(status == .completed ? StoryTheme.textMuted : StoryTheme.gold)
@@ -248,7 +253,7 @@ struct StoryTextField: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             if text.isEmpty {
-                Text(placeholder).foregroundStyle(StoryTheme.textMuted)
+                Text(LocalizedStringKey(placeholder)).foregroundStyle(StoryTheme.textMuted)
                     .padding(.horizontal, 14).padding(.vertical, 12)
             }
             TextEditor(text: $text)
@@ -268,7 +273,7 @@ struct StoryTextField: View {
 struct StoryEmptyState: View {
     let text: String
     var body: some View {
-        Text(text).font(StoryTheme.body(15))
+        Text(LocalizedStringKey(text)).font(StoryTheme.body(15))
             .foregroundStyle(StoryTheme.textSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -282,7 +287,7 @@ struct StoryUnavailableSection<Header: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header()
-            Text(message).font(StoryTheme.body(13))
+            Text(LocalizedStringKey(message)).font(StoryTheme.body(13))
                 .foregroundStyle(StoryTheme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -301,7 +306,7 @@ struct StoryThinkingState: View {
     var body: some View {
         VStack(spacing: 20) {
             ProgressView().tint(StoryTheme.gold).scaleEffect(1.3)
-            Text(line).font(StoryTheme.display(20))
+            Text(LocalizedStringKey(line)).font(StoryTheme.display(20))
                 .foregroundStyle(StoryTheme.cream)
                 .multilineTextAlignment(.center)
                 .transition(.opacity)

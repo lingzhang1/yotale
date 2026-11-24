@@ -61,3 +61,51 @@ final class StoryEnvironmentTests: XCTestCase {
         XCTAssertNoThrow(try StoryEnvironment.current.assertConsistent())
     }
 }
+
+// Backend selection no longer persists anything: a scheme row is an attached-launch override only, and values
+// saved by older builds (which made a Debug build stick to a past scheme's backend) are cleared at launch.
+final class StoryLaunchConfigTests: XCTestCase {
+    private var suite: String!
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        suite = "StoryLaunchConfigTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suite)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suite)
+        super.tearDown()
+    }
+
+    func test_clearLegacyOverrides_removesOnlyTheSavedBackendKeys() {
+        for k in StoryLaunchConfig.keys { defaults.set("beta-ish", forKey: StoryLaunchConfig.legacyStorePrefix + k) }
+        defaults.set(true, forKey: "STORY_CRITIQUE_REVISION")   // unrelated setting must survive
+        XCTAssertEqual(StoryLaunchConfig.clearLegacyOverrides(defaults), StoryLaunchConfig.keys.count)
+        for k in StoryLaunchConfig.keys {
+            XCTAssertNil(defaults.object(forKey: StoryLaunchConfig.legacyStorePrefix + k), k)
+        }
+        XCTAssertEqual(defaults.object(forKey: "STORY_CRITIQUE_REVISION") as? Bool, true)
+        XCTAssertEqual(StoryLaunchConfig.clearLegacyOverrides(defaults), 0, "idempotent once clean")
+    }
+
+    func test_value_readsOnlyThisLaunchsSchemeRow_neverSavedValues() {
+        defaults.set("https://stale.example", forKey: StoryLaunchConfig.legacyStorePrefix + "STORY_API_BASE_URL")
+        XCTAssertNil(StoryLaunchConfig.value("STORY_API_BASE_URL", environment: [:]),
+                     "a saved value from an older build is never used")
+        XCTAssertEqual(StoryLaunchConfig.value("STORY_API_BASE_URL", environment: ["STORY_API_BASE_URL": " https://x "]),
+                       "https://x")
+        XCTAssertNil(StoryLaunchConfig.value("STORY_API_BASE_URL", environment: ["STORY_API_BASE_URL": "  "]))
+    }
+
+    func test_launchSummary_reportsTheEnvironmentActuallyInUse() {
+        let line = StoryEnvironment.launchSummary()
+        let cur = StoryEnvironment.current
+        XCTAssertTrue(line.hasPrefix("STORY_ENVIRONMENT kind=\(cur.kind.rawValue) "), line)
+        XCTAssertTrue(line.contains("pool=\(cur.userPoolId)"), line)
+        XCTAssertTrue(line.contains("api=\(cur.apiBaseURL.host ?? "")"), line)
+        XCTAssertTrue(line.contains("consistency=ok"), line)
+        XCTAssertFalse(line.contains(cur.appClientId), "the full client id is not logged")
+    }
+}

@@ -16,14 +16,16 @@ enum StoryDirectorServiceError: Error, LocalizedError {
     case badStatus(Int)
     case encoding(Error)
     case decoding(Error)
+    case entitlementDenied(BillingDenial)   // 402 — the Free starter's AI-idea allowance (or trial) is spent; recording still works
 
     var errorDescription: String? {
         switch self {
-        case .transport: return "Couldn't reach Story. Check your connection and try again."
-        case .unavailable: return "Story is thinking hard. Please try again."
-        case .badStatus(let c): return "Unexpected response (\(c)). Please try again."
-        case .encoding: return "Couldn't prepare the request. Please try again."
-        case .decoding: return "Story returned something unexpected. Please try again."
+        case .transport: return L10n.t("Couldn't reach Story. Check your connection and try again.")
+        case .unavailable: return L10n.t("Story is thinking hard. Please try again.")
+        case .badStatus(let c): return L10n.t("Unexpected response (\(c)). Please try again.")
+        case .encoding: return L10n.t("Couldn't prepare the request. Please try again.")
+        case .decoding: return L10n.t("Story returned something unexpected. Please try again.")
+        case .entitlementDenied(let d): return d.message
         }
     }
 }
@@ -38,7 +40,25 @@ struct StoryDirectorService {
     func initialize(creativeIntent: CreativeIntentContractDTO,
                     sceneUnderstanding: SceneUnderstandingContractDTO?,
                     targetDurationSeconds: Double?,
-                    selectedOpportunity: SelectedOpportunityDTO? = nil) async throws -> DirectorOutputDTO {
+                    selectedOpportunity: SelectedOpportunityDTO? = nil,
+                    contentLanguage: String? = nil) async throws -> DirectorOutputDTO {
+        // An older backend rejects the unknown `content_language` field (422); retry once without it.
+        do {
+            return try await initializeOnce(creativeIntent: creativeIntent, sceneUnderstanding: sceneUnderstanding,
+                                            targetDurationSeconds: targetDurationSeconds,
+                                            selectedOpportunity: selectedOpportunity, contentLanguage: contentLanguage)
+        } catch StoryDirectorServiceError.badStatus(let code) where code == 422 && contentLanguage != nil {
+            return try await initializeOnce(creativeIntent: creativeIntent, sceneUnderstanding: sceneUnderstanding,
+                                            targetDurationSeconds: targetDurationSeconds,
+                                            selectedOpportunity: selectedOpportunity, contentLanguage: nil)
+        }
+    }
+
+    private func initializeOnce(creativeIntent: CreativeIntentContractDTO,
+                                sceneUnderstanding: SceneUnderstandingContractDTO?,
+                                targetDurationSeconds: Double?,
+                                selectedOpportunity: SelectedOpportunityDTO?,
+                                contentLanguage: String?) async throws -> DirectorOutputDTO {
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/director/initialize"))
         StoryBackend.authorize(&req)  // P0 auth seam: bearer token when signed in
         req.httpMethod = "POST"
@@ -63,6 +83,7 @@ struct StoryDirectorService {
                 let oppData = try encoder.encode(opp)
                 body["selected_opportunity"] = try JSONSerialization.jsonObject(with: oppData)
             }
+            if let lang = contentLanguage { body["content_language"] = lang }   // omitted = backend default
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
         } catch {
             throw StoryDirectorServiceError.encoding(error)
@@ -79,6 +100,7 @@ struct StoryDirectorService {
             throw StoryDirectorServiceError.badStatus(-1)
         }
         if http.statusCode == 503 { throw StoryDirectorServiceError.unavailable }
+        if http.statusCode == 402 { throw StoryDirectorServiceError.entitlementDenied(BillingDenial.parse(data)) }
         guard http.statusCode == 200 else {
             throw StoryDirectorServiceError.badStatus(http.statusCode)
         }

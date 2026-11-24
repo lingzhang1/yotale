@@ -27,6 +27,12 @@ import urllib.request
 from typing import Any
 
 from . import (
+    OutputTruncatedError,
+    ProviderDeadlineError,
+    ProviderTimeoutError,
+    classify_provider_error,
+    log_model_call,
+    make_attempt,
     ProviderError,
     ProviderPolicyError,
     StructuredOutputError,
@@ -38,6 +44,7 @@ from ._secret import load_provider_key
 
 DEFAULT_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _TOOL_NAME = "emit_structured"
+_MIN_ATTEMPT_SECONDS = 15.0   # do not START an HTTP attempt with less time than this before the caller deadline
 
 
 class SchemaTranslationError(StructuredOutputError):
@@ -145,6 +152,7 @@ class GeminiModelGateway:
         self._max_retries = max(0, max_retries)
         self._secrets_client = secrets_client
         self._http_post = http_post
+        self.last_attempts: list[dict] = []   # safe per-attempt telemetry of the latest call
 
     def _key(self) -> str:
         if self._api_key is None:
@@ -176,55 +184,93 @@ class GeminiModelGateway:
     def generate_structured(self, req: StructuredRequest) -> StructuredResult:
         body = self._build_body(req)  # may raise SchemaTranslationError (reported, not swallowed)
         last_err: Exception | None = None
+        self.last_attempts = []
+
+        def _log(n: int, t0: float, outcome: str, finish: str | None = None, usage: Usage | None = None,
+                 error: BaseException | None = None) -> None:
+            rec = make_attempt(
+                provider="gemini", model=self.model_id, n=n, max_tokens=req.max_tokens,
+                latency_ms=int((time.monotonic() - t0) * 1000), outcome=outcome, finish_reason=finish,
+                usage=usage, error=error)
+            self.last_attempts.append(rec)
+            log_model_call(req.task, rec)
+
         for attempt in range(1 + max(0, req.max_repair_attempts)):
-            status, payload, headers = self._post(
-                f"/models/{self.model_id}:generateContent", body)
+            t0 = time.monotonic()
+            try:
+                status, payload, headers = self._post(
+                    f"/models/{self.model_id}:generateContent", body, req.deadline_ts, req.timeout_seconds)
+            except ProviderError as e:
+                _log(attempt + 1, t0, classify_provider_error(e), error=e)
+                raise
+            except StructuredOutputError as e:
+                _log(attempt + 1, t0, "bad_body", error=e)
+                raise
+            um = payload.get("usageMetadata") or {}
+            usage = Usage(
+                input_tokens=um.get("promptTokenCount"),
+                output_tokens=um.get("candidatesTokenCount"),
+                total_tokens=um.get("totalTokenCount"),
+                # Thinking tokens count against maxOutputTokens but are NOT in candidatesTokenCount.
+                reasoning_tokens=um.get("thoughtsTokenCount"),
+            )
+            finish = (payload.get("candidates") or [{}])[0].get("finishReason")
             tool_input = self._extract_function_args(payload)
             if tool_input is not None:
-                um = payload.get("usageMetadata") or {}
+                _log(attempt + 1, t0, "ok", finish, usage)
                 return StructuredResult(
                     data=tool_input,
-                    usage=Usage(
-                        input_tokens=um.get("promptTokenCount"),
-                        output_tokens=um.get("candidatesTokenCount"),
-                        total_tokens=um.get("totalTokenCount"),
-                    ),
+                    usage=usage,
                     attempts=attempt + 1,
                     repaired=attempt > 0,
                     model=self.model_id,
                     provider="gemini",
-                    stop_reason=(payload.get("candidates") or [{}])[0].get("finishReason"),
+                    stop_reason=finish,
                 )
-            finish = (payload.get("candidates") or [{}])[0].get("finishReason")
             if finish in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST"):
                 # Gemini content-policy block -> never fail over.
+                _log(attempt + 1, t0, "policy", finish, usage)
                 raise ProviderPolicyError(f"gemini content blocked (finishReason={finish})")
             if finish == "MAX_TOKENS":
-                last_err = StructuredOutputError("output truncated at maxOutputTokens (increase max_tokens)")
-            else:
-                last_err = StructuredOutputError(f"model did not return a function call (finishReason={finish})")
+                # Genuine output-limit truncation (may include hidden thinking tokens). Raise now so the caller
+                # can retry with a larger budget instead of repeating the same long generation.
+                _log(attempt + 1, t0, "truncated", finish, usage)
+                raise OutputTruncatedError("output truncated at maxOutputTokens (increase max_tokens)",
+                                           provider="gemini", finish_reason=finish,
+                                           max_tokens=req.max_tokens, usage=usage)
+            _log(attempt + 1, t0, "no_tool_call", finish, usage)
+            last_err = StructuredOutputError(f"model did not return a function call (finishReason={finish})")
             body["contents"].append({"role": "user", "parts": [{"text": f"You must call {_TOOL_NAME} with valid JSON."}]})
         raise last_err or StructuredOutputError("no structured output")
 
-    def _post(self, path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any], dict[str, str]]:
+    def _post(self, path: str, body: dict[str, Any], deadline_ts: float | None = None,
+              timeout_seconds: float | None = None) -> tuple[int, dict[str, Any], dict[str, str]]:
         # API key as a query param (x-goog-api-key header also works; query avoids a custom header in urllib)
         url = f"{self._base}{path}?key={self._key()}"
         data = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         attempt = 0
         while True:
+            timeout = float(timeout_seconds) if timeout_seconds else self._timeout
+            if deadline_ts is not None:
+                remaining = deadline_ts - time.time()
+                if remaining < _MIN_ATTEMPT_SECONDS:
+                    raise ProviderDeadlineError("gemini: not enough time left before the caller deadline")
+                timeout = min(timeout, remaining)
             try:
                 if self._http_post is not None:
-                    status, raw, resp_headers = self._http_post(url, headers, data, self._timeout)
+                    status, raw, resp_headers = self._http_post(url, headers, data, timeout)
                 else:
                     reqo = urllib.request.Request(url, data=data, headers=headers, method="POST")
-                    with urllib.request.urlopen(reqo, timeout=self._timeout) as r:
+                    with urllib.request.urlopen(reqo, timeout=timeout) as r:
                         status, raw, resp_headers = r.status, r.read(), dict(r.headers)
             except urllib.error.HTTPError as he:  # pragma: no cover
                 status = he.code
                 raw = he.read() if hasattr(he, "read") else b""
                 resp_headers = dict(getattr(he, "headers", {}) or {})
             except (urllib.error.URLError, TimeoutError, OSError) as te:
+                if isinstance(te, TimeoutError) or isinstance(getattr(te, "reason", None), TimeoutError):
+                    raise ProviderTimeoutError(f"gemini request timed out after {int(timeout)}s") from te
                 if attempt < self._max_retries:
                     time.sleep(min(2 ** attempt, 8)); attempt += 1; continue
                 raise ProviderError(f"gemini transport error: {type(te).__name__}") from te

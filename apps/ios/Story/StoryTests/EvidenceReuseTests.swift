@@ -49,17 +49,25 @@ final class EvidenceReuseTests: XCTestCase {
         XCTAssertTrue(out.contains(s.count - 1))  // closing context
     }
 
-    func test_mapper_highlights_vs_full_story_differ() {
+    // Policy v2: both types share core coverage, so with room for everything they represent the SAME evidence;
+    // only when the budget cannot hold it all does the type priority decide what survives.
+    func test_mapper_highlights_vs_full_story_differ_only_under_budget_pressure() {
         let s = sampled()
         let vis = [EvidenceCandidate(start: 3, end: 6, peak: 4.5, confidence: 0.9)]
         let nar = [EvidenceCandidate(start: 28, end: 33, peak: nil, confidence: 0.6)]
-        let h = EvidenceFrameMapper.selectFrames(videoType: .highlights, sampledFrameMs: s,
-                                                 visualCandidates: vis, narrativeCandidates: nar,
-                                                 eventTimesS: [], budget: 6)
-        let f = EvidenceFrameMapper.selectFrames(videoType: .fullStory, sampledFrameMs: s,
-                                                 visualCandidates: vis, narrativeCandidates: nar,
-                                                 eventTimesS: [], budget: 6)
-        XCTAssertNotEqual(h, f)
+        func pick(_ vt: EvidenceVideoType, _ k: Int) -> [Int] {
+            EvidenceFrameMapper.selectFrames(videoType: vt, sampledFrameMs: s, visualCandidates: vis,
+                                             narrativeCandidates: nar, eventTimesS: [], budget: k)
+        }
+        let inVis: ([Int]) -> Bool = { $0.contains { (3000...6000).contains(s[$0]) } }
+        let inNar: ([Int]) -> Bool = { $0.contains { (28000...33000).contains(s[$0]) } }
+        for vt in [EvidenceVideoType.highlights, .fullStory] {
+            XCTAssertTrue(inVis(pick(vt, 6)) && inNar(pick(vt, 6)), "\(vt)")
+        }
+        let h3 = pick(.highlights, 3), f3 = pick(.fullStory, 3)
+        XCTAssertNotEqual(h3, f3)
+        XCTAssertTrue(inVis(h3) && !inNar(h3))
+        XCTAssertTrue(inNar(f3) && !inVis(f3))
     }
 
     // MARK: - IMG_9091 regression (misplaced peak must not collapse selection)

@@ -711,3 +711,29 @@ def test_prune_global_removes_terminal_gres_preserves_reserved_and_counters():
     assert f"gres#{_rid('opB')}" not in g_after          # terminal pruned
     assert f"gres#{_rid('opC')}" in g_after              # RESERVED preserved (in-flight, maybe another user)
     assert g_after.get("settled_usd") == settled_before  # global spend counter UNCHANGED by pruning
+
+
+# ---- Billing V2: per-user caps lifted for a verified active Plus subscriber --------------------------------------
+
+@pytest.mark.parametrize("support_transact", [True, False])
+def test_exempt_reserve_skips_only_the_per_user_caps_and_still_records_spend(support_transact):
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    q = _q(_cfg(user_monthly_usd=1.0, user_daily_gens=3, global_monthly_usd=100.0), support_transact=support_transact)
+    for i in range(10):                                   # well past 3 gens/day and $1/month
+        q.reserve("u1", f"op{i}", estimate_usd=0.5, gens=1, enforce_user_caps=False)
+        q.settle("u1", f"op{i}", actual_usd=0.5)
+    item = q._c().get_item(TableName="t", Key=q._key("u1", _P()))["Item"]
+    assert float(item["settled_usd"]["N"]) == pytest.approx(5.0)        # attribution kept
+    with pytest.raises(QuotaDenied) as ei:
+        q.reserve("u2", "x", estimate_usd=0.5, gens=1)                 # a capped user is still capped
+        q.reserve("u2", "y", estimate_usd=0.6, gens=1)
+    assert ei.value.scope == "user_monthly_usd"
+
+
+def test_exempt_reserve_still_trips_the_global_breaker():
+    os.environ["STORY_QUOTA_MODE"] = "enforce"
+    q = _q(_cfg(global_monthly_usd=1.0))
+    q.reserve("u1", "a", estimate_usd=0.6, gens=1, enforce_user_caps=False)
+    with pytest.raises(QuotaDenied) as ei:
+        q.reserve("u1", "b", estimate_usd=0.6, gens=1, enforce_user_caps=False)
+    assert ei.value.scope == "global_monthly_usd"

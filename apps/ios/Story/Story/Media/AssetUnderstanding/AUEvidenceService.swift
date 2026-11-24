@@ -75,7 +75,9 @@ enum AUEvidenceError: Error {
 
 struct AUEvidenceService {
     var baseURL: URL = StoryBackend.baseURL
-    var session: URLSession = StoryBackend.backgroundSession
+    /// Fail-fast session, NOT the AU `backgroundSession`: a lookup must never queue behind AU uploads or wait for
+    /// connectivity — any failure is just a cache miss (restore + extract).
+    var session: URLSession = StoryBackend.evidenceSession
 
     /// Resolve the account-authorized evidence manifest for a Moment, or a miss. `frameExtractionVersion` is
     /// sent so the SERVER rejects a package whose pixels came from a different extractor policy.

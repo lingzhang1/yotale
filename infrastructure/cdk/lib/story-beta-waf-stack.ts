@@ -38,6 +38,8 @@ export interface StoryBetaWafStackProps extends cdk.StackProps {
   readonly maxBodyBytes?: number;
   /** Owner-approved 2026-10-22: flip the per-IP RATE rule from Count to Block (CRS stays Count). */
   readonly rateBlock?: boolean;
+  /** Per-IP limit (5 min) for the public account-deletion status route. */
+  readonly deletionStatusRateLimit?: number;
 }
 
 export class StoryBetaWafStack extends cdk.Stack {
@@ -100,6 +102,26 @@ export class StoryBetaWafStack extends cdk.Stack {
         },
         action: { count: {} },                  // COUNT first (owner amendment — not Block until verified)
         visibilityConfig: metric("BodySizeOver2MB"),
+      },
+      {
+        // Account deletion (design 5.3): the receipt status route is PUBLIC (no token), so this per-IP limit is its
+        // abuse control. A locked device polls about every 30 s (~10 per 5 min); 60 leaves room for a few devices
+        // behind one NAT. Block, scoped to that one path only.
+        name: "AccountDeletionStatusRatePerIp", priority: 5,
+        statement: {
+          rateBasedStatement: {
+            limit: props.deletionStatusRateLimit ?? 60, aggregateKeyType: "IP",
+            scopeDownStatement: {
+              byteMatchStatement: {
+                fieldToMatch: { uriPath: {} }, positionalConstraint: "EXACTLY",
+                searchString: "/v1/account/deletion/status",
+                textTransformations: [{ priority: 0, type: "NONE" }],
+              },
+            },
+          },
+        },
+        action: { block: {} },
+        visibilityConfig: metric("AccountDeletionStatusRatePerIp"),
       },
     ];
 
