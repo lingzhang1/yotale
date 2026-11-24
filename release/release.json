@@ -2,12 +2,9 @@
   "schema_version": 1,
   "_comment": "Release INTENT only. Accepted product features are code (no switches). Infra identity lives in CDK / ios xcconfig and is cross-checked, not copied. Verified by scripts/release_config_gate.py (pre-deploy in CI + deploy workflows, post-deploy after cdk deploy). EMERGENCY ROLLBACK: set planner.emergency_override (e.g. \"5.2\") AND add a matching approved_overrides entry in the SAME reviewed PR; CDK then pins API and worker identically on every deploy until it is cleared. A time-boxed evaluation of ONE environment uses planner.environment_overrides.<env> instead (it never reaches another environment) with a matching approved_overrides entry that carries an expires date.",
   "planner": {
-    "version": "5.3",
+    "version": "5.6",
     "emergency_override": null,
-    "environment_overrides": {
-      "development": "5.6",
-      "beta": "5.6"
-    }
+    "environment_overrides": {}
   },
   "required_everywhere": {
     "STORY_REFERENCE_MEDIA_MODE": "image",
@@ -37,34 +34,17 @@
       "require_auth": "1",
       "quota_mode": "enforce",
       "throttle_mode": "enforce",
-      "billing_mode": "off"
+      "billing_mode": "off",
+      "evidence_persist": "1"
     },
     "production": {
       "require_auth": "1",
       "quota_mode": "enforce",
       "throttle_mode": "enforce",
-      "billing_mode": "off"
+      "billing_mode": "off",
+      "evidence_persist": "1"
     }
   },
-  "approved_overrides": [
-    {
-      "setting": "STORY_EDIT_PLAN_VERSION",
-      "env": "development",
-      "value": "5.6",
-      "approved_by": "owner",
-      "approved_on": "2026-11-17",
-      "expires": "2026-11-30",
-      "reason": "Editorial vNext: development-only device acceptance of the restored edit_plan/5.6 Highlights candidate (B2 is the visual reference). Time-boxed; beta, gamma and production stay on the default. ROLLBACK: set planner.environment_overrides.development back to \"5.5\" and this entry's value to \"5.5\" (or remove both for the 5.3 default) in one reviewed PR, then deploy-dev; no job migration is needed because the planner version is read per job."
-    },
-    {
-      "setting": "STORY_EDIT_PLAN_VERSION",
-      "env": "beta",
-      "value": "5.6",
-      "approved_by": "owner",
-      "approved_on": "2026-11-17",
-      "expires": "2026-11-30",
-      "reason": "Editorial vNext: beta pin to the edit_plan/5.6 Highlights planner after the owner's dev device acceptance. Time-boxed; gamma and production stay on the default. ROLLBACK: remove planner.environment_overrides.beta and this entry (beta returns to the 5.3 default) in one reviewed PR, then deploy beta with the observability context; no job migration is needed because the planner version is read per job."
-    }
-  ],
+  "approved_overrides": [],
   "approved_degradations": []
 }

@@ -314,7 +314,7 @@ def test_engine_keeps_original_and_reports_it_when_fit_would_be_invalid(monkeypa
     ms = [_moment(20, peak=10) for _ in range(5)]
     eng = RealEditPlannerEngine(FakeModelGateway(response=_model_plan([_seg(i, m, 2, 18) for i, m in enumerate(ms)])))
 
-    def broken(plan, inputs, protected_ids=None):
+    def broken(plan, inputs, protected_ids=None, **_kw):
         bad = dict(plan, segments=[dict(s, source_end_seconds=99.0, output_duration_seconds=97.0) for s in plan["segments"]])
         return bad, {"applied": True, "before_s": 80.0, "after_s": 10.0, "target_s": 50.0, "within_band": True,
                      "trimmed": 5, "dropped": [], "changes": [{"order": 0}]}

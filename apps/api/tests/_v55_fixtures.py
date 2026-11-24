@@ -108,7 +108,9 @@ def render_all() -> dict[str, str]:
     """Every prompt string the planner builds for the fixture cases, with the v5.3 gate forced on (v5.5 off)."""
     out: dict[str, str] = {}
     orig = edit_planner._v53_active
+    orig_ver = edit_planner._EDIT_PLAN_VERSION
     edit_planner._v53_active = lambda: True
+    edit_planner._EDIT_PLAN_VERSION = "5.3"   # the default is now 5.6; this golden pins the 5.3 rollback path
     try:
         for name, extra in CASES.items():
             inp = make_inputs(**extra)
@@ -119,6 +121,7 @@ def render_all() -> dict[str, str]:
         out["revision"] = edit_planner._build_revision(inp, {"segments": []}, "critique text")
     finally:
         edit_planner._v53_active = orig
+        edit_planner._EDIT_PLAN_VERSION = orig_ver
     return out
 
 

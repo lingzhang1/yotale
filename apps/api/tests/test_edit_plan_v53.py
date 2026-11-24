@@ -9,6 +9,14 @@ from edit_planner import (
     EditPlanInputs, _build_user, _editorial_type_directive, _editorial_evidence_lines,
 )
 
+import pytest
+
+@pytest.fixture(autouse=True)
+def _pin_v53(monkeypatch):
+    """These tests cover the v5.3 behavior (the rollback path); the default is now 5.6."""
+    import edit_planner
+    monkeypatch.setattr(edit_planner, "_EDIT_PLAN_VERSION", "5.3")
+
 _CI = {"target_duration_seconds": 30}
 def _inputs(**kw):
     base = dict(story_id="s", creative_intent_id="c", creative_intent=_CI, story_guide={}, story_coverage={},

@@ -67,10 +67,11 @@ RENDERER_SPEED_MAX = 2.0
 # schema change. v4 is PRESERVED verbatim on disk and remains reachable (STORY_EDIT_PLAN_VERSION=4), so a
 # production surface that has NOT yet approved v5 can still pin v4. Dev-default != production approval.
 # Any value other than a directory that exists under prompts/edit_plan/ falls back to the default.
-# v5.3 is the ACCEPTED NORMAL planner (editorial evidence + editorial type). STORY_EDIT_PLAN_VERSION is a
+# v5.6 is the ACCEPTED NORMAL planner for EVERY stage (development, beta, gamma, production); it was promoted from
+# the time-boxed dev/beta pins so no stage can drift. (v5.3 introduced editorial evidence + editorial type.) STORY_EDIT_PLAN_VERSION is a
 # deliberate, documented EMERGENCY ROLLBACK override only (e.g. "5.2"); it must be set identically on the API
 # and the worker and is checked by scripts/release_config_gate.py. Never required for a normal deployment.
-_EDIT_PLAN_DEFAULT = "5.3"
+_EDIT_PLAN_DEFAULT = "5.6"
 _EDIT_PLAN_VERSION = os.environ.get("STORY_EDIT_PLAN_VERSION", _EDIT_PLAN_DEFAULT).strip() or _EDIT_PLAN_DEFAULT
 _PROMPT_BASE = Path(__file__).resolve().parent.parent.parent / "prompts" / "edit_plan"
 if not (_PROMPT_BASE / _EDIT_PLAN_VERSION / "system.md").is_file():

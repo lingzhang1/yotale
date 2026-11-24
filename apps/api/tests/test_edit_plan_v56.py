@@ -120,9 +120,9 @@ def test_v55_system_prompt_file_untouched():
 # --------------------------------------------------------------------------------------------------------------
 # 2. isolated candidate
 # --------------------------------------------------------------------------------------------------------------
-def test_default_is_still_53():
+def test_default_is_56():
     assert _py("import edit_planner as e;print(e.PROMPT_VERSION, e._v55_active(), e._v56_active())"
-               ) == "edit_plan/5.3 False False"
+               ) == "edit_plan/5.6 True True"
 
 
 def test_version_56_resolves_only_when_selected():
@@ -135,7 +135,7 @@ def test_55_does_not_enable_56_and_unknown_falls_back():
     assert _py("import edit_planner as e;print(e.PROMPT_VERSION, e._v55_active(), e._v56_active())",
                {"STORY_EDIT_PLAN_VERSION": "5.5"}) == "edit_plan/5.5 True False"
     assert _py("import edit_planner as e;print(e.PROMPT_VERSION, e._v56_active())",
-               {"STORY_EDIT_PLAN_VERSION": "5.7"}) == "edit_plan/5.3 False"
+               {"STORY_EDIT_PLAN_VERSION": "5.7"}) == "edit_plan/5.6 True"
     assert _py("import edit_planner as e;print(e.PROMPT_VERSION, e._v56_active())",
                {"STORY_EDIT_PLAN_VERSION": "5.3-cand"}) == "edit_plan/5.3-cand False"
 
