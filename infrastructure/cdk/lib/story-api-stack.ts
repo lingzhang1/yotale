@@ -66,6 +66,10 @@ export class StoryApiStack extends cdk.Stack {
     const APPLE_SIGNIN_SERVICES_ID: Record<string, string> = {
       development: "com.lingzhang.story.signin.dev",
       beta: "com.lingzhang.story.signin.beta",
+      // Production release plan step 11. The Services ID must be created with exactly this identifier in the Apple
+      // Developer portal (grouped under App ID com.lingzhang.story, return URL https://story-production-auth.auth.
+      // us-east-1.amazoncognito.com/oauth2/idpresponse) before the production auth stack is deployed.
+      production: "com.lingzhang.story.signin.prod",
     };
     const appleServicesId = APPLE_SIGNIN_SERVICES_ID[environment];
 
