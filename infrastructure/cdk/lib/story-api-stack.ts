@@ -55,6 +55,9 @@ export class StoryApiStack extends cdk.Stack {
     super(scope, id, props);
 
     const { environment } = props;
+    // Production cannot be deleted by a stray `cdk destroy` or a console click: CloudFormation refuses DeleteStack
+    // until a person turns termination protection off. The stack holds the live data tables.
+    if (environment === "production") this.terminationProtection = true;
     // Account deletion (design 7.5, 8.12): environments where the request table, worker and routes exist. Beta added
     // 2026-11-23 (Ling: "rollout to beta"). Production stays a separate decision.
     const ACCOUNT_DELETION_ENVIRONMENTS = ["development", "test", "beta"];
@@ -634,9 +637,11 @@ export class StoryApiStack extends cdk.Stack {
     // environment, so only a run of `lingzhang1/story` in the `development`
     // GitHub Environment can assume it. NEVER AdministratorAccess — the inline
     // policy lists exactly the actions a `cdk deploy` + artifact push of THIS
-    // stack needs (documented per statement below). Provisioned only for
-    // non-production environments; production gets a separately-reviewed role.
-    if (environment !== "production") {
+    // stack needs (documented per statement below). Provisioned for EVERY environment, production included
+    // (reviewed 2026-11-24): each role trusts only its own GitHub Environment, holds no DeleteStack, and may pass
+    // only its own scoped cfn-exec role. The production stack additionally has termination protection (bin/app.ts),
+    // and the `production` GitHub Environment requires a reviewer before the workflow can assume this role.
+    {
       // One OIDC provider per account (reused if it already exists out-of-band).
       const githubOidc = new iam.OpenIdConnectProvider(this, "GitHubOIDCProvider", {
         url: "https://token.actions.githubusercontent.com",
@@ -645,7 +650,7 @@ export class StoryApiStack extends cdk.Stack {
 
       const deployRole = new iam.Role(this, "StoryDevDeployRole", {
         roleName: `story-${environment}-github-deploy`,
-        description: "GitHub Actions OIDC role for DEV cdk deploy + artifact push (least privilege)",
+        description: `GitHub Actions OIDC role for ${environment} cdk deploy + artifact push (least privilege)`,
         maxSessionDuration: cdk.Duration.hours(1),
         assumedBy: new iam.WebIdentityPrincipal(
           githubOidc.openIdConnectProviderArn,
@@ -762,7 +767,7 @@ export class StoryApiStack extends cdk.Stack {
       // bootstrap role is never used and is left untouched.
       const cfnExecRole = new iam.Role(this, "StoryDevCfnExecRole", {
         roleName: `story-${environment}-cfn-exec`,
-        description: "Scoped CloudFormation execution role for Story dev deploys (NO AdministratorAccess)",
+        description: `Scoped CloudFormation execution role for Story ${environment} deploys (NO AdministratorAccess)`,
         assumedBy: new iam.ServicePrincipal("cloudformation.amazonaws.com"),
       });
       cfnExecRole.addToPolicy(new iam.PolicyStatement({
@@ -838,7 +843,7 @@ export class StoryApiStack extends cdk.Stack {
 
       new cdk.CfnOutput(this, "GitHubDeployRoleArn", {
         value: deployRole.roleArn,
-        description: "ARN GitHub Actions assumes via OIDC for dev deploys",
+        description: "ARN GitHub Actions assumes via OIDC for deploys of this environment",
       });
       new cdk.CfnOutput(this, "CfnExecRoleArn", {
         value: cfnExecRole.roleArn,
