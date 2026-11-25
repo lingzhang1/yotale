@@ -2,6 +2,7 @@ import * as cdk from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { StoryAuthStack } from "../lib/story-auth-stack";
 import { StoryApiStack } from "../lib/story-api-stack";
+import { apiEnvVars, apiEnvMap } from "./api-env";
 
 // Production release plan step 11: the production auth stack and the production Apple Services ID.
 function auth(environment: string, context: Record<string, unknown> = {}): StoryAuthStack {
@@ -48,8 +49,7 @@ describe("production Apple Services ID", () => {
     const api = new StoryApiStack(new cdk.App({ context: { imageDigest: "sha256:abc", cognitoUserPoolId: "us-east-1_prod",
                                                              cognitoAppClientId: "client", allowNoObservability: "true" } }),
       "story-production-api", { environment: "production", env: { account: "123456789012", region: "us-east-1" } });
-    const svc = Object.values(Template.fromStack(api).findResources("AWS::AppRunner::Service"))[0] as any;
-    const vars = svc.Properties.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables;
+    const vars = apiEnvVars(Template.fromStack(api));
     expect(vars.find((e: any) => e.Name === "STORY_APPLE_SIGNIN_AUDIENCE")?.Value).toBe("com.lingzhang.story.signin.prod");
   });
 });

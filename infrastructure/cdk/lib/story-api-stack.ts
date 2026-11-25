@@ -3,6 +3,7 @@ import { Construct } from "constructs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as apprunner from "aws-cdk-lib/aws-apprunner";
+import * as logs from "aws-cdk-lib/aws-logs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as s3 from "aws-cdk-lib/aws-s3";
@@ -14,6 +15,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Observability } from "./observability";
 import { AccountDeletion } from "./account-deletion";
+import { EcsApiService } from "./ecs-api-service";
 
 export interface StoryApiStackProps extends cdk.StackProps {
   /** Deployment environment name (development | staging | production). */
@@ -74,6 +76,29 @@ export class StoryApiStack extends cdk.Stack {
     };
     const appleServicesId = APPLE_SIGNIN_SERVICES_ID[environment];
 
+    // --- API compute (ecs-fargate-migration-plan.md, owner decision 2026-11-25) -----------------------------
+    // Every stage serves the API from ECS Fargate behind a CDK-owned ALB. App Runner is closed to new AWS accounts.
+    // BETA ONLY keeps its App Runner service during the time-boxed overlap, so TestFlight builds that still call the
+    // App Runner host keep working until the retirement criteria in the plan are met; both services get the SAME
+    // image digest and the SAME env list from this stack, so they cannot drift.
+    const APP_RUNNER_OVERLAP_ENVIRONMENTS = ["beta"];
+    const hasAppRunner = APP_RUNNER_OVERLAP_ENVIRONMENTS.includes(environment);
+    // Stable API hostnames (DNS at Namecheap: a CNAME to the ALB) and their ACM certificates, requested 2026-11-25 in
+    // each stage account. Not secret.
+    const API_HOSTNAMES: Record<string, { hostname: string; certificateArn: string }> = {
+      development: { hostname: "api-dev.yotale.ai",
+        certificateArn: "arn:aws:acm:us-east-1:989088054552:certificate/7445a601-8023-4609-b840-039a72650988" },
+      beta: { hostname: "api-beta.yotale.ai",
+        certificateArn: "arn:aws:acm:us-east-1:224033508028:certificate/cf69c53e-76ae-4d26-a90a-e0a753bd149b" },
+      production: { hostname: "api.yotale.ai",
+        certificateArn: "arn:aws:acm:us-east-1:854689494157:certificate/ee788b62-7ac2-4661-99cf-d790d4dbbe95" },
+    };
+    const apiHost = API_HOSTNAMES[environment];
+    // Production runs two tasks across two AZs (owner decision 2026-11-25); other stages one.
+    const apiTaskCount = environment === "production" ? 2 : 1;
+    // WAF on the ALB wherever the API is public to testers or users.
+    const apiWafEnabled = ["beta", "gamma", "production"].includes(environment);
+
     // Immutable deploy: the pipeline passes `-c imageDigest=sha256:...` so App Runner is pinned to an
     // exact digest (auto-deploy off). Absent (legacy/local synth) -> mutable :latest fallback.
     const imageDigest = this.node.tryGetContext("imageDigest") as string | undefined;
@@ -124,11 +149,11 @@ export class StoryApiStack extends cdk.Stack {
     );
 
     // --- App Runner access role (pull image from ECR) --------------------
-    const accessRole = new iam.Role(this, "StoryApiAccessRole", {
+    const accessRole = hasAppRunner ? new iam.Role(this, "StoryApiAccessRole", {
       assumedBy: new iam.ServicePrincipal("build.apprunner.amazonaws.com"),
       description: "Lets App Runner pull the Story API image from ECR",
-    });
-    repository.grantPull(accessRole);
+    }) : undefined;
+    if (accessRole) repository.grantPull(accessRole);
 
     // --- App Runner instance role (runtime task permissions) -------------
     // Milestone C: the API now calls Amazon Bedrock (Creative Intent) through
@@ -137,9 +162,14 @@ export class StoryApiStack extends cdk.Stack {
     // DynamoDB / SQS grants — still none are needed. Model id is runtime config
     // (STORY_BEDROCK_MODEL); the grant covers the model family in-region plus
     // cross-region inference-profile ARNs so a config switch needs no IAM change.
+    // Runtime role for the API containers: trusted by ECS tasks everywhere, and by App Runner only where the beta
+    // overlap still runs an App Runner service. One role, so both services hold identical permissions.
     const instanceRole = new iam.Role(this, "StoryApiInstanceRole", {
-      assumedBy: new iam.ServicePrincipal("tasks.apprunner.amazonaws.com"),
-      description: "Runtime role for the Story API App Runner service",
+      assumedBy: hasAppRunner
+        ? new iam.CompositePrincipal(new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+                                     new iam.ServicePrincipal("tasks.apprunner.amazonaws.com"))
+        : new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+      description: "Runtime role for the Story API containers",
     });
     instanceRole.addToPolicy(
       new iam.PolicyStatement({
@@ -503,13 +533,97 @@ export class StoryApiStack extends cdk.Stack {
       ],
     }));
 
-    // --- App Runner service ---------------------------------------------
-    const service = new apprunner.CfnService(this, "StoryApiService", {
+    // --- API runtime environment (ONE list for ECS and, during the beta overlap, App Runner) ----------------
+    // NOTE: both App Runner runtimeEnvironmentVariables and an ECS task definition environment are a FULL REPLACE on
+    // every deploy. Every var the API needs MUST be listed here.
+    const apiEnvironment: { name: string; value: string }[] = [
+      { name: "STORY_JOBS_TABLE", value: jobsTable.tableName },
+      { name: "STORY_JOBS_QUEUE_URL", value: jobsQueue.queueUrl },
+      { name: "STORY_STAGING_BUCKET", value: stagingBucket.bucketName },
+      // R2/R3 cloud media (private original-media storage).
+      { name: "STORY_MEDIA_TABLE", value: mediaTable.tableName },
+      { name: "STORY_MEDIA_BUCKET", value: mediaBucket.bucketName },
+      { name: "STORY_STORIES_TABLE", value: storiesTable.tableName }, // R7
+      { name: "STORY_UNDERSTANDING_TABLE", value: understandingTable.tableName }, // R7-E
+      // P0 Beta Security Phase 3: per-user throttle counters table + rollout mode (observe = emit
+      // metrics, never 429; enforce = return 429). Default observe for the beta rollout window.
+      { name: "STORY_RATE_LIMIT_TABLE", value: rateLimitTable.tableName },
+      // Account deletion (D3): the request table, only where it exists (ACCOUNT_DELETION_ENVIRONMENTS).
+      // Unset elsewhere, so the deletion routes fail closed with 503.
+      ...(ACCOUNT_DELETION_ENVIRONMENTS.includes(environment)
+        ? [{ name: "STORY_ACCOUNT_DELETIONS_TABLE", value: `story-${environment}-account-deletions` }] : []),
+      ...(appleServicesId ? [{ name: "STORY_APPLE_SIGNIN_AUDIENCE", value: appleServicesId }] : []),
+      { name: "STORY_THROTTLE_MODE", value: throttleMode },
+      // P0 Beta Security Phase 4: AI quota + spend protection. STORY_USER_USAGE_TABLE points the
+      // reserve/settle/release at the (auth-stack-owned) durable UserUsage table; STORY_QUOTA_MODE
+      // defaults observe (emit QuotaWouldDeny, never deny) for the beta rollout — enforcement is a
+      // later env flip after observing real traffic, like the throttle. The $60 GLOBAL breaker is a
+      // PROPOSAL (below the $100 beta AWS Budget alert), overridable per env.
+      { name: "STORY_USER_USAGE_TABLE", value: userUsageTableName },
+      { name: "STORY_QUOTA_MODE", value: quotaMode },
+      { name: "STORY_BILLING_MODE", value: billingMode },
+      { name: "STORY_QUOTA_USER_MONTHLY_USD", value: process.env.STORY_QUOTA_USER_MONTHLY_USD ?? userMonthlyUsdDefault },
+      { name: "STORY_QUOTA_USER_DAILY_GENS", value: process.env.STORY_QUOTA_USER_DAILY_GENS ?? "500" },
+      { name: "STORY_QUOTA_MAX_ACTIVE_JOBS", value: process.env.STORY_QUOTA_MAX_ACTIVE_JOBS ?? "2" },
+      { name: "STORY_QUOTA_GLOBAL_MONTHLY_USD", value: process.env.STORY_QUOTA_GLOBAL_MONTHLY_USD ?? "60" },
+      // Music provider (Epidemic) — without these the provider is disabled and /v1/music/candidates 404s.
+      { name: "STORY_EPIDEMIC_MODE", value: "prototyping" },
+      { name: "STORY_MUSIC_PROVIDER", value: "mcp" },
+      // EditPlan version: code default (v5.6); only an explicit emergency rollback context is emitted.
+      ...Object.entries(emergencyEditPlanVersionEnv).map(([name, value]) => ({ name, value })),
+      // P1-F reusable AU visual evidence — SERVER persistence gate (default ON everywhere). This is the
+      // authoritative kill-switch: when "0" the AU endpoint writes NO durable personal-frame package
+      // even if an authed client sends a content_sha256 claim. DURABLE in CDK (an App Runner env is a
+      // full-replace on every deploy, so a manual console/CLI set is wiped by the next `cdk deploy`).
+      // ON in EVERY environment (owner 2026-11-24: no stage drift; production persists evidence like beta/dev).
+      // Account deletion removes this evidence (worker: media-table rows incl. evidence# manifests + evidence/<uid>/
+      // blobs) in every environment that persists it, production included (ACCOUNT_DELETION_ENVIRONMENTS).
+      // Override a given env with `-c evidencePersist=0` to roll back. This is an OPERATIONAL PRIVACY
+      // KILL-SWITCH, not a product-feature flag: cache reuse (always on in the iOS client since PR #102)
+      // gracefully falls back to full re-analysis when persistence is off. Turning it off is a degraded
+      // state that the release gate flags and promotion must explicitly approve.
+      { name: "STORY_EVIDENCE_PERSIST_ENABLED",
+        value: (this.node.tryGetContext("evidencePersist") as string) === "0" ? "0" : "1" },
+      // Provider routing: STORY_MODEL_PROVIDER is intentionally NOT set (code default "direct" =
+      // OpenAI/Gemini; Anthropic/Bedrock refused). The two model ids below are the only provider knobs.
+      { name: "STORY_OPENAI_MODEL", value: (this.node.tryGetContext("openaiModel") as string) ?? "gpt-5.1" },
+      { name: "STORY_GEMINI_MODEL", value: (this.node.tryGetContext("geminiModel") as string) ?? "gemini-3.8-flash" },
+      // Phase 1B reference-media mode (image=Unsplash photo | video=Pixabay clip). DURABLE here so a
+      // plain `cdk deploy` keeps it (a CLI-only env set is wiped by the next deploy). Default reverted
+      // to "image" for ALL envs (owner 2026-11-06: video relevance/duplication not good enough — the
+      // Pixabay keyword search returned scenery over subject/action and repeated clips across scenes).
+      // Opt a deploy INTO video explicitly with `-c referenceMedia=video`. The scene-video endpoint and
+      // IAM grant remain in place, so re-enabling later is a flag flip once the selector is improved.
+      { name: "STORY_REFERENCE_MEDIA_MODE",
+        value: (this.node.tryGetContext("referenceMedia") as string) ?? "image" },
+      // P0 Beta Auth Increment 3: wire the (separately-provisioned) dev Cognito pool + identity
+      // tables. These are non-secret resource identifiers (NOT credentials), read from context so prod
+      // supplies its own; dev defaults match the provisioned story-development-auth stack.
+      { name: "STORY_ENVIRONMENT", value: environment },
+      // Auth posture: DEVELOPMENT (and the unit-test synth env) stay in optional-auth
+      // (STORY_REQUIRE_AUTH=0) so existing iOS builds keep working during local iteration. EVERY
+      // REAL deploy environment (beta/gamma/production) is FAIL-CLOSED (=1): unauthenticated writes
+      // are rejected, required for account isolation once real testers exist. Production is also
+      // fail-closed in code regardless. Durable across CDK deploys — a redeploy will not silently
+      // reopen beta to anonymous writes.
+      { name: "STORY_REQUIRE_AUTH", value: (environment === "development" || environment === "test") ? "0" : "1" },
+      { name: "STORY_COGNITO_USER_POOL_ID",
+        // beta/gamma/prod: guaranteed non-null by the release-input guard above. dev: keep the known
+        // dev pool as a local-synth convenience.
+        value: cognitoUserPoolId ?? "us-east-1_AzfHOEdA5" },
+      { name: "STORY_COGNITO_APP_CLIENT_ID",
+        value: cognitoAppClientId ?? "5rnvp7oq6d7crbt01ldpe89tkh" },
+      { name: "STORY_IDENTITY_CLAIMS_TABLE", value: identityClaimsTableName },
+      { name: "STORY_USERS_TABLE", value: storyUsersTableName },
+    ];
+
+    // --- App Runner service (beta overlap only) ----------------------------
+    const service = hasAppRunner ? new apprunner.CfnService(this, "StoryApiService", {
       serviceName: `story-${environment}-api`,
       sourceConfiguration: {
         // Pull the container image from ECR.
         authenticationConfiguration: {
-          accessRoleArn: accessRole.roleArn,
+          accessRoleArn: accessRole!.roleArn,
         },
         // Pipeline-controlled releases: when the deploy passes an immutable digest
         // (`-c imageDigest=sha256:...`) the service is pinned to that digest and AUTO-DEPLOY IS OFF
@@ -527,86 +641,7 @@ export class StoryApiStack extends cdk.Stack {
             // NOTE: App Runner runtimeEnvironmentVariables is a FULL REPLACE, not a merge. Every var the
             // service needs MUST be listed here — omitting one (as an earlier revision did) silently drops it
             // from the live service. These restore the music provider + frozen prompt pins that were clobbered.
-            runtimeEnvironmentVariables: [
-              { name: "STORY_JOBS_TABLE", value: jobsTable.tableName },
-              { name: "STORY_JOBS_QUEUE_URL", value: jobsQueue.queueUrl },
-              { name: "STORY_STAGING_BUCKET", value: stagingBucket.bucketName },
-              // R2/R3 cloud media (private original-media storage).
-              { name: "STORY_MEDIA_TABLE", value: mediaTable.tableName },
-              { name: "STORY_MEDIA_BUCKET", value: mediaBucket.bucketName },
-              { name: "STORY_STORIES_TABLE", value: storiesTable.tableName }, // R7
-              { name: "STORY_UNDERSTANDING_TABLE", value: understandingTable.tableName }, // R7-E
-              // P0 Beta Security Phase 3: per-user throttle counters table + rollout mode (observe = emit
-              // metrics, never 429; enforce = return 429). Default observe for the beta rollout window.
-              { name: "STORY_RATE_LIMIT_TABLE", value: rateLimitTable.tableName },
-              // Account deletion (D3): the request table, only where it exists (ACCOUNT_DELETION_ENVIRONMENTS).
-              // Unset elsewhere, so the deletion routes fail closed with 503.
-              ...(ACCOUNT_DELETION_ENVIRONMENTS.includes(environment)
-                ? [{ name: "STORY_ACCOUNT_DELETIONS_TABLE", value: `story-${environment}-account-deletions` }] : []),
-              ...(appleServicesId ? [{ name: "STORY_APPLE_SIGNIN_AUDIENCE", value: appleServicesId }] : []),
-              { name: "STORY_THROTTLE_MODE", value: throttleMode },
-              // P0 Beta Security Phase 4: AI quota + spend protection. STORY_USER_USAGE_TABLE points the
-              // reserve/settle/release at the (auth-stack-owned) durable UserUsage table; STORY_QUOTA_MODE
-              // defaults observe (emit QuotaWouldDeny, never deny) for the beta rollout — enforcement is a
-              // later env flip after observing real traffic, like the throttle. The $60 GLOBAL breaker is a
-              // PROPOSAL (below the $100 beta AWS Budget alert), overridable per env.
-              { name: "STORY_USER_USAGE_TABLE", value: userUsageTableName },
-              { name: "STORY_QUOTA_MODE", value: quotaMode },
-              { name: "STORY_BILLING_MODE", value: billingMode },
-              { name: "STORY_QUOTA_USER_MONTHLY_USD", value: process.env.STORY_QUOTA_USER_MONTHLY_USD ?? userMonthlyUsdDefault },
-              { name: "STORY_QUOTA_USER_DAILY_GENS", value: process.env.STORY_QUOTA_USER_DAILY_GENS ?? "500" },
-              { name: "STORY_QUOTA_MAX_ACTIVE_JOBS", value: process.env.STORY_QUOTA_MAX_ACTIVE_JOBS ?? "2" },
-              { name: "STORY_QUOTA_GLOBAL_MONTHLY_USD", value: process.env.STORY_QUOTA_GLOBAL_MONTHLY_USD ?? "60" },
-              // Music provider (Epidemic) — without these the provider is disabled and /v1/music/candidates 404s.
-              { name: "STORY_EPIDEMIC_MODE", value: "prototyping" },
-              { name: "STORY_MUSIC_PROVIDER", value: "mcp" },
-              // EditPlan version: code default (v5.6); only an explicit emergency rollback context is emitted.
-              ...Object.entries(emergencyEditPlanVersionEnv).map(([name, value]) => ({ name, value })),
-              // P1-F reusable AU visual evidence — SERVER persistence gate (default ON everywhere). This is the
-              // authoritative kill-switch: when "0" the AU endpoint writes NO durable personal-frame package
-              // even if an authed client sends a content_sha256 claim. DURABLE in CDK (an App Runner env is a
-              // full-replace on every deploy, so a manual console/CLI set is wiped by the next `cdk deploy`).
-              // ON in EVERY environment (owner 2026-11-24: no stage drift; production persists evidence like beta/dev).
-              // Account deletion removes this evidence (worker: media-table rows incl. evidence# manifests + evidence/<uid>/
-              // blobs) in every environment that persists it, production included (ACCOUNT_DELETION_ENVIRONMENTS).
-              // Override a given env with `-c evidencePersist=0` to roll back. This is an OPERATIONAL PRIVACY
-              // KILL-SWITCH, not a product-feature flag: cache reuse (always on in the iOS client since PR #102)
-              // gracefully falls back to full re-analysis when persistence is off. Turning it off is a degraded
-              // state that the release gate flags and promotion must explicitly approve.
-              { name: "STORY_EVIDENCE_PERSIST_ENABLED",
-                value: (this.node.tryGetContext("evidencePersist") as string) === "0" ? "0" : "1" },
-              // Provider routing: STORY_MODEL_PROVIDER is intentionally NOT set (code default "direct" =
-              // OpenAI/Gemini; Anthropic/Bedrock refused). The two model ids below are the only provider knobs.
-              { name: "STORY_OPENAI_MODEL", value: (this.node.tryGetContext("openaiModel") as string) ?? "gpt-5.1" },
-              { name: "STORY_GEMINI_MODEL", value: (this.node.tryGetContext("geminiModel") as string) ?? "gemini-3.8-flash" },
-              // Phase 1B reference-media mode (image=Unsplash photo | video=Pixabay clip). DURABLE here so a
-              // plain `cdk deploy` keeps it (a CLI-only env set is wiped by the next deploy). Default reverted
-              // to "image" for ALL envs (owner 2026-11-06: video relevance/duplication not good enough — the
-              // Pixabay keyword search returned scenery over subject/action and repeated clips across scenes).
-              // Opt a deploy INTO video explicitly with `-c referenceMedia=video`. The scene-video endpoint and
-              // IAM grant remain in place, so re-enabling later is a flag flip once the selector is improved.
-              { name: "STORY_REFERENCE_MEDIA_MODE",
-                value: (this.node.tryGetContext("referenceMedia") as string) ?? "image" },
-              // P0 Beta Auth Increment 3: wire the (separately-provisioned) dev Cognito pool + identity
-              // tables. These are non-secret resource identifiers (NOT credentials), read from context so prod
-              // supplies its own; dev defaults match the provisioned story-development-auth stack.
-              { name: "STORY_ENVIRONMENT", value: environment },
-              // Auth posture: DEVELOPMENT (and the unit-test synth env) stay in optional-auth
-              // (STORY_REQUIRE_AUTH=0) so existing iOS builds keep working during local iteration. EVERY
-              // REAL deploy environment (beta/gamma/production) is FAIL-CLOSED (=1): unauthenticated writes
-              // are rejected, required for account isolation once real testers exist. Production is also
-              // fail-closed in code regardless. Durable across CDK deploys — a redeploy will not silently
-              // reopen beta to anonymous writes.
-              { name: "STORY_REQUIRE_AUTH", value: (environment === "development" || environment === "test") ? "0" : "1" },
-              { name: "STORY_COGNITO_USER_POOL_ID",
-                // beta/gamma/prod: guaranteed non-null by the release-input guard above. dev: keep the known
-                // dev pool as a local-synth convenience.
-                value: cognitoUserPoolId ?? "us-east-1_AzfHOEdA5" },
-              { name: "STORY_COGNITO_APP_CLIENT_ID",
-                value: cognitoAppClientId ?? "5rnvp7oq6d7crbt01ldpe89tkh" },
-              { name: "STORY_IDENTITY_CLAIMS_TABLE", value: identityClaimsTableName },
-              { name: "STORY_USERS_TABLE", value: storyUsersTableName },
-            ],
+            runtimeEnvironmentVariables: apiEnvironment,
           },
         },
       },
@@ -624,6 +659,17 @@ export class StoryApiStack extends cdk.Stack {
         healthyThreshold: 1,
         unhealthyThreshold: 5,
       },
+    }) : undefined;
+
+    // --- ECS Fargate API service (every stage) -----------------------------------------------------------
+    const ecsApi = new EcsApiService(this, "EcsApi", {
+      environment, repository, imageDigest, taskRole: instanceRole,
+      environmentVariables: Object.fromEntries(apiEnvironment.map((e) => [e.name, e.value])),
+      desiredCount: apiTaskCount,
+      certificateArn: apiHost?.certificateArn, hostname: apiHost?.hostname,
+      enableWaf: apiWafEnabled,
+      logRetention: environment === "production" ? logs.RetentionDays.THREE_MONTHS
+        : environment === "beta" ? logs.RetentionDays.TWO_MONTHS : logs.RetentionDays.ONE_MONTH,
     });
 
     // --- Outputs (non-secret) -------------------------------------------
@@ -631,10 +677,12 @@ export class StoryApiStack extends cdk.Stack {
       value: repository.repositoryUri,
       description: "ECR repository URI for the Story API image",
     });
-    new cdk.CfnOutput(this, "ApiServiceUrl", {
-      value: `https://${service.attrServiceUrl}`,
-      description: "App Runner service URL (Story API base URL)",
-    });
+    if (service) {
+      new cdk.CfnOutput(this, "ApiServiceUrl", {
+        value: `https://${service.attrServiceUrl}`,
+        description: "App Runner service URL (beta overlap only; legacy TestFlight builds)",
+      });
+    }
 
     // --- Gate 2: GitHub Actions OIDC deploy role (DEV ONLY) ---------------
     // Short-lived, keyless CI deploys. The role trusts GitHub's OIDC provider
@@ -753,6 +801,20 @@ export class StoryApiStack extends cdk.Stack {
         ],
       }));
 
+      // ECS (post-deploy release gate + operator reads): read the service, its task definition, target health and the
+      // web ACL on the ALB. Describe/List calls have no resource-level support for most of these (AWS limitation).
+      deployRole.addToPolicy(new iam.PolicyStatement({
+        sid: "EcsReleaseGateRead",
+        actions: [
+          "ecs:DescribeServices", "ecs:DescribeTaskDefinition", "ecs:DescribeClusters", "ecs:ListTasks",
+          "ecs:DescribeTasks",
+          "elasticloadbalancing:DescribeTargetHealth", "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:DescribeLoadBalancers",
+          "wafv2:GetWebACLForResource",
+        ],
+        resources: ["*"],   // API LIMITATION: Describe* calls do not support resource-level perms
+      }));
+
       // Lambda: publish + update the async worker.
       deployRole.addToPolicy(new iam.PolicyStatement({
         sid: "LambdaDeploy",
@@ -788,6 +850,12 @@ export class StoryApiStack extends cdk.Stack {
           "logs:*",                 // Lambda log groups + CloudWatch Logs retention policies (observability)
           "sns:*",                  // observability alarm topic + alerts@ subscription (CFN manages it)
           "cloudwatch:*",           // observability dashboards + metric alarms
+          "ecs:*",                  // API cluster, task definition, Fargate service
+          "elasticloadbalancing:*", // API load balancer, listeners, target group
+          "ec2:*",                  // API VPC, public subnets, internet gateway, routes, security groups
+          "application-autoscaling:*", // API task auto scaling
+          "wafv2:*",                // web ACL on the API load balancer (beta, production)
+          "acm:DescribeCertificate", "acm:ListCertificates",   // the listener references the stage certificate
         ],
         // Service-level scope to this account+region. CloudFormation creates these resources, so ARNs
         // are not known pre-create; scoping by service+account+region removes cross-account/cross-service
@@ -816,6 +884,16 @@ export class StoryApiStack extends cdk.Stack {
           `arn:aws:iam::${this.account}:policy/story-${environment}-*`,
           `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`,
         ],
+      }));
+      // First ECS/ALB/auto-scaling resource in an account creates the AWS service-linked roles. Scoped to exactly
+      // those three services.
+      cfnExecRole.addToPolicy(new iam.PolicyStatement({
+        sid: "StoryEcsServiceLinkedRoles",
+        actions: ["iam:CreateServiceLinkedRole"],
+        resources: ["*"],
+        conditions: { StringEquals: { "iam:AWSServiceName": [
+          "ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "ecs.application-autoscaling.amazonaws.com",
+        ] } },
       }));
       cfnExecRole.addToPolicy(new iam.PolicyStatement({
         sid: "StoryDevStackPassRole",
@@ -870,7 +948,8 @@ export class StoryApiStack extends cdk.Stack {
         jobsQueue,
         dlq,
         worker,
-        apiServiceName: `story-${environment}-api`,
+        appRunnerServiceName: hasAppRunner ? `story-${environment}-api` : undefined,
+        ecsApi,
         alarmDestination: props.alarmDestination,
         monthlyBudgetUsd: props.monthlyBudgetUsd ?? (environment === "beta" ? 100 : undefined),
         createBudget: props.createBudget,

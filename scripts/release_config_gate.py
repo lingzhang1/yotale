@@ -120,7 +120,7 @@ class Violation:
 class Snapshot:
     """Effective (or about-to-be-deployed) configuration of one environment.
 
-    service: ordered (name, value) pairs as the App Runner service lists them (duplicates are detectable).
+    service: ordered (name, value) pairs of the API container env (ECS task definition; duplicates are detectable).
     worker:  Lambda environment map. A value of None means "unresolved CloudFormation intrinsic" (a Ref/GetAtt
     that only resolves at deploy time); those are presence-checked, not value-checked."""
     environment: str
@@ -157,20 +157,64 @@ def _lit(v: Any) -> str | None:
     return v if isinstance(v, str) else None
 
 
-def snapshot_from_template(template: dict, environment: str) -> Snapshot:
-    res = template.get("Resources", {})
+# The API runs on ECS Fargate in every stage (ecs-fargate-migration-plan.md). Beta alone keeps an App Runner service
+# during the time-boxed overlap; it must carry the same env list and, live, the same image digest. Mirrors
+# APP_RUNNER_OVERLAP_ENVIRONMENTS in infrastructure/cdk/lib/story-api-stack.ts.
+APP_RUNNER_OVERLAP_ENVIRONMENTS = {"beta"}
+# A web ACL must be associated with the API load balancer here (mirrors apiWafEnabled in story-api-stack.ts).
+WAF_REQUIRED_ENVIRONMENTS = {"beta", "gamma", "production"}
+API_CONTAINER = "api"
+
+
+def _ecs_api_container(res: dict) -> list[dict]:
+    tds = [r for r in res.values() if r.get("Type") == "AWS::ECS::TaskDefinition"]
+    return [c for td in tds for c in td.get("Properties", {}).get("ContainerDefinitions", [])
+            if c.get("Name") == API_CONTAINER]
+
+
+def _app_runner_env(res: dict) -> list[tuple[str, str | None]] | None:
     svc = [r for r in res.values() if r.get("Type") == "AWS::AppRunner::Service"]
-    wrk = [r for r in res.values() if r.get("Type") == "AWS::Lambda::Function"
-           and "edit-plan-worker" in json.dumps(r.get("Properties", {}).get("FunctionName", ""))]
-    if len(svc) != 1 or len(wrk) != 1:
-        raise ValueError(f"template must contain exactly one App Runner service and one edit-plan worker "
-                         f"(found {len(svc)} / {len(wrk)})")
+    if not svc:
+        return None
     envs = (svc[0]["Properties"]["SourceConfiguration"]["ImageRepository"]
             ["ImageConfiguration"].get("RuntimeEnvironmentVariables", []))
-    service = [(e["Name"], _lit(e.get("Value"))) for e in envs]
+    return [(e["Name"], _lit(e.get("Value"))) for e in envs]
+
+
+def snapshot_from_template(template: dict, environment: str) -> Snapshot:
+    res = template.get("Resources", {})
+    api = _ecs_api_container(res)
+    wrk = [r for r in res.values() if r.get("Type") == "AWS::Lambda::Function"
+           and "edit-plan-worker" in json.dumps(r.get("Properties", {}).get("FunctionName", ""))]
+    if len(api) != 1 or len(wrk) != 1:
+        raise ValueError(f"template must contain exactly one ECS api container and one edit-plan worker "
+                         f"(found {len(api)} / {len(wrk)})")
+    service = [(e["Name"], _lit(e.get("Value"))) for e in api[0].get("Environment", [])]
     wvars = wrk[0]["Properties"].get("Environment", {}).get("Variables", {})
     worker = {k: _lit(v) for k, v in wvars.items()}
     return Snapshot(environment, service, worker, "template")
+
+
+def check_template_compute(template: dict, environment: str) -> list[Violation]:
+    """App Runner may appear only in an overlap stage, and then with exactly the ECS env list."""
+    res = template.get("Resources", {})
+    ar = _app_runner_env(res)
+    if ar is None:
+        return []
+    if environment not in APP_RUNNER_OVERLAP_ENVIRONMENTS:
+        return [Violation("app_runner_outside_overlap",
+                          f"{environment} template still defines an App Runner service; only "
+                          f"{sorted(APP_RUNNER_OVERLAP_ENVIRONMENTS)} may during the ECS migration overlap")]
+    api = _ecs_api_container(res)
+    ecs_env = sorted((e["Name"], json.dumps(e.get("Value"), sort_keys=True)) for e in api[0].get("Environment", []))
+    ar_env = sorted((n, json.dumps(v, sort_keys=True)) for n, v in
+                    [(e["Name"], e.get("Value")) for e in (next(r for r in res.values()
+                     if r.get("Type") == "AWS::AppRunner::Service")["Properties"]["SourceConfiguration"]
+                     ["ImageRepository"]["ImageConfiguration"].get("RuntimeEnvironmentVariables", []))])
+    if ecs_env != ar_env:
+        names = sorted({n for n, _ in set(ecs_env) ^ set(ar_env)})
+        return [Violation("overlap_env_mismatch", f"App Runner and ECS env lists differ: {', '.join(names)}")]
+    return []
 
 
 # --------------------------------------------------------------------------------------------------------
@@ -549,23 +593,53 @@ class LiveInfo:
     worker_files: set[str]
     missing_idps: list[str] | None = None
     notes: list[str] = field(default_factory=list)
+    targets_total: int = 1
+    targets_healthy: int = 1
+    web_acl_arn: str | None = None
+    overlap_digest: str | None = None
+
+
+def _digest_of(image: str) -> str | None:
+    return image.split("@", 1)[1] if "@" in image else None
 
 
 def collect_live(environment: str, aws: AwsRunner, fetch: Callable[[str], bytes] = fetch_bytes,
                  want_idps: frozenset[str] = frozenset(), user_pool_id: str | None = None) -> LiveInfo:
     name = f"story-{environment}-api"
-    services = aws(["apprunner", "list-services"])["ServiceSummaryList"]
-    arn = next((s["ServiceArn"] for s in services if s["ServiceName"] == name), None)
-    if not arn:
-        raise AwsUnavailable(f"App Runner service {name} not found")
-    svc = aws(["apprunner", "describe-service", "--service-arn", arn])["Service"]
-    img = svc["SourceConfiguration"]["ImageRepository"]
-    envmap = img["ImageConfiguration"].get("RuntimeEnvironmentVariables") or {}
-    service = [(k, v) for k, v in envmap.items()]
+    svcs = aws(["ecs", "describe-services", "--cluster", name, "--services", name]).get("services") or []
+    if not svcs or svcs[0].get("status") != "ACTIVE":
+        raise AwsUnavailable(f"ECS service {name} not found or not ACTIVE")
+    s = svcs[0]
+    deps = s.get("deployments") or []
+    if len(deps) > 1 or any(d.get("rolloutState") == "IN_PROGRESS" for d in deps):
+        status = "DEPLOYING"
+    elif (s.get("desiredCount", 0) > 0 and s.get("runningCount") == s.get("desiredCount")
+          and not any(d.get("rolloutState") == "FAILED" for d in deps)):
+        status = "STABLE"
+    else:
+        status = "UNSTABLE"
+    td = aws(["ecs", "describe-task-definition", "--task-definition", s["taskDefinition"]])["taskDefinition"]
+    c = next(c for c in td["containerDefinitions"] if c["name"] == API_CONTAINER)
+    ident = c["image"]
+    service = [(e["name"], e.get("value")) for e in c.get("environment") or []]
+    tg_arn = s["loadBalancers"][0]["targetGroupArn"]
+    th = aws(["elbv2", "describe-target-health", "--target-group-arn", tg_arn]).get("TargetHealthDescriptions") or []
+    healthy = sum(1 for t in th if t.get("TargetHealth", {}).get("State") == "healthy")
+    tgs = aws(["elbv2", "describe-target-groups", "--target-group-arns", tg_arn])["TargetGroups"]
+    alb_arn = (tgs[0].get("LoadBalancerArns") or [None])[0]
+    acl = (aws(["wafv2", "get-web-acl-for-resource", "--resource-arn", alb_arn]) or {}).get("WebACL") if alb_arn else None
+    overlap = None
+    notes: list[str] = []
+    if environment in APP_RUNNER_OVERLAP_ENVIRONMENTS:
+        ar = next((x for x in aws(["apprunner", "list-services"])["ServiceSummaryList"] if x["ServiceName"] == name), None)
+        if ar:
+            asvc = aws(["apprunner", "describe-service", "--service-arn", ar["ServiceArn"]])["Service"]
+            overlap = _digest_of(asvc["SourceConfiguration"]["ImageRepository"]["ImageIdentifier"]) or "unpinned"
+        else:
+            notes.append(f"{environment}: no App Runner service (overlap ended)")
     fn = aws(["lambda", "get-function", "--function-name", f"story-{environment}-edit-plan-worker"])
     wvars = fn["Configuration"].get("Environment", {}).get("Variables", {}) or {}
-    ident = img["ImageIdentifier"]
-    digest = ident.split("@", 1)[1] if "@" in ident else None
+    digest = _digest_of(ident)
     tags: list[str] = []
     if digest:
         d = aws(["ecr", "describe-images", "--repository-name", name, "--image-ids", f"imageDigest={digest}"])
@@ -578,17 +652,26 @@ def collect_live(environment: str, aws: AwsRunner, fetch: Callable[[str], bytes]
     if want_idps and user_pool_id:
         provs = aws(["cognito-idp", "list-identity-providers", "--user-pool-id", user_pool_id])["Providers"]
         missing = sorted(want_idps - {p.get("ProviderName") for p in provs})
-    return LiveInfo(Snapshot(environment, service, dict(wvars), "live"), svc.get("Status", "?"), ident, tags,
-                    wsha, files, missing)
+    return LiveInfo(Snapshot(environment, service, dict(wvars), "live"), status, ident, tags, wsha, files, missing,
+                    notes, len(th), healthy, (acl or {}).get("ARN"), overlap)
 
 
 def check_live(info: LiveInfo, manifest: dict, expected_sha: str, expected_digest: str | None,
                repo: Path = REPO) -> tuple[list[Violation], list[str]]:
     v, warn = check_snapshot(info.snapshot, manifest, repo)
     env = info.snapshot.environment
-    if info.service_status != "RUNNING":
+    if info.service_status != "STABLE":
         v.append(Violation("service_not_running", f"{env} API service status is {info.service_status}"))
-    digest = info.image_identifier.split("@", 1)[1] if "@" in info.image_identifier else None
+    if info.targets_total == 0 or info.targets_healthy < info.targets_total:
+        v.append(Violation("targets_unhealthy",
+                           f"{env} API load balancer has {info.targets_healthy}/{info.targets_total} healthy targets"))
+    if env in WAF_REQUIRED_ENVIRONMENTS and not info.web_acl_arn:
+        v.append(Violation("waf_missing", f"{env} API load balancer has no web ACL associated"))
+    digest = _digest_of(info.image_identifier)
+    if info.overlap_digest is not None and info.overlap_digest != digest:
+        v.append(Violation("overlap_digest_mismatch",
+                           f"{env} App Runner (overlap) runs {info.overlap_digest} but ECS runs {digest}"))
+    warn = warn + list(info.notes)
     if digest is None:
         v.append(Violation("digest_not_pinned", "API service is not pinned to an immutable image digest"))
     elif expected_digest and digest != expected_digest:
@@ -648,13 +731,15 @@ def main(argv: list[str] | None = None) -> int:
     post.add_argument("--region", default="us-east-1")
     post.add_argument("--manifest", type=Path, default=MANIFEST_PATH)
     post.add_argument("--wait-seconds", type=int, default=600,
-                      help="how long to wait for the API service to leave OPERATION_IN_PROGRESS (default 600)")
+                      help="how long to wait for the ECS API deployment to finish (default 600)")
     a = ap.parse_args(argv)
     manifest = load_manifest(a.manifest)
 
     if a.mode == "pre":
-        snap = snapshot_from_template(json.loads(a.template.read_text()), a.environment)
+        tpl = json.loads(a.template.read_text())
+        snap = snapshot_from_template(tpl, a.environment)
         v, warn = check_snapshot(snap, manifest)
+        v += check_template_compute(tpl, a.environment)
         iv, iw = check_ios(REPO, a.scheme)
         v, warn = v + iv, warn + iw
         if a.worker_asset:
@@ -670,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         while True:
             info = collect_live(a.environment, aws, want_idps=want_idps,
                                 user_pool_id=(cfg or {}).get("STORY_ENV_USER_POOL_ID"))
-            if info.service_status != "OPERATION_IN_PROGRESS" or time.monotonic() >= deadline:
+            if info.service_status != "DEPLOYING" or time.monotonic() >= deadline:
                 break
             time.sleep(20)
     except AwsUnavailable as e:

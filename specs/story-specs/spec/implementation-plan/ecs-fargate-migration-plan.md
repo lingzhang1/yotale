@@ -1,6 +1,6 @@
 # Migrating the Story API from App Runner to standard ECS Fargate
 
-Status: **PLAN (2026-11-25), owner decisions made; nothing built.** Trigger: production account 854689494157 cannot
+Status: **IN PROGRESS (2026-11-25). Step 2-3 implemented in `feat/ecs-fargate-api` (CDK construct `infrastructure/cdk/lib/ecs-api-service.ts`, release gate); not deployed.** Trigger: production account 854689494157 cannot
 create App Runner services (`production-release-readiness.md` section 5).
 
 Owner decisions (Ling, 2026-11-25):
@@ -34,9 +34,10 @@ carry the same web ACL before any traffic moves.
   deploy and cfn-exec roles move from `apprunner:*` to scoped `ecs`, `elasticloadbalancing`, `ec2` (security groups,
   describe), `acm`, `application-autoscaling`, `wafv2:AssociateWebACL`, and `iam:PassRole` for the task and execution
   roles only.
-- **Network:** each account's default VPC, public subnets, tasks with public IPs (outbound to OpenAI, Gemini, Unsplash,
-  Epidemic). No NAT gateway (it would add about $33/month or more per stage). Task security group accepts traffic
-  only from the ALB security group.
+- **Network:** a dedicated VPC per stage defined in CDK (`story-<env>-api`, two public subnets in two AZs), tasks
+  with public IPs (outbound to OpenAI, Gemini, Unsplash, Epidemic). Chosen over the default VPC during
+  implementation: deterministic, no synth-time lookup, identical in every account. No NAT gateway (it would add about
+  $33/month or more per stage). Task security group accepts traffic only from the ALB security group.
 - **Load balancer:** internet-facing ALB, HTTPS 443 with an ACM certificate, HTTP 80 redirects to HTTPS.
   **Idle timeout 180 s**, so no request App Runner served today (120 s cap) fails at the ALB, and the iOS client's
   180 s request timeout (`CreativeIntentService.swift`) remains the outer limit.

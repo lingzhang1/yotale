@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import { StoryApiStack } from "../lib/story-api-stack";
+import { apiEnvVars, apiEnvMap } from "./api-env";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -17,42 +18,30 @@ describe("StoryApiStack (Milestone A)", () => {
   const template = synth();
 
   test("references the ECR repo by stable name (created out-of-band, not in-template)", () => {
-    // The repo is created out-of-band so the image can be pushed before
-    // App Runner is created; the stack references it by name. Therefore the
-    // template creates NO ECR repository resource itself...
+    // The repo is created out-of-band so the image can be pushed before the service exists; the stack references it
+    // by name. The template creates NO ECR repository, and the API container image names the stable repo.
     template.resourceCountIs("AWS::ECR::Repository", 0);
-    // ...and App Runner pulls from an image identifier containing the
-    // stable repo name `story-test-api`.
-    const services = template.findResources("AWS::AppRunner::Service");
-    const svc = Object.values(services)[0] as any;
-    const imageId =
-      svc.Properties.SourceConfiguration.ImageRepository.ImageIdentifier;
-    expect(JSON.stringify(imageId)).toContain("story-test-api");
+    const tds = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as any[];
+    const api = tds.flatMap((td) => td.Properties.ContainerDefinitions).find((c: any) => c.Name === "api");
+    expect(JSON.stringify(api.Image)).toContain("story-test-api");
   });
 
-  test("provisions an App Runner service", () => {
-    template.resourceCountIs("AWS::AppRunner::Service", 1);
+  test("provisions one ECS Fargate API service and no App Runner service outside the beta overlap", () => {
+    template.resourceCountIs("AWS::ECS::Service", 1);
+    template.resourceCountIs("AWS::AppRunner::Service", 0);
   });
 
-  test("App Runner health check path is /health on port 8080", () => {
-    template.hasResourceProperties("AWS::AppRunner::Service", {
-      HealthCheckConfiguration: Match.objectLike({
-        Protocol: "HTTP",
-        Path: "/health",
-      }),
-      SourceConfiguration: Match.objectLike({
-        ImageRepository: Match.objectLike({
-          ImageConfiguration: Match.objectLike({ Port: "8080" }),
-          ImageRepositoryType: "ECR",
-        }),
-      }),
+  test("API health check is /health on port 8080", () => {
+    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", {
+      HealthCheckPath: "/health", Port: 8080, Protocol: "HTTP", TargetType: "ip",
     });
+    const tds = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as any[];
+    const api = tds.flatMap((td) => td.Properties.ContainerDefinitions).find((c: any) => c.Name === "api");
+    expect(api.PortMappings[0].ContainerPort).toBe(8080);
   });
 
   test("App Runner carries the Cognito + identity-table env (non-secret identifiers) — Increment 3", () => {
-    const svc = Object.values(template.findResources("AWS::AppRunner::Service"))[0] as any;
-    const envVars = svc.Properties.SourceConfiguration.ImageRepository.ImageConfiguration
-      .RuntimeEnvironmentVariables as Array<{ Name: string; Value: string }>;
+    const envVars = apiEnvVars(template) as Array<{ Name: string; Value: string }>;
     const names = envVars.map((e) => e.Name);
     expect(names).toEqual(expect.arrayContaining([
       "STORY_ENVIRONMENT", "STORY_REQUIRE_AUTH", "STORY_COGNITO_USER_POOL_ID",
@@ -217,16 +206,12 @@ describe("StoryApiStack (Milestone A)", () => {
   });
 
   test("App Runner carries the media table + bucket env", () => {
-    const svc = Object.values(template.findResources("AWS::AppRunner::Service"))[0] as any;
-    const names = (svc.Properties.SourceConfiguration.ImageRepository.ImageConfiguration
-      .RuntimeEnvironmentVariables as Array<{ Name: string }>).map((e) => e.Name);
+    const names = apiEnvVars(template).map((e) => e.Name);
     expect(names).toEqual(expect.arrayContaining(["STORY_MEDIA_TABLE", "STORY_MEDIA_BUCKET", "STORY_STORIES_TABLE", "STORY_UNDERSTANDING_TABLE"]));
   });
 
   test("P0-Phase4: App Runner carries the AI quota env (usage table + observe-default mode)", () => {
-    const svc = Object.values(template.findResources("AWS::AppRunner::Service"))[0] as any;
-    const vars = svc.Properties.SourceConfiguration.ImageRepository.ImageConfiguration
-      .RuntimeEnvironmentVariables as Array<{ Name: string; Value: string }>;
+    const vars = apiEnvVars(template) as Array<{ Name: string; Value: string }>;
     const byName = Object.fromEntries(vars.map((e) => [e.Name, e.Value]));
     expect(byName["STORY_USER_USAGE_TABLE"]).toBe("story-test-user-usage");
     expect(byName["STORY_QUOTA_MODE"]).toBe("observe");                // beta rollout default = observe
@@ -289,13 +274,7 @@ describe("StoryApiStack (Milestone A)", () => {
       const w = fns.find((f) => String(f.Properties?.FunctionName || "").endsWith("edit-plan-worker"));
       return (w?.Properties?.Environment?.Variables) || {};
     };
-    const serviceVars = (t: Template) => {
-      const svc = Object.values(t.findResources("AWS::AppRunner::Service")) as any[];
-      const out: Record<string, string> = {};
-      for (const e of svc[0].Properties.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables)
-        out[e.Name] = e.Value;
-      return out;
-    };
+    const serviceVars = (t: Template) => apiEnvMap(t) as Record<string, string>;
     const REMOVED = [
       "STORY_EDITPLAN_OBJECTIVE_DIRECTIVES", "STORY_EDITPLAN_BEST_VALID_RETENTION",
       "STORY_EDITPLAN_APPROX_DURATION_SOFT", "STORY_EDITPLAN_EXCLUDE_DEFAULT_CREATIVE",
@@ -412,7 +391,9 @@ describe("P0 Beta Observability construct", () => {
   test("enabled: 4 dashboards, 15 alarms, 1 SNS topic", () => {
     const t = synthWith({ environment: "test", observability: "true" });
     t.resourceCountIs("AWS::CloudWatch::Dashboard", 4);
-    t.resourceCountIs("AWS::CloudWatch::Alarm", 15);   // 10 observability + 5 account deletion (D2)
+    // 9 observability (App Runner 5xx removed outside the beta overlap) + 3 API (ALB target 5xx, ALB 5xx, unhealthy
+    // targets) + 5 account deletion (D2)
+    t.resourceCountIs("AWS::CloudWatch::Alarm", 17);
     t.resourceCountIs("AWS::SNS::Topic", 1);
     // Every alarm wires an SNS action (no silent alarm).
     const alarms = t.findResources("AWS::CloudWatch::Alarm");
@@ -551,8 +532,7 @@ describe("P0 Beta Observability construct", () => {
   test("beta is fail-closed: STORY_REQUIRE_AUTH=1 (account isolation); development stays optional (0)", () => {
     function requireAuthFor(env: string): string {
       const t = synthWith({ environment: env, observability: "false" });
-      const svc = Object.values(t.findResources("AWS::AppRunner::Service"))[0] as any;
-      const vars: any[] = svc.Properties.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables;
+      const vars: any[] = apiEnvVars(t);
       return (vars.find((v) => v.Name === "STORY_REQUIRE_AUTH") || {}).Value;
     }
     expect(requireAuthFor("beta")).toBe("1");
@@ -591,11 +571,7 @@ describe("P1-G0 per-environment operational policy defaults (defined once, in CD
     const app = new cdk.App({ context: { ...release, ...ctx } });
     const t = Template.fromStack(new StoryApiStack(app, `story-${environment}-api`, {
       environment, env: { account: "123456789012", region: "us-east-1" } }));
-    const svc = Object.values(t.findResources("AWS::AppRunner::Service")) as any[];
-    const out: Record<string, string> = {};
-    for (const e of svc[0].Properties.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables)
-      out[e.Name] = e.Value;
-    return out;
+    return apiEnvMap(t) as Record<string, string>;
   }
   const savedEnv = { ...process.env };
   beforeEach(() => {
@@ -656,9 +632,7 @@ describe("P1-G0 per-environment operational policy defaults (defined once, in CD
       const app = new cdk.App({ context: { ...release, billingMode: "enforce", STORY_BILLING_MODE: "enforce" } });
       const t = Template.fromStack(new StoryApiStack(app, "story-beta-api", {
         environment: "beta", env: { account: "123456789012", region: "us-east-1" } }));
-      const svc = Object.values(t.findResources("AWS::AppRunner::Service")) as any[];
-      const vars = Object.fromEntries(svc[0].Properties.SourceConfiguration.ImageRepository.ImageConfiguration
-        .RuntimeEnvironmentVariables.map((e: any) => [e.Name, e.Value]));
+      const vars = apiEnvMap(t);
       expect(vars.STORY_BILLING_MODE).toBe("observe");
       delete process.env.STORY_BILLING_MODE;
     });

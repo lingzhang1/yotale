@@ -23,6 +23,7 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as budgets from "aws-cdk-lib/aws-budgets";
+import type { EcsApiService } from "./ecs-api-service";
 
 const NAMESPACE = "Story/Beta";
 
@@ -34,8 +35,10 @@ export interface ObservabilityProps {
   readonly dlq: sqs.IQueue;
   /** The worker Lambda (free Lambda metrics + its log group for retention). */
   readonly worker: lambda.IFunction;
-  /** App Runner service NAME (L1 CfnService exposes the name, used as the metric dimension). */
-  readonly apiServiceName: string;
+  /** App Runner service NAME, only while a stage still runs App Runner (beta overlap). */
+  readonly appRunnerServiceName?: string;
+  /** The ECS Fargate API (ALB + service): the API metrics and alarms. */
+  readonly ecsApi: EcsApiService;
   /**
    * Optional SNS alarm destination (email or https Slack webhook). When omitted the topic is still created
    * (alarms wire to it) but has no subscription — the one value the owner fills before notification
@@ -72,7 +75,7 @@ export class Observability extends Construct {
 
   constructor(scope: Construct, id: string, props: ObservabilityProps) {
     super(scope, id);
-    const { environment, jobsQueue, dlq, worker, apiServiceName } = props;
+    const { environment, jobsQueue, dlq, worker, appRunnerServiceName, ecsApi } = props;
     const env = environment;
 
     // ---- SNS alarm topic (one topic, owner-approved destination) ---------------------------------------
@@ -97,11 +100,13 @@ export class Observability extends Construct {
       logGroupName: `/aws/lambda/${worker.functionName}`,
       retention: retentionFor(env),
     });
-    for (const suffix of ["application", "service"]) {
-      new logs.LogRetention(this, `ApiLogRetention-${suffix}`, {
-        logGroupName: `/aws/apprunner/${apiServiceName}/${suffix}`,
-        retention: retentionFor(env),
-      });
+    if (appRunnerServiceName) {
+      for (const suffix of ["application", "service"]) {
+        new logs.LogRetention(this, `ApiLogRetention-${suffix}`, {
+          logGroupName: `/aws/apprunner/${appRunnerServiceName}/${suffix}`,
+          retention: retentionFor(env),
+        });
+      }
     }
 
     // ---- Metric helpers --------------------------------------------------------------------------------
@@ -120,14 +125,26 @@ export class Observability extends Construct {
     const lambdaErrors = worker.metricErrors({ period: cdk.Duration.minutes(5), statistic: "Sum" });
     const lambdaThrottles = worker.metricThrottles({ period: cdk.Duration.minutes(5), statistic: "Sum" });
     const lambdaDuration = worker.metricDuration({ period: cdk.Duration.minutes(5), statistic: "p99" });
-    const appRunner5xx = new cloudwatch.Metric({
+    const appRunner5xx = appRunnerServiceName ? new cloudwatch.Metric({
       namespace: "AWS/AppRunner", metricName: "5xxStatusResponses", statistic: "Sum",
-      period: cdk.Duration.minutes(5), dimensionsMap: { ServiceName: apiServiceName },
-    });
-    const appRunnerLatency = new cloudwatch.Metric({
+      period: cdk.Duration.minutes(5), dimensionsMap: { ServiceName: appRunnerServiceName },
+    }) : undefined;
+    const appRunnerLatency = appRunnerServiceName ? new cloudwatch.Metric({
       namespace: "AWS/AppRunner", metricName: "RequestLatency", statistic: "p95",
-      period: cdk.Duration.minutes(5), dimensionsMap: { ServiceName: apiServiceName },
-    });
+      period: cdk.Duration.minutes(5), dimensionsMap: { ServiceName: appRunnerServiceName },
+    }) : undefined;
+    // ECS / ALB API metrics (free service metrics).
+    const five = { period: cdk.Duration.minutes(5) };
+    const alb = ecsApi.loadBalancer.metrics;
+    const tg = ecsApi.targetGroup.metrics;
+    const alb5xx = alb.httpCodeTarget(cdk.aws_elasticloadbalancingv2.HttpCodeTarget.TARGET_5XX_COUNT,
+                                      { ...five, statistic: "Sum" });
+    const albElb5xx = alb.httpCodeElb(cdk.aws_elasticloadbalancingv2.HttpCodeElb.ELB_5XX_COUNT,
+                                      { ...five, statistic: "Sum" });
+    const albLatency = alb.targetResponseTime({ ...five, statistic: "p95" });
+    const unhealthyHosts = tg.unhealthyHostCount({ ...five, statistic: "Maximum" });
+    const ecsCpu = ecsApi.service.metricCpuUtilization({ ...five, statistic: "Average" });
+    const ecsMem = ecsApi.service.metricMemoryUtilization({ ...five, statistic: "Average" });
 
     // Custom product/AI metrics
     const started = custom("GenerationStarted");
@@ -201,8 +218,13 @@ export class Observability extends Construct {
       new cloudwatch.GraphWidget({ title: "DLQ depth", left: [dlqDepth], width: 4 }),
       new cloudwatch.GraphWidget({ title: "Lambda errors / throttles / p99 duration",
         left: [lambdaErrors, lambdaThrottles], right: [lambdaDuration], width: 12 }),
-      new cloudwatch.GraphWidget({ title: "App Runner 5xx & p95 latency",
-        left: [appRunner5xx], right: [appRunnerLatency], width: 12 }),
+      new cloudwatch.GraphWidget({ title: "API (ALB) 5xx & p95 target latency",
+        left: [alb5xx, albElb5xx], right: [albLatency], width: 12 }),
+      new cloudwatch.GraphWidget({ title: "API (ECS) CPU / memory % and unhealthy targets",
+        left: [ecsCpu, ecsMem], right: [unhealthyHosts], width: 12 }),
+      ...(appRunner5xx && appRunnerLatency ? [new cloudwatch.GraphWidget({
+        title: "App Runner 5xx & p95 latency (beta overlap)", left: [appRunner5xx], right: [appRunnerLatency], width: 12 })]
+        : []),
       new cloudwatch.GraphWidget({ title: "Queue wait vs worker exec (ms, distinct)",
         left: [queueWait], right: [workerMs], width: 12 }),
     );
@@ -254,8 +276,12 @@ export class Observability extends Construct {
     mk("lambda-errors", lambdaErrors, { threshold: 3, evaluationPeriods: 1, comparisonOperator: GTE });
     // 4. Lambda p99 duration sustained near timeout (2 x 5 min).
     mk("lambda-duration-p99", lambdaDuration, { threshold: 25_000, evaluationPeriods: 2, comparisonOperator: GT });
-    // 5. App Runner 5xx sustained.
-    mk("apprunner-5xx", appRunner5xx, { threshold: 5, evaluationPeriods: 2, comparisonOperator: GT });
+    // 5. API 5xx sustained: ALB target 5xx, ALB-generated 5xx (incl. 504 from a slow route), unhealthy targets.
+    //    App Runner 5xx only while a stage still runs App Runner (beta overlap).
+    if (appRunner5xx) mk("apprunner-5xx", appRunner5xx, { threshold: 5, evaluationPeriods: 2, comparisonOperator: GT });
+    mk("api-target-5xx", alb5xx, { threshold: 5, evaluationPeriods: 2, comparisonOperator: GT });
+    mk("api-elb-5xx", albElb5xx, { threshold: 5, evaluationPeriods: 2, comparisonOperator: GT });
+    mk("api-unhealthy-targets", unhealthyHosts, { threshold: 1, evaluationPeriods: 2, comparisonOperator: GTE });
     // 6. Generation failure rate > 20% (with >=5 starts guard baked into the expression), 2 windows.
     mk("generation-failure-rate", failureRatePct, { threshold: 20, evaluationPeriods: 2, comparisonOperator: GT });
     // 7. Bedrock sustained throttling (not a single spike): 15 min window, 3 datapoints.

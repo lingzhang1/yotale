@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import { StoryApiStack } from "../lib/story-api-stack";
+import { apiEnvVars, apiEnvMap } from "./api-env";
 
 // Account deletion D2: synthesized-policy inspection (design 5.11 verification criterion).
 function synth(environment: string, extra: Record<string, unknown> = {}): Template {
@@ -133,9 +134,7 @@ describe("Account deletion (D2)", () => {
 
 describe("Account deletion (D3) API wiring", () => {
   const envVars = (t: Template) => {
-    const svc = Object.values(t.findResources("AWS::AppRunner::Service"))[0] as any;
-    return (svc.Properties.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables as
-      Array<{ Name: string; Value: unknown }>);
+    return apiEnvVars(t) as Array<{ Name: string; Value: unknown }>;
   };
 
   test("App Runner gets the request table where it exists, and not elsewhere", () => {
@@ -167,9 +166,7 @@ describe("deploy role (release gate)", () => {
 
 describe("Sign in with Apple notifications (D7)", () => {
   const envVars = (t: Template) => {
-    const svc = Object.values(t.findResources("AWS::AppRunner::Service"))[0] as any;
-    return (svc.Properties.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables as
-      Array<{ Name: string; Value: unknown }>);
+    return apiEnvVars(t) as Array<{ Name: string; Value: unknown }>;
   };
   const betaCtx = { imageDigest: "sha256:abc", cognitoUserPoolId: "us-east-1_beta", cognitoAppClientId: "client",
                     allowNoObservability: "true" };

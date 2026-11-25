@@ -42,6 +42,84 @@ export interface StoryBetaWafStackProps extends cdk.StackProps {
   readonly deletionStatusRateLimit?: number;
 }
 
+/** The API web ACL rules, shared by the beta App Runner web ACL (this stack) and the ECS ALB web ACL
+ * (lib/ecs-api-service.ts) so both protect the API with exactly the same rules. */
+export interface ApiWafRuleOptions {
+  readonly rateLimit?: number;
+  readonly maxBodyBytes?: number;
+  readonly rateBlock?: boolean;
+  readonly deletionStatusRateLimit?: number;
+}
+
+export function apiWafRules(opts: ApiWafRuleOptions): wafv2.CfnWebACL.RuleProperty[] {
+  const rateLimit = opts.rateLimit ?? 600;      // requests / 5 min / IP
+  const maxBodyBytes = opts.maxBodyBytes ?? 2 * 1024 * 1024; // 2 MB
+  // Managed rule group that only COUNTS: override the group's action to Count via overrideAction=count.
+  const metric = (name: string) => ({ cloudWatchMetricsEnabled: true, metricName: name, sampledRequestsEnabled: true });
+
+  return [
+    {
+      name: "AmazonIpReputation", priority: 0,
+      statement: { managedRuleGroupStatement: { vendorName: "AWS", name: "AWSManagedRulesAmazonIpReputationList" } },
+      overrideAction: { none: {} },           // group's own Block actions apply
+      visibilityConfig: metric("AmazonIpReputation"),
+    },
+    {
+      name: "KnownBadInputs", priority: 1,
+      statement: { managedRuleGroupStatement: { vendorName: "AWS", name: "AWSManagedRulesKnownBadInputsRuleSet" } },
+      overrideAction: { none: {} },           // Block
+      visibilityConfig: metric("KnownBadInputs"),
+    },
+    {
+      name: "CommonRuleSet", priority: 2,
+      statement: { managedRuleGroupStatement: { vendorName: "AWS", name: "AWSManagedRulesCommonRuleSet" } },
+      overrideAction: { count: {} },          // COUNT first (flip to {none:{}} to enable blocking)
+      visibilityConfig: metric("CommonRuleSet"),
+    },
+    {
+      name: "RateLimitPerIp", priority: 3,
+      statement: { rateBasedStatement: { limit: rateLimit, aggregateKeyType: "IP" } },
+      // Owner GO 2026-10-22: Block when rateBlock=true (0 false-positive counts in 72h), else Count. The CRS
+      // rule above STAYS Count (76 false-positive counts on AI JSON bodies — do NOT block it).
+      action: opts.rateBlock ? { block: {} } : { count: {} },
+      visibilityConfig: metric("RateLimitPerIp"),
+    },
+    {
+      name: "BodySizeOver2MB", priority: 4,
+      statement: {
+        sizeConstraintStatement: {
+          fieldToMatch: { body: { oversizeHandling: "CONTINUE" } },
+          comparisonOperator: "GT",
+          size: maxBodyBytes,
+          textTransformations: [{ priority: 0, type: "NONE" }],
+        },
+      },
+      action: { count: {} },                  // COUNT first (owner amendment — not Block until verified)
+      visibilityConfig: metric("BodySizeOver2MB"),
+    },
+    {
+      // Account deletion (design 5.3): the receipt status route is PUBLIC (no token), so this per-IP limit is its
+      // abuse control. A locked device polls about every 30 s (~10 per 5 min); 60 leaves room for a few devices
+      // behind one NAT. Block, scoped to that one path only.
+      name: "AccountDeletionStatusRatePerIp", priority: 5,
+      statement: {
+        rateBasedStatement: {
+          limit: opts.deletionStatusRateLimit ?? 60, aggregateKeyType: "IP",
+          scopeDownStatement: {
+            byteMatchStatement: {
+              fieldToMatch: { uriPath: {} }, positionalConstraint: "EXACTLY",
+              searchString: "/v1/account/deletion/status",
+              textTransformations: [{ priority: 0, type: "NONE" }],
+            },
+          },
+        },
+      },
+      action: { block: {} },
+      visibilityConfig: metric("AccountDeletionStatusRatePerIp"),
+    },
+  ];
+}
+
 export class StoryBetaWafStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: StoryBetaWafStackProps) {
     super(scope, id, props);
@@ -60,70 +138,9 @@ export class StoryBetaWafStack extends cdk.Stack {
       throw new Error("StoryBetaWafStack requires appRunnerServiceArn (the beta App Runner service to protect).");
     }
 
-    // Managed rule group that only COUNTS: override the group's action to Count via overrideAction=count.
     const metric = (name: string) => ({ cloudWatchMetricsEnabled: true, metricName: name, sampledRequestsEnabled: true });
-
-    const rules: wafv2.CfnWebACL.RuleProperty[] = [
-      {
-        name: "AmazonIpReputation", priority: 0,
-        statement: { managedRuleGroupStatement: { vendorName: "AWS", name: "AWSManagedRulesAmazonIpReputationList" } },
-        overrideAction: { none: {} },           // group's own Block actions apply
-        visibilityConfig: metric("AmazonIpReputation"),
-      },
-      {
-        name: "KnownBadInputs", priority: 1,
-        statement: { managedRuleGroupStatement: { vendorName: "AWS", name: "AWSManagedRulesKnownBadInputsRuleSet" } },
-        overrideAction: { none: {} },           // Block
-        visibilityConfig: metric("KnownBadInputs"),
-      },
-      {
-        name: "CommonRuleSet", priority: 2,
-        statement: { managedRuleGroupStatement: { vendorName: "AWS", name: "AWSManagedRulesCommonRuleSet" } },
-        overrideAction: { count: {} },          // COUNT first (flip to {none:{}} to enable blocking)
-        visibilityConfig: metric("CommonRuleSet"),
-      },
-      {
-        name: "RateLimitPerIp", priority: 3,
-        statement: { rateBasedStatement: { limit: rateLimit, aggregateKeyType: "IP" } },
-        // Owner GO 2026-10-22: Block when rateBlock=true (0 false-positive counts in 72h), else Count. The CRS
-        // rule above STAYS Count (76 false-positive counts on AI JSON bodies — do NOT block it).
-        action: props.rateBlock ? { block: {} } : { count: {} },
-        visibilityConfig: metric("RateLimitPerIp"),
-      },
-      {
-        name: "BodySizeOver2MB", priority: 4,
-        statement: {
-          sizeConstraintStatement: {
-            fieldToMatch: { body: { oversizeHandling: "CONTINUE" } },
-            comparisonOperator: "GT",
-            size: maxBodyBytes,
-            textTransformations: [{ priority: 0, type: "NONE" }],
-          },
-        },
-        action: { count: {} },                  // COUNT first (owner amendment — not Block until verified)
-        visibilityConfig: metric("BodySizeOver2MB"),
-      },
-      {
-        // Account deletion (design 5.3): the receipt status route is PUBLIC (no token), so this per-IP limit is its
-        // abuse control. A locked device polls about every 30 s (~10 per 5 min); 60 leaves room for a few devices
-        // behind one NAT. Block, scoped to that one path only.
-        name: "AccountDeletionStatusRatePerIp", priority: 5,
-        statement: {
-          rateBasedStatement: {
-            limit: props.deletionStatusRateLimit ?? 60, aggregateKeyType: "IP",
-            scopeDownStatement: {
-              byteMatchStatement: {
-                fieldToMatch: { uriPath: {} }, positionalConstraint: "EXACTLY",
-                searchString: "/v1/account/deletion/status",
-                textTransformations: [{ priority: 0, type: "NONE" }],
-              },
-            },
-          },
-        },
-        action: { block: {} },
-        visibilityConfig: metric("AccountDeletionStatusRatePerIp"),
-      },
-    ];
+    const rules = apiWafRules({ rateLimit, maxBodyBytes, rateBlock: props.rateBlock,
+                                deletionStatusRateLimit: props.deletionStatusRateLimit });
 
     const acl = new wafv2.CfnWebACL(this, "BetaWebAcl", {
       name: `story-${env}-api-waf`,
