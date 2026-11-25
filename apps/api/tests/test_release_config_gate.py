@@ -120,18 +120,41 @@ def test_tracked_ios_configuration_is_accepted():
     assert tracked == [], [str(x) for x in tracked]
 
 
-def test_snapshot_from_cloudformation_template_roundtrip():
-    tpl = {"Resources": {
-        "Svc": {"Type": "AWS::AppRunner::Service", "Properties": {"SourceConfiguration": {"ImageRepository": {
-            "ImageConfiguration": {"RuntimeEnvironmentVariables": [
-                {"Name": "STORY_ENVIRONMENT", "Value": "beta"},
-                {"Name": "STORY_JOBS_TABLE", "Value": {"Ref": "JobsTable"}}]}}}}},
+_TPL_ENV = [{"Name": "STORY_ENVIRONMENT", "Value": "beta"}, {"Name": "STORY_JOBS_TABLE", "Value": {"Ref": "JobsTable"}}]
+
+
+def _tpl(ecs_env=None, app_runner_env=None):
+    res = {
+        "Td": {"Type": "AWS::ECS::TaskDefinition", "Properties": {"ContainerDefinitions": [
+            {"Name": "api", "Environment": ecs_env if ecs_env is not None else _TPL_ENV}]}},
         "Fn": {"Type": "AWS::Lambda::Function", "Properties": {
             "FunctionName": "story-beta-edit-plan-worker",
-            "Environment": {"Variables": {"STORY_ENVIRONMENT": "beta"}}}}}}
-    snap = gate.snapshot_from_template(tpl, "beta")
+            "Environment": {"Variables": {"STORY_ENVIRONMENT": "beta"}}}}}
+    if app_runner_env is not None:
+        res["Svc"] = {"Type": "AWS::AppRunner::Service", "Properties": {"SourceConfiguration": {"ImageRepository": {
+            "ImageConfiguration": {"RuntimeEnvironmentVariables": app_runner_env}}}}}
+    return {"Resources": res}
+
+
+def test_snapshot_from_cloudformation_template_roundtrip():
+    snap = gate.snapshot_from_template(_tpl(), "beta")
     assert dict(snap.service) == {"STORY_ENVIRONMENT": "beta", "STORY_JOBS_TABLE": None}
     assert snap.worker == {"STORY_ENVIRONMENT": "beta"}
+
+
+def test_template_without_an_ecs_api_container_is_rejected():
+    tpl = _tpl(); del tpl["Resources"]["Td"]
+    with pytest.raises(ValueError, match="ECS api container"):
+        gate.snapshot_from_template(tpl, "beta")
+
+
+def test_app_runner_only_in_the_beta_overlap_and_with_the_same_env():
+    assert gate.check_template_compute(_tpl(), "production") == []
+    assert gate.check_template_compute(_tpl(app_runner_env=_TPL_ENV), "beta") == []
+    codes = {x.code for x in gate.check_template_compute(_tpl(app_runner_env=_TPL_ENV), "production")}
+    assert codes == {"app_runner_outside_overlap"}
+    codes = {x.code for x in gate.check_template_compute(_tpl(app_runner_env=_TPL_ENV[:1]), "beta")}
+    assert codes == {"overlap_env_mismatch"}
 
 
 # ------------------------------------------------------------------------------- mandatory negative tests
@@ -407,12 +430,15 @@ def test_federated_providers_are_baked_and_not_read_from_launch_config():
 
 
 # --------------------------------------------------------------------------- post-deploy (live) verification
-def _live(env="beta", *, sha="abc123def456", digest="sha256:" + "a" * 64, status="RUNNING", worker_sha=None,
-          tags=None, files=None, snapshot=None, missing_idps=None):
+def _live(env="beta", *, sha="abc123def456", digest="sha256:" + "a" * 64, status="STABLE", worker_sha=None,
+          tags=None, files=None, snapshot=None, missing_idps=None, targets=(1, 1), web_acl="arn:aws:wafv2:acl",
+          overlap="same"):
     return gate.LiveInfo(
         snapshot or _snapshot(env), status, f"123.dkr.ecr.us-east-1.amazonaws.com/story-{env}-api@{digest}",
         tags if tags is not None else [f"git-{sha}"], worker_sha if worker_sha is not None else sha,
-        files if files is not None else {"BUILD_SHA", "prompts/edit_plan/5.6/system.md"}, missing_idps)
+        files if files is not None else {"BUILD_SHA", "prompts/edit_plan/5.6/system.md"}, missing_idps,
+        targets_total=targets[0], targets_healthy=targets[1], web_acl_arn=web_acl,
+        overlap_digest=digest if overlap == "same" else overlap)
 
 
 def _live_codes(info, sha="abc123def456", digest="sha256:" + "a" * 64, manifest=MANIFEST):
@@ -427,7 +453,7 @@ def test_live_matching_deployment_is_accepted():
 def test_N10_incorrect_worker_build_sha_is_rejected():
     assert "worker_build_sha_mismatch" in _live_codes(_live(worker_sha="deadbeef0000"))
     assert "worker_build_sha_mismatch" in _live_codes(_live(worker_sha="abc123def456-dirty"))
-    no_sha = gate.LiveInfo(_snapshot("beta"), "RUNNING", "r@sha256:" + "a" * 64, ["git-abc123def456"], None,
+    no_sha = gate.LiveInfo(_snapshot("beta"), "STABLE", "r@sha256:" + "a" * 64, ["git-abc123def456"], None,
                            {"prompts/edit_plan/5.6/system.md"})
     assert "worker_build_sha_missing" in _live_codes(no_sha)
 
@@ -435,7 +461,17 @@ def test_N10_incorrect_worker_build_sha_is_rejected():
 def test_live_api_image_must_match_expected_digest_and_build_sha_tag():
     assert "digest_mismatch" in _live_codes(_live(digest="sha256:" + "b" * 64), digest="sha256:" + "a" * 64)
     assert "api_build_sha_mismatch" in _live_codes(_live(tags=["git-111111111111"]))
-    assert "service_not_running" in _live_codes(_live(status="OPERATION_IN_PROGRESS"))
+    assert "service_not_running" in _live_codes(_live(status="DEPLOYING"))
+    assert "service_not_running" in _live_codes(_live(status="UNSTABLE"))
+
+
+def test_live_ecs_targets_waf_and_overlap_digest():
+    assert "targets_unhealthy" in _live_codes(_live(targets=(2, 1)))
+    assert "targets_unhealthy" in _live_codes(_live(targets=(0, 0)))
+    assert "waf_missing" in _live_codes(_live(web_acl=None))
+    assert "waf_missing" not in _live_codes(_live("development", web_acl=None, overlap=None))
+    assert "overlap_digest_mismatch" in _live_codes(_live(overlap="sha256:" + "c" * 64))
+    assert "overlap_digest_mismatch" not in _live_codes(_live(overlap=None))   # overlap ended
 
 
 def test_live_worker_zip_must_bundle_the_effective_planner_prompt():
@@ -474,14 +510,29 @@ def test_collect_live_reads_worker_build_sha_and_prompts_from_the_deployed_zip()
         z.writestr("prompts/edit_plan/5.6/system.md", "x")
     calls = []
 
+    D = "sha256:" + "a" * 64
+
     def aws(args):
         calls.append(args[:2])
+        if args[:2] == ["ecs", "describe-services"]:
+            return {"services": [{"status": "ACTIVE", "desiredCount": 1, "runningCount": 1,
+                                  "deployments": [{"status": "PRIMARY", "rolloutState": "COMPLETED"}],
+                                  "taskDefinition": "arn:td:1", "loadBalancers": [{"targetGroupArn": "arn:tg"}]}]}
+        if args[:2] == ["ecs", "describe-task-definition"]:
+            return {"taskDefinition": {"containerDefinitions": [
+                {"name": "api", "image": f"r/story-beta-api@{D}",
+                 "environment": [{"name": "STORY_ENVIRONMENT", "value": "beta"}]}]}}
+        if args[:2] == ["elbv2", "describe-target-health"]:
+            return {"TargetHealthDescriptions": [{"TargetHealth": {"State": "healthy"}}]}
+        if args[:2] == ["elbv2", "describe-target-groups"]:
+            return {"TargetGroups": [{"LoadBalancerArns": ["arn:alb"]}]}
+        if args[:2] == ["wafv2", "get-web-acl-for-resource"]:
+            return {"WebACL": {"ARN": "arn:waf"}}
         if args[:2] == ["apprunner", "list-services"]:
             return {"ServiceSummaryList": [{"ServiceName": "story-beta-api", "ServiceArn": "arn:x"}]}
         if args[:2] == ["apprunner", "describe-service"]:
             return {"Service": {"Status": "RUNNING", "SourceConfiguration": {"ImageRepository": {
-                "ImageIdentifier": "r/story-beta-api@sha256:" + "a" * 64,
-                "ImageConfiguration": {"RuntimeEnvironmentVariables": {"STORY_ENVIRONMENT": "beta"}}}}}}
+                "ImageIdentifier": f"r/story-beta-api@{D}"}}}}
         if args[:2] == ["lambda", "get-function"]:
             return {"Configuration": {"Environment": {"Variables": {"STORY_ENVIRONMENT": "beta"}}},
                     "Code": {"Location": "https://s3/presigned"}}
@@ -491,8 +542,14 @@ def test_collect_live_reads_worker_build_sha_and_prompts_from_the_deployed_zip()
 
     info = gate.collect_live("beta", aws, fetch=lambda url: buf.getvalue())
     assert info.worker_build_sha == "abc123def456" and "prompts/edit_plan/5.6/system.md" in info.worker_files
-    assert info.image_tags == ["git-abc123def456"] and info.service_status == "RUNNING"
-    assert all(c[0] in ("apprunner", "lambda", "ecr") for c in calls)      # read-only service families only
+    assert info.image_tags == ["git-abc123def456"] and info.service_status == "STABLE"
+    assert dict(info.snapshot.service) == {"STORY_ENVIRONMENT": "beta"}
+    assert (info.targets_total, info.targets_healthy, info.web_acl_arn, info.overlap_digest) == (1, 1, "arn:waf", D)
+    # production never queries App Runner
+    calls.clear()
+    gate.collect_live("production", aws, fetch=lambda url: buf.getvalue())
+    assert not any(c[0] == "apprunner" for c in calls)
+    assert all(c[0] in ("ecs", "elbv2", "wafv2", "lambda", "ecr") for c in calls)   # read-only service families only
 
 
 # ------------------------------------------------------------------- repo-wide: removed switches stay removed

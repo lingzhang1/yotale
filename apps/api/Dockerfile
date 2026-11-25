@@ -55,4 +55,6 @@ RUN printf '%s' "$BUILD_SHA" > /app/BUILD_SHA
 EXPOSE 8080
 
 # Health check hits the same /health endpoint App Runner will use.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--app-dir", "/app/apps/api"]
+# Keep-alive above the ECS load balancer's 180 s idle timeout (infrastructure/cdk/lib/ecs-api-service.ts), so the ALB
+# never reuses a connection uvicorn has already closed (intermittent 502).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--app-dir", "/app/apps/api", "--timeout-keep-alive", "185"]
