@@ -37,12 +37,13 @@ with owner approval; each "Ling" step needs credentials or a decision only the o
 9. ~~Apple Services ID~~ PR #175 (`a1fd33f`); Services ID created by Ling.
 10. ~~Account deletion~~ PR #174 (`69df18f`).
 11. ~~Auth stack~~ PR #175; deployed 2026-11-25.
-12. **NEW, blocking: replace App Runner** (section 5). Decide between an AWS App Runner exception for 854689494157 and
-    migrating every stage to ECS Express Mode (`ecs-express-mode-migration-plan.md`).
+12. **Blocking: replace App Runner.** Decided 2026-11-25: standard ECS Fargate with a CDK-owned ALB in every stage,
+    dev replaced directly, beta overlap with App Runner, production ECS only with two tasks
+    (`ecs-fargate-migration-plan.md`). Stable hostnames `api-dev`, `api-beta` and `api.yotale.ai`.
 13. `deploy-production.yml`: manual dispatch, protected `production` GitHub Environment with a required reviewer,
     confirm token `deploy-production`, digest-pinned image, pre- and post-deploy gate,
-    `-c observability=true -c alarmDestination=alerts@yotale.ai`. Written for the chosen compute.
-14. WAF and budget. The existing WAF stack attaches to an App Runner ARN; under ECS it attaches to the ALB. The org
+    `-c observability=true -c alarmDestination=alerts@yotale.ai`. Written for ECS.
+14. WAF and budget. WAF is associated with each stage's ALB in the ECS construct. The org
     budget `yotale-prod-monthly` is not filtered to the production account (it tracks the whole org); scope it.
 15. CI gate: add gamma and production to the CI release-gate job.
 
@@ -60,11 +61,11 @@ with owner approval; each "Ling" step needs credentials or a decision only the o
     admin (the GitHub deploy role is created by this stack); later deploys through `deploy-production.yml`.
 22. Verify: post-deploy gate, `/health` 200, authenticated routes 401, routes in `openapi.json`, running digest equals
     the ECR digest, account deletion end to end on a test account.
-23. Give Ling the Apple notification endpoint `https://<production API host>/v1/auth/apple-signin-notifications`.
+23. Give Ling the Apple notification endpoint `https://api.yotale.ai/v1/auth/apple-signin-notifications`.
     One endpoint per App ID: switching it to production stops beta's Apple notifications.
 
 ### Phase 5: iOS and App Store
-24. `Production.xcconfig` (production API URL, pool `us-east-1_m9HoNhR7M`, client `4oesvialvc5i8g3cuv1b7vg3to`,
+24. `Production.xcconfig` (`https://api.yotale.ai`, pool `us-east-1_m9HoNhR7M`, client `4oesvialvc5i8g3cuv1b7vg3to`,
     domain prefix `story-production-auth`), a `Story (Production)` scheme and `verify_prod_archive.sh`. The scheme
     touches `project.pbxproj`, so Ling makes that change in Xcode.
 25. Ling: Cmd-U and a device run of master against production.
@@ -81,17 +82,14 @@ with owner approval; each "Ling" step needs credentials or a decision only the o
 
 ## 4. Critical path
 
-Step 12 (compute decision) blocks steps 13, 14 and 20-27. In parallel: step 19 (SES reply), steps 16-18 (decisions).
+Step 12 (ECS migration, dev then beta) blocks steps 13, 14 and 20-27. In parallel: step 19 (SES reply), steps 16-18 (decisions).
 
 ## 5. App Runner blocker
 
 AWS stopped accepting new App Runner customers on 2026-04-30
 ([availability change](https://docs.aws.amazon.com/apprunner/latest/dg/apprunner-availability-change.html)). Existing
 customers keep full use, which is why development and beta still deploy. The new production account is treated as a new
-customer. Options:
-
-1. **Ask AWS Support to allow App Runner for 854689494157** as an account of an existing App Runner customer
-   organization. No code change and stage parity holds, but AWS may refuse, and App Runner gets no new features.
-2. **Move every stage to ECS Express Mode** (AWS's recommended successor), dev first, then beta, then production.
-   Keeps the stages identical. See `ecs-express-mode-migration-plan.md`.
-3. Production alone on ECS: rejected, because it breaks the stage-parity rule (2026-11-24).
+customer. Decision (Ling, 2026-11-25): move every stage to **standard ECS Fargate with a CDK-owned ALB** (not Express Mode:
+WAF, the idle timeout, the certificate and the hostname must be in our code). Dev is replaced directly, beta runs App
+Runner and ECS side by side until its retirement criteria are met, production runs ECS only with two tasks. Plan:
+`ecs-fargate-migration-plan.md`. An AWS App Runner exception would not change this.
