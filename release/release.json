@@ -42,7 +42,8 @@
       "quota_mode": "enforce",
       "throttle_mode": "enforce",
       "billing_mode": "off",
-      "evidence_persist": "1"
+      "evidence_persist": "1",
+      "xcconfig": "Production"
     }
   },
   "approved_overrides": [],

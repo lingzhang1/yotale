@@ -486,9 +486,11 @@ def check_ios(repo: Path = REPO, scheme: Path | None = None) -> tuple[list[Viola
     v: list[Violation] = []
     warn: list[str] = []
     dev, beta = _xcconfig_for(repo, "Development"), _xcconfig_for(repo, "Beta")
-    if dev is None or beta is None:
-        return [Violation("ios_config_missing", "Development.xcconfig / Beta.xcconfig not found")], warn
-    for name, cfg, want in (("Development", dev, "development"), ("Beta", beta, "beta")):
+    prod = _xcconfig_for(repo, "Production")
+    if dev is None or beta is None or prod is None:
+        return [Violation("ios_config_missing", "Development / Beta / Production xcconfig not found")], warn
+    configs = (("Development", dev, "development"), ("Beta", beta, "beta"), ("Production", prod, "production"))
+    for name, cfg, want in configs:
         if cfg.get("STORY_BUILD_ENV") != want:
             v.append(Violation("ios_identity", f"{name}.xcconfig STORY_BUILD_ENV={cfg.get('STORY_BUILD_ENV')} (expected {want})"))
         for k in ("STORY_ENV_API_BASE_URL", "STORY_ENV_USER_POOL_ID", "STORY_ENV_APP_CLIENT_ID", "STORY_ENV_DOMAIN_PREFIX"):
@@ -497,10 +499,12 @@ def check_ios(repo: Path = REPO, scheme: Path | None = None) -> tuple[list[Viola
         if want not in (cfg.get("STORY_ENV_DOMAIN_PREFIX") or ""):
             v.append(Violation("ios_identity", f"{name}.xcconfig Cognito domain prefix does not name {want}"))
     for k in ("STORY_ENV_API_BASE_URL", "STORY_ENV_USER_POOL_ID", "STORY_ENV_APP_CLIENT_ID"):
-        if dev.get(k) and dev.get(k) == beta.get(k):
-            v.append(Violation("ios_identity", f"Development and Beta xcconfig share {k} (environments mixed)"))
+        for i, (n1, c1, _) in enumerate(configs):
+            for n2, c2, _ in configs[i + 1:]:
+                if c1.get(k) and c1.get(k) == c2.get(k):
+                    v.append(Violation("ios_identity", f"{n1} and {n2} xcconfig share {k} (environments mixed)"))
     # Federated sign-in providers must be an explicit, baked, per-environment list (never an Xcode Run argument).
-    for name, cfg in (("Development", dev), ("Beta", beta)):
+    for name, cfg, _ in configs:
         provs = federated_providers(cfg)
         if provs is None:
             v.append(Violation("ios_federated_providers",
