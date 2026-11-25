@@ -423,6 +423,21 @@ def test_ios_xcconfig_mixing_and_unbaked_federated_providers_are_rejected(tmp_re
         assert not any(x.code == "ios_federated_providers" for x in v), ok
 
 
+def test_production_xcconfig_is_checked_and_must_not_share_beta_identity(tmp_repo):
+    cfg = tmp_repo / "apps/ios/Story/Config"
+    prod = (cfg / "Production.xcconfig").read_text()
+    assert not any(x.code in ("ios_identity", "ios_config_missing") for x in gate.check_ios(tmp_repo)[0])
+    (cfg / "Production.xcconfig").write_text(re.sub(r"STORY_ENV_APP_CLIENT_ID = .*", "STORY_ENV_APP_CLIENT_ID = "
+                                                    + XC["Beta"]["STORY_ENV_APP_CLIENT_ID"], prod))
+    v, _ = gate.check_ios(tmp_repo)
+    assert any(x.code == "ios_identity" and "Beta and Production" in x.message for x in v)
+    (cfg / "Production.xcconfig").write_text(prod.replace("STORY_BUILD_ENV = production", "STORY_BUILD_ENV = beta"))
+    v, _ = gate.check_ios(tmp_repo)
+    assert any(x.code == "ios_identity" and "Production.xcconfig STORY_BUILD_ENV" in x.message for x in v)
+    (cfg / "Production.xcconfig").unlink()
+    assert {x.code for x in gate.check_ios(tmp_repo)[0]} == {"ios_config_missing"}
+
+
 def test_federated_providers_are_baked_and_not_read_from_launch_config():
     sw = (REPO / "apps/ios/Story/Story/Data/Auth/StoryAuthConfig.swift").read_text()
     assert "StoryLaunchConfig" not in sw.split("static var federatedProviders")[1].split("static var domainHost")[0]

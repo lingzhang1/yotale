@@ -1,0 +1,136 @@
+name: Deploy (production)
+
+# Production deployment. MANUAL DISPATCH ONLY. Keyless via GitHub OIDC (no static keys), scoped to the protected
+# `production` GitHub Environment (required reviewer: the owner) with a concurrency guard so two production deploys
+# never overlap. Production MEMBER account (854689494157) only. The image is pinned by DIGEST; no :latest.
+# Same steps as deploy-beta.yml; the API runs on ECS Fargate behind https://api.yotale.ai (two tasks).
+#
+# REQUIRED `production` GitHub Environment VARIABLES (non-secret identifiers/ARNs, not credentials):
+#   PROD_DEPLOY_ROLE_ARN        = arn:aws:iam::854689494157:role/story-production-github-deploy
+#   CFN_EXEC_ROLE_ARN           = arn:aws:iam::854689494157:role/story-production-cfn-exec
+#   PROD_COGNITO_USER_POOL_ID   = us-east-1_m9HoNhR7M
+#   PROD_COGNITO_APP_CLIENT_ID  = 4oesvialvc5i8g3cuv1b7vg3to
+# (The deploy + cfn-exec roles are created by the first, owner-run deploy of story-production-api.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'deploy-production' to confirm a production deployment"
+        required: true
+        default: ""
+
+permissions:
+  id-token: write      # required to request the OIDC token
+  contents: read
+
+concurrency:
+  group: deploy-production                 # never two concurrent production deploys
+  cancel-in-progress: false          # let an in-flight deploy finish rather than abort mid-way
+
+jobs:
+  deploy-production:
+    name: Build immutable artifacts + deploy to production
+    runs-on: ubuntu-latest
+    environment: production                 # protected GitHub Environment (approvals/vars live here)
+    if: ${{ github.event.inputs.confirm == 'deploy-production' }}
+    env:
+      AWS_REGION: us-east-1
+      ENVIRONMENT: production
+      ECR_REPO: story-production-api
+      # Production's operational policy (quota/throttle ENFORCE and its limits) is
+      # defined ONCE, in infrastructure/cdk/lib/story-api-stack.ts, and asserted by release/release.json via
+      # scripts/release_config_gate.py. It is intentionally NOT repeated here: a second definition is exactly how
+      # production could silently deploy as "observe". Changing it is a reviewed CDK + release.json edit.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS via OIDC (no static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PROD_DEPLOY_ROLE_ARN }}   # Environment VARIABLE (an ARN is not a secret); set in the `production` Environment after the first owner-run deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify required secrets present (fail-closed; never deploy with missing keys)
+        run: bash scripts/verify-required-secrets.sh "$ENVIRONMENT"
+
+      - name: Login to ECR
+        id: ecr
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin \
+              "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
+          echo "registry=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com" >> "$GITHUB_OUTPUT"
+
+      - name: Login to public ECR (authenticated base-image pull — avoids anonymous 429 rate limit)
+        run: |
+          # The Dockerfile pulls public.ecr.aws/docker/library/python; anonymous pulls hit a strict
+          # data limit (429). An AUTHENTICATED pull via the OIDC creds gets a much higher quota.
+          aws ecr-public get-login-password --region us-east-1 \
+            | docker login --username AWS --password-stdin public.ecr.aws
+
+      - name: Build + push IMMUTABLE API image (tagged by git SHA), capture digest
+        id: image
+        run: |
+          IMG="${{ steps.ecr.outputs.registry }}/${ECR_REPO}"
+          SHA="${GITHUB_SHA::12}"
+          docker build -f apps/api/Dockerfile --build-arg BUILD_SHA="$SHA" -t "$IMG:git-$SHA" .
+          docker push "$IMG:git-$SHA"
+          # The IMMUTABLE identifier is the digest, not the tag.
+          DIGEST=$(aws ecr describe-images --repository-name "$ECR_REPO" \
+            --image-ids imageTag="git-$SHA" --query 'imageDetails[0].imageDigest' --output text)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "ref=$IMG@$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Build reproducible worker asset + hash
+        id: worker
+        run: |
+          bash scripts/build_worker_asset.sh
+          ( cd infrastructure/cdk/.worker-asset && zip -qr -X "$GITHUB_WORKSPACE/worker.zip" . )
+          echo "sha256=$(shasum -a 256 worker.zip | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Write release manifest
+        run: bash scripts/release-manifest.sh "$ENVIRONMENT" "${{ steps.image.outputs.digest }}" worker.zip
+
+      - name: Pre-deploy release configuration gate (synth + validate; any violation blocks the deploy)
+        run: |
+          # Synthesizes ONLY (no AWS writes). The deploy step below deploys THIS EXACT cloud assembly (--app), so the
+          # gated template is, byte for byte, the one that gets deployed - no second synth that could differ.
+          CTX='-c imageDigest=${{ steps.image.outputs.digest }} -c cognitoUserPoolId=${{ vars.PROD_COGNITO_USER_POOL_ID }} -c cognitoAppClientId=${{ vars.PROD_COGNITO_APP_CLIENT_ID }} -c observability=true -c alarmDestination=alerts@yotale.ai'
+          ( cd infrastructure/cdk && npm ci || npm install )
+          ( cd infrastructure/cdk && npx cdk synth -q -c environment=production $CTX --output "$RUNNER_TEMP/cdk-pre" )
+          python3 scripts/release_config_gate.py pre --environment production \
+            --template "$RUNNER_TEMP/cdk-pre/story-production-api.template.json" \
+            --worker-asset infrastructure/cdk/.worker-asset --require-clean-asset
+
+      - name: CDK deploy (production) by digest, through the SCOPED cfn-exec role
+        working-directory: infrastructure/cdk
+        run: |
+          npm ci || npm install
+          # Drive CloudFormation through Story's dedicated scoped exec role, NOT the admin bootstrap role.
+          # CFN_EXEC_ROLE_ARN is set in the production Environment (the CfnExecRoleArn stack output).
+          #
+          # Context passed:
+          #  - imageDigest: the immutable image built above (no :latest).
+          #  - cognitoUserPoolId / cognitoAppClientId: the production auth pool + client. REQUIRED by the stack's
+          #    fail-closed release-input guard for production (synthesis halts without them); set as non-secret
+          #    Environment VARIABLES (identifiers, not credentials) in the `production` GitHub Environment.
+          #  - observability + alarmDestination: deploy the single authoritative monitoring stack (owned by
+          #    the observability thread) into production, alarming to alerts@yotale.ai. createBudget is left UNSET
+          #    (=false) — the account budget `yotale-prod-monthly` is owned by the management account, not duplicated here.
+          npx cdk deploy story-production-api --app "$RUNNER_TEMP/cdk-pre" --require-approval never \
+            --role-arn "${{ vars.CFN_EXEC_ROLE_ARN }}"
+
+      - name: Post-deploy verification (effective running configuration must equal the intended release)
+        run: |
+          # Read-only AWS inspection: running API digest + image build tag, deployed worker zip BUILD_SHA and
+          # bundled prompts, live env vars judged by the SAME rules as the pre-deploy gate. No AI inference.
+          # An unreadable deployment is a FAILURE (promotion blocked), never a pass.
+          python3 scripts/release_config_gate.py post --environment production \
+            --expected-sha "${GITHUB_SHA::12}" --expected-digest "${{ steps.image.outputs.digest }}"
+
+      - name: Upload release manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-production-${{ github.sha }}
+          path: release-manifests/*.json

@@ -98,7 +98,7 @@ jobs:
         run: npx cdk synth -c environment=development || true
 
   release-config-gate:
-    name: Release configuration gate (dev + beta, offline, no AWS)
+    name: Release configuration gate (dev + beta + production, offline, no AWS)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -115,20 +115,24 @@ jobs:
       - name: Install CDK deps
         working-directory: infrastructure/cdk
         run: npm ci || npm install
-      - name: Synthesize dev + beta and run the pre-deploy gate (a violation FAILS CI)
+      - name: Synthesize dev + beta + production and run the pre-deploy gate (a violation FAILS CI)
         run: |
           # Beta's release inputs are the SAME identifiers the iOS Beta build bakes (Config/Beta.xcconfig); the
           # real deploy passes them from GitHub Environment variables and re-runs this gate there.
           # Read from the repo root BEFORE any `cd` (a $(...) inside the cd'd subshell resolves the path wrongly).
-          xc() { grep "^$1" apps/ios/Story/Config/Beta.xcconfig | head -1 | sed 's/.*= *//'; }
-          BETA_POOL="$(xc STORY_ENV_USER_POOL_ID)"; BETA_CLIENT="$(xc STORY_ENV_APP_CLIENT_ID)"
-          test -n "$BETA_POOL" && test -n "$BETA_CLIENT"
+          xc() { grep "^$2" "apps/ios/Story/Config/$1.xcconfig" | head -1 | sed 's/.*= *//'; }
+          BETA_POOL="$(xc Beta STORY_ENV_USER_POOL_ID)"; BETA_CLIENT="$(xc Beta STORY_ENV_APP_CLIENT_ID)"
+          PROD_POOL="$(xc Production STORY_ENV_USER_POOL_ID)"; PROD_CLIENT="$(xc Production STORY_ENV_APP_CLIENT_ID)"
+          test -n "$BETA_POOL" && test -n "$BETA_CLIENT" && test -n "$PROD_POOL" && test -n "$PROD_CLIENT"
           DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000000
           ( cd infrastructure/cdk && npx cdk synth -q -c environment=development -c imageDigest=$DIGEST --output "$RUNNER_TEMP/cdk-development" )
           ( cd infrastructure/cdk && npx cdk synth -q -c environment=beta -c imageDigest=$DIGEST \
               -c cognitoUserPoolId="$BETA_POOL" -c cognitoAppClientId="$BETA_CLIENT" \
               -c observability=true -c alarmDestination=alerts@yotale.ai --output "$RUNNER_TEMP/cdk-beta" )
-          for env in development beta; do
+          ( cd infrastructure/cdk && npx cdk synth -q -c environment=production -c imageDigest=$DIGEST \
+              -c cognitoUserPoolId="$PROD_POOL" -c cognitoAppClientId="$PROD_CLIENT" \
+              -c observability=true -c alarmDestination=alerts@yotale.ai --output "$RUNNER_TEMP/cdk-production" )
+          for env in development beta production; do
             python3 scripts/release_config_gate.py pre --environment $env \
               --template "$RUNNER_TEMP/cdk-$env/story-$env-api.template.json" \
               --worker-asset infrastructure/cdk/.worker-asset --require-clean-asset

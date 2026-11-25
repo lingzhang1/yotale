@@ -1,0 +1,25 @@
+// Production.xcconfig — App Store production build.
+//
+// Baked environment for PRODUCTION archives. Select this xcconfig for the Production build configuration's app target
+// so StoryEnvironment resolves the production backend from Info.plist with ZERO reliance on Xcode Run scheme env vars
+// or persisted UserDefaults. Production account 854689494157: pool us-east-1_m9HoNhR7M and client
+// 4oesvialvc5i8g3cuv1b7vg3to from story-production-auth (deployed 2026-11-25); API on ECS behind https://api.yotale.ai
+// (ecs-fargate-migration-plan.md). NON-SECRET identifiers only. Verify an archive with scripts/verify_prod_archive.sh.
+//
+// If any value here is wrong/empty, StoryEnvironment FAILS CLOSED at launch in a release build rather than falling
+// back to development — that is the intended safety behavior.
+//
+// xcconfig note: `//` starts a comment, so the redirect URI is assembled from a SLASH helper.
+
+SLASH = /
+
+STORY_BUILD_ENV = production
+STORY_ENV_API_BASE_URL = https:$(SLASH)$(SLASH)api.yotale.ai
+STORY_ENV_COGNITO_REGION = us-east-1
+STORY_ENV_USER_POOL_ID = us-east-1_m9HoNhR7M
+STORY_ENV_APP_CLIENT_ID = 4oesvialvc5i8g3cuv1b7vg3to
+STORY_ENV_DOMAIN_PREFIX = story-production-auth
+STORY_ENV_REDIRECT_URI = story:$(SLASH)$(SLASH)auth
+
+// Federated sign-in providers offered by this build (baked into Info.plist as StoryFederatedProviders).
+STORY_FEDERATED_PROVIDERS = SignInWithApple,Google
