@@ -1,6 +1,6 @@
 # Migrating the Story API from App Runner to standard ECS Fargate
 
-Status: **IN PROGRESS (2026-11-25). Step 2-3 implemented in `feat/ecs-fargate-api` (CDK construct `infrastructure/cdk/lib/ecs-api-service.ts`, release gate); not deployed.** Trigger: production account 854689494157 cannot
+Status: **DEV AND PRODUCTION ON ECS, BETA IN OVERLAP (2026-11-26).** See section 8 for results.
 create App Runner services (`production-release-readiness.md` section 5).
 
 Owner decisions (Ling, 2026-11-25):
@@ -125,3 +125,15 @@ not empty: import them into the new stack (`cdk import`) instead.
 - **Old TestFlight builds:** keep working on App Runner until the overlap ends (step 8).
 - **DNS:** each stage needs Ling's Namecheap records before HTTPS works on the hostname.
 - **AWS App Runner exception:** if AWS later allows App Runner in 854689494157, the plan does not change; ECS stays.
+
+## 8. Results (2026-11-26)
+
+| Step | Result |
+|---|---|
+| 2-3 Code | PR #177 (`0f27d7d`) ECS construct, IAM, observability, WAF, release gate; PR #178 (`83b6060`) production pipeline; PR #179 (`a7082a8`) Development builds use `api-dev`; PR #180 (`d7edbeb`) deploy role `wafv2:GetWebACL` for the post-deploy WAF check |
+| Before each first ECS deploy | The stage's `story-<env>-cfn-exec` inline policy was set to the synthesized document (additions only: ecs, elasticloadbalancing, ec2, application-autoscaling, wafv2, acm read, scoped service-linked roles), because CloudFormation can create the new resources before it updates that policy in the same deploy |
+| 4 Dev | Deploy (dev) run 45745458680 on `83b6060`: pre and post gate ACCEPTED; App Runner removed; ECS 1/1. `https://api-dev.yotale.ai/health` 200 (CNAME live). `/v1/story-guide-v2` (one real model call) 200 in 21.2 s and 19.6 s. ALB idle timeout 180 s live. Rollback drill: previous digest in 159 s, back in 143 s, `/health` 200 throughout. Device test pending (Ling) |
+| 5 Beta overlap start | Deploy (beta) run 45748375052: deploy complete, post gate unverifiable (missing `wafv2:GetWebACL`, fixed in #180); run 45749780596 on `d7edbeb`: pre and post gate ACCEPTED. ECS 1/1 and App Runner on the same digest; `story-beta-alb-waf` on the ALB; ALB checks: `/health` 200 TLS, 301 redirect, 401 without token, WAF 403 on a Log4j-style probe; App Runner host still 200. Next: `api-beta` CNAME, `Beta.xcconfig`, TestFlight build |
+| 6 Production | Empty leftovers of the failed App Runner attempt confirmed empty (0 items, 0 objects) and deleted with the rolled-back stack. First deploy on `d7edbeb` (image `git-d7edbebc6d31`) by Ling's SSO admin: diff additions only, post gate ACCEPTED, 2/2 targets healthy across us-east-1a and us-east-1b, termination protection on. Next: `api` CNAME, production test account |
+| Not yet measured | A synchronous route longer than 60 s through an ALB (needs a real slow Asset Understanding call from a device) |
+

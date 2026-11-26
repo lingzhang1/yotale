@@ -1,95 +1,86 @@
 # Production release readiness and plan
 
-Status: **IN PROGRESS (updated 2026-11-25). Production account, secrets and auth stack are live. The production API
-is BLOCKED: App Runner refuses new services in the new account.** Owner: Ling. Each code step lands as its own PR
-with owner approval; each "Ling" step needs credentials or a decision only the owner can make.
+Status: **PRODUCTION BACKEND LIVE (2026-11-26), not yet serving users.** `story-production-api` runs on ECS Fargate in
+account 854689494157 (2 tasks, both healthy), post-deploy release gate ACCEPTED. Remaining before launch: DNS for
+`api.yotale.ai`, the Apple notification cutover, the iOS Production build, SES production access, the open owner
+decisions in section 3, and App Store submission. Owner: Ling.
 
 ## 1. Current state
 
 | Area | State | Source |
 |---|---|---|
-| Environments | development (989088054552), beta (224033508028); production (854689494157) partly provisioned | `deploy-dev.yml`, `deploy-beta.yml` |
-| Production account | `YoTale-Production` 854689494157, root `prod@yotale.ai`, OU Workloads (region-lock + protect-security SCPs, same as beta), Ling's SSO user AdministratorAccess, profile `yotale-prod`. CDK bootstrapped (default template, qualifier `hnb659fds`, same as beta) | Organizations, Identity Center |
-| Production secrets | `YoTale-OpenAI-API-Key`, `YoTale-Gemini-API-Key`: dedicated production keys (from dev `*-Prod`). `Unsplash-API-Key`, `story-epidemic-key`, `epidemic-mcp-api-key`: copies of dev. `YoTale-Apple-SignIn-Prod` (key F3U2QUUC66, Services ID `com.lingzhang.story.signin.prod`), `YoTale-Google-SignIn-Prod` (separate Google client). `verify-required-secrets.sh production` passes | Secrets Manager |
-| Apple keys | Apple allows two Sign in with Apple keys per team. Slots: beta key 2J5M246W2G (now used by beta **and dev**; dev key J77ZNM2X3V revoked), production key F3U2QUUC66. Both verified against Apple's token endpoint. Rotating either key requires revoking one first | Apple Developer, dev Cognito IdP |
-| Production auth | `story-production-auth` deployed: pool `us-east-1_m9HoNhR7M`, iOS client `4oesvialvc5i8g3cuv1b7vg3to`, domain `story-production-auth`, Apple + Google IdPs, deletion protection, termination protection. Email codes use Cognito's default sender until SES production access is granted | CloudFormation |
-| SES | Identity `yotale.ai` verified (DKIM SUCCESS). Production access request DENIED pending more information (case 179556209600146); reply drafted for Ling | SES |
-| Production image | `story-production-api:git-a1fd33f1114b` (`sha256:73e6d31fb662…`), built by the one-time CodeBuild project `story-production-image-build` | ECR |
-| Production API | **Failed 2026-11-25:** `CREATE_FAILED AWS::AppRunner::Service: Account 854689494157 can't create new App Runner services`. AWS closed App Runner to new customers on 2026-04-30. Stack `story-production-api` is `ROLLBACK_COMPLETE`; retained empty resources: tables `story-production-media`, `-stories`, `-understanding`, `-account-deletions` and bucket `story-production-media-854689494157-us-east-1` | CloudFormation |
-| Code on master | Stage parity (#170), OIDC trust (#84), production deploy role + termination protection (#173), account deletion in production (#174), production auth protections + Apple Services ID (#175) | GitHub |
-| Billing | beta `observe`; development, gamma, production `off`. Production accepts only Production Apple receipts | `release/release.json`, `packages/billing/apple.py` |
+| Accounts | development 989088054552, beta 224033508028, production 854689494157 (`YoTale-Production`, root `prod@yotale.ai`, OU Workloads with the region-lock and protect-security SCPs, CDK bootstrapped, profile `yotale-prod`) | Organizations |
+| API compute | ECS Fargate behind a CDK-owned ALB in every stage (`ecs-fargate-migration-plan.md`). Dev: App Runner removed. Beta: ECS plus App Runner (overlap). Production: ECS only, 2 tasks | CloudFormation |
+| Hostnames | `api-dev.yotale.ai` (live), `api-beta.yotale.ai`, `api.yotale.ai`; ACM certificates ISSUED in each account; DNS CNAMEs at Namecheap (Ling) | ACM, Namecheap |
+| Production deploy | 2026-11-26, master `d7edbeb`, image `git-d7edbebc6d31` (`sha256:f10183454fda…`), first deploy by Ling's SSO admin (the GitHub deploy role is created by this stack). Pre-deploy gate ACCEPTED, diff additions only, post-deploy gate ACCEPTED, 2/2 targets healthy (us-east-1a, us-east-1b), termination protection on | `deploy-production.yml` for later deploys |
+| Production checks | `/health` 200 over TLS for `api.yotale.ai`; HTTP 301 to HTTPS; signed-in routes 401 without a token; WAF blocks a Log4j-style probe (403); `/openapi.json` requires sign-in in production | curl through the ALB |
+| Production secrets | `YoTale-OpenAI-API-Key`, `YoTale-Gemini-API-Key`: dedicated production keys. `Unsplash-API-Key`, `story-epidemic-key`, `epidemic-mcp-api-key`: same values as dev. `YoTale-Apple-SignIn-Prod` (key F3U2QUUC66), `YoTale-Google-SignIn-Prod` (separate client) | Secrets Manager |
+| Apple keys | Two-key team limit: beta key 2J5M246W2G serves beta and dev (dev key J77ZNM2X3V revoked), production key F3U2QUUC66. Both verified against Apple's token endpoint. Rotating a key means revoking one first | Apple Developer |
+| Production auth | `story-production-auth`: pool `us-east-1_m9HoNhR7M`, client `4oesvialvc5i8g3cuv1b7vg3to`, Apple + Google, deletion and termination protection. Cognito's default email sender until SES production access | CloudFormation |
+| SES | `yotale.ai` verified (DKIM). Production access DENIED pending the case reply (179556209600146, Ling replied 2026-11-26) | SES |
+| GitHub `production` Environment | Required reviewer Ling, master only, variables `PROD_DEPLOY_ROLE_ARN`, `CFN_EXEC_ROLE_ARN`, `PROD_COGNITO_USER_POOL_ID`, `PROD_COGNITO_APP_CLIENT_ID` | GitHub |
+| Budgets (management account) | `yotale-prod-monthly` $250, `yotale-beta-monthly` $150, each filtered to its own account, alerts at 50/80/100% | AWS Budgets |
+| iOS | `Production.xcconfig` (api.yotale.ai, production pool/client, Apple + Google) and `verify_prod_archive.sh` on master; not yet referenced by the Xcode project. `Development.xcconfig` uses `api-dev.yotale.ai` | `apps/ios/Story/Config` |
 
-## 2. Plan, step by step
+## 2. Production decisions (owner)
 
-### Phase 0: land what is ready (DONE)
-1. ~~PR #170 stage parity~~ merged `a13717a`.
-2. ~~PR #84 OIDC trust~~ merged `f216d1d`.
+| Date | Decision |
+|---|---|
+| 2026-11-24 | No stage drift: every stage runs the same planner (5.6, code default) and evidence persistence; the release gate rejects drift (`check_stage_parity`) |
+| 2026-11-24 | Account deletion enabled in production (App Store 5.1.1(v); evidence persistence is on) |
+| 2026-11-24 | Production account created in the YoTale org, OU Workloads, root `prod@yotale.ai` |
+| 2026-11-24 | Unsplash and Epidemic keys shared with dev; OpenAI and Gemini get dedicated production keys (2026-11-25) |
+| 2026-11-25 | Dev revokes its Apple key and uses the beta key; production gets its own Apple key |
+| 2026-11-25 | API compute: standard ECS Fargate with a CDK-owned ALB in every stage, not ECS Express Mode and not an App Runner exception |
+| 2026-11-25 | Dev replaced directly; beta keeps App Runner beside ECS for a time-boxed overlap; production ECS only |
+| 2026-11-25 | Production runs two tasks across two Availability Zones |
+| 2026-11-26 | AWS budgets: production $250/month, beta $150/month during the overlap (back to $100 after it) |
 
-### Phase 1: production AWS account (DONE except item 7)
-3. ~~Account~~ 854689494157.
-4. ~~SSO profile~~ `yotale-prod`.
-5. ~~Secrets~~ all present, verified by hash and length, never printed.
-6. ~~ECR repository~~ `story-production-api` (IMMUTABLE, scan on push). ~~CDK bootstrap~~ done.
-7. Ling: confirm OpenAI and Gemini rate limits on the production keys.
+AWS budgets cover AWS only. OpenAI and Gemini bill directly: set monthly limits in their consoles.
 
-### Phase 2: production code
-8. ~~Deploy role~~ PR #173 (`97dcde8`).
-9. ~~Apple Services ID~~ PR #175 (`a1fd33f`); Services ID created by Ling.
-10. ~~Account deletion~~ PR #174 (`69df18f`).
-11. ~~Auth stack~~ PR #175; deployed 2026-11-25.
-12. **Blocking: replace App Runner.** Decided 2026-11-25: standard ECS Fargate with a CDK-owned ALB in every stage,
-    dev replaced directly, beta overlap with App Runner, production ECS only with two tasks
-    (`ecs-fargate-migration-plan.md`). Stable hostnames `api-dev`, `api-beta` and `api.yotale.ai`.
-13. `deploy-production.yml`: manual dispatch, protected `production` GitHub Environment with a required reviewer,
-    confirm token `deploy-production`, digest-pinned image, pre- and post-deploy gate,
-    `-c observability=true -c alarmDestination=alerts@yotale.ai`. Written for ECS.
-14. WAF and budget. WAF is associated with each stage's ALB in the ECS construct. The org
-    budget `yotale-prod-monthly` is not filtered to the production account (it tracks the whole org); scope it.
-15. CI gate: add gamma and production to the CI release-gate job.
+## 3. Open owner decisions
 
-### Phase 3: owner decisions (Ling)
-16. Billing at launch: `off`, or `observe`/`enforce` after the beta grandfather dry run. How App Review tests purchases.
-17. Quota numbers for production (`user_monthly_usd`, global breaker).
-18. Epidemic commercial terms (`STORY_EPIDEMIC_MODE` is `prototyping` everywhere).
-19. SES: Ling pastes the drafted reply into case 179556209600146. After approval, redeploy production auth with
-    `-c sesFromEmail=no-reply@yotale.ai -c sesAccountId=854689494157` and a YoTale OTP email template.
+1. **In-app AI limits for production** (`packages/user_quota`, values from `story-api-stack.ts`; production currently
+   gets the code defaults). Two kinds of limit apply together:
+   - **Per person** (each account): `STORY_QUOTA_USER_MONTHLY_USD` = **$8**/month of model spend,
+     `STORY_QUOTA_USER_DAILY_GENS` = **500** AI operations/day, `STORY_QUOTA_MAX_ACTIVE_JOBS` = **2** video jobs at once.
+     A YoTale Plus subscriber skips the $ and daily caps (Billing V2) but not the active-job cap.
+   - **Across all of production**: `STORY_QUOTA_GLOBAL_MONTHLY_USD` = **$60**/month total model spend (one shared
+     `__global__` counter). When it is reached, every user's AI requests get a retryable "busy" answer
+     (Retry-After 300 s) until the next calendar month. Plus does not bypass it.
+   - Scale (measured, `billing-measured-cost-dev-beta.md`): an edit plan costs about $0.10 and an Asset Understanding
+     call about $0.011 per Moment, so one 30-Moment video is roughly $0.40-0.50. $60/month covers about 120-150 such
+     videos for everyone together; $8 covers about 16-20 per person.
+   - Decide the production global breaker (too low for launch at $60) and whether the per-person values stay. The
+     values belong in `release/release.json` (`environments.production`) so the gate enforces them.
+2. **Billing at launch:** `off`, or `observe`/`enforce` after the beta grandfather dry run. App Review purchases are
+   Sandbox receipts, which production rejects; decide how App Review tests purchases.
+3. **Epidemic commercial terms:** `STORY_EPIDEMIC_MODE` is `prototyping` everywhere.
+4. **OpenAI and Gemini limits** on the production keys (rate and monthly spend).
 
-### Phase 4: first production API deploy
-20. Clean up the rolled-back stack (Ling's go: turn off termination protection, delete `story-production-api` in
-    `ROLLBACK_COMPLETE`, delete the empty retained tables and bucket), or import them into the new stack.
-21. `cdk diff` against production with the exact pipeline inputs; must be purely additive. First deploy with Ling's SSO
-    admin (the GitHub deploy role is created by this stack); later deploys through `deploy-production.yml`.
-22. Verify: post-deploy gate, `/health` 200, authenticated routes 401, routes in `openapi.json`, running digest equals
-    the ECR digest, account deletion end to end on a test account.
-23. Give Ling the Apple notification endpoint `https://api.yotale.ai/v1/auth/apple-signin-notifications`.
-    One endpoint per App ID: switching it to production stops beta's Apple notifications.
+## 4. Remaining steps
 
-### Phase 5: iOS and App Store
-24. `Production.xcconfig` (`https://api.yotale.ai`, pool `us-east-1_m9HoNhR7M`, client `4oesvialvc5i8g3cuv1b7vg3to`,
-    domain prefix `story-production-auth`), a `Story (Production)` scheme and `verify_prod_archive.sh`. The scheme
-    touches `project.pbxproj`, so Ling makes that change in Xcode.
-25. Ling: Cmd-U and a device run of master against production.
-26. Ling: App Store Connect record, metadata, screenshots, privacy labels, review notes with a demo account,
-    subscription products.
-27. Archive, TestFlight, submit for review.
+1. Ling: Namecheap CNAMEs `api-beta` -> `story-beta-api-749453594.us-east-1.elb.amazonaws.com` and `api` ->
+   `story-production-api-1453135741.us-east-1.elb.amazonaws.com`.
+2. Ling: device test of dev on `api-dev.yotale.ai` (sign-in, a slow Asset Understanding call, upload, Create/Revise,
+   account deletion on a test account).
+3. Beta: `Beta.xcconfig` to `https://api-beta.yotale.ai`, TestFlight build, then the overlap retirement criteria in
+   `ecs-fargate-migration-plan.md` step 8.
+4. Production test account: sign-in, one video, account deletion end to end.
+5. Apple notification endpoint `https://api.yotale.ai/v1/auth/apple-signin-notifications` when production takes real
+   users (one URL per App ID; beta stops receiving notifications).
+6. SES: after approval, redeploy production auth with `-c sesFromEmail=no-reply@yotale.ai -c sesAccountId=854689494157`
+   and a YoTale code email.
+7. iOS: add the Production build configuration and `Story (Production)` scheme in Xcode (Ling; touches
+   `project.pbxproj`), Cmd-U, `verify_prod_archive.sh` on the archive.
+8. App Store Connect record, metadata, screenshots, privacy labels, review notes with a demo account, subscription
+   products; TestFlight; submit.
 
-## 3. Rollback
+## 5. Rollback
 
-- Bad build: redeploy the previous image digest through the workflow.
+- Bad build: redeploy the previous image digest through `deploy-production.yml` (rehearsed in dev 2026-11-26: 159 s
+  to the previous digest, 143 s back, `/health` 200 throughout).
+- Failed ECS deployment: the circuit breaker rolls back automatically.
 - Planner: `planner.emergency_override` plus a matching `approved_overrides` entry in one reviewed PR.
 - Evidence persistence: `-c evidencePersist=0` with an `approved_degradations` entry.
-- Data: never `cdk destroy` the data tables; infrastructure rollback never reverses data.
-
-## 4. Critical path
-
-Step 12 (ECS migration, dev then beta) blocks steps 13, 14 and 20-27. In parallel: step 19 (SES reply), steps 16-18 (decisions).
-
-## 5. App Runner blocker
-
-AWS stopped accepting new App Runner customers on 2026-04-30
-([availability change](https://docs.aws.amazon.com/apprunner/latest/dg/apprunner-availability-change.html)). Existing
-customers keep full use, which is why development and beta still deploy. The new production account is treated as a new
-customer. Decision (Ling, 2026-11-25): move every stage to **standard ECS Fargate with a CDK-owned ALB** (not Express Mode:
-WAF, the idle timeout, the certificate and the hostname must be in our code). Dev is replaced directly, beta runs App
-Runner and ECS side by side until its retirement criteria are met, production runs ECS only with two tasks. Plan:
-`ecs-fargate-migration-plan.md`. An AWS App Runner exception would not change this.
+- Data: never `cdk destroy`; the production stacks have termination protection and the pool has deletion protection.
