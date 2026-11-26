@@ -201,9 +201,14 @@ private struct MusicSearchRequestDTO: Encodable {
 final class MusicCandidatesService {
     private let baseURL: URL
     private let session: URLSession
-    init(baseURL: URL = StoryBackend.baseURL, session: URLSession = StoryBackend.longSession) {
+    /// The track AUDIO download (provider CDN, not our API): the same file-download session as cloud originals
+    /// (60 s idle timeout, 1 h total), so a slow link finishes instead of hitting the 300 s total cap.
+    private let downloadSession: URLSession
+    init(baseURL: URL = StoryBackend.baseURL, session: URLSession = StoryBackend.longSession,
+         downloadSession: URLSession = StoryBackend.mediaDownloadSession) {
         self.baseURL = baseURL
         self.session = session
+        self.downloadSession = downloadSession
     }
 
     /// MusicPlan -> ranked candidates (+ preview urls + top-pick analysis). Returns the typed response AND
@@ -260,18 +265,33 @@ final class MusicCandidatesService {
     /// Returns the local file URL (caller threads it into MediaEngineInputs.soundtrackURL). Prototyping,
     /// non-commercial test use only — the server marks usage='prototyping_test', export OFF.
     func downloadSoundtrack(trackId: String) async throws -> URL {
-        let link: MusicSoundtrackLinkDTO = try await postDecode("v1/music/soundtrack", body: MusicTrackRequestDTO(trackId: trackId))
-        guard let url = URL(string: link.downloadURL.url) else { throw MusicServiceError.badStatus(-1) }
-        let (data, resp): (Data, URLResponse)
-        do { (data, resp) = try await session.data(from: url) }
-        catch { throw MusicServiceError.transport(error) }
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            throw MusicServiceError.badStatus((resp as? HTTPURLResponse)?.statusCode ?? -1)
-        }
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("soundtrack-\(trackId).mp3")
-        try? FileManager.default.removeItem(at: tmp)
-        do { try data.write(to: tmp) } catch { throw MusicServiceError.transport(error) }
-        return tmp
+        // Written to a file by a download task (never held in memory). A transport failure on a flaky link gets
+        // ONE retry with a FRESH link (the provider URL is short-lived), then fails honestly (create without music).
+        var lastError: Error = MusicServiceError.badStatus(-1)
+        for attempt in 0..<2 {
+            let link: MusicSoundtrackLinkDTO = try await postDecode("v1/music/soundtrack", body: MusicTrackRequestDTO(trackId: trackId))
+            guard let url = URL(string: link.downloadURL.url) else { throw MusicServiceError.badStatus(-1) }
+            let part = tmp.appendingPathExtension("part")
+            do {
+                let http = try await MediaDownloadService.downloadFile(session: downloadSession, from: url, to: part,
+                                                                       progress: nil)
+                guard http.statusCode == 200 else {
+                    try? FileManager.default.removeItem(at: part)
+                    throw MusicServiceError.badStatus(http.statusCode)
+                }
+                try? FileManager.default.removeItem(at: tmp)
+                do { try FileManager.default.moveItem(at: part, to: tmp) } catch { throw MusicServiceError.transport(error) }
+                return tmp
+            } catch let e as MusicServiceError {
+                throw e
+            } catch {
+                try? FileManager.default.removeItem(at: part)
+                lastError = MusicServiceError.transport(error)
+                if attempt == 0, !Task.isCancelled { continue }
+            }
+        }
+        throw lastError
     }
 
     private func postData<B: Encodable>(_ path: String, body: B) async throws -> Data {
