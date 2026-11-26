@@ -21,7 +21,8 @@ EXPECT_POOL="us-east-1_3cPNfbrUl"
 EXPECT_CLIENT="4f3dtn9d0nk5uq1hcvbdc7m73c"
 EXPECT_DOMAIN="story-beta-auth"
 # Dev tripwires that must NEVER appear in a beta archive:
-DEV_API="https://ydmju5wdps.us-east-1.awsapprunner.com"
+DEV_API="https://api-dev.yotale.ai"
+DEV_API_LEGACY="https://ydmju5wdps.us-east-1.awsapprunner.com"   # retired dev App Runner host
 DEV_POOL="us-east-1_AzfHOEdA5"
 DEV_CLIENT="5rnvp7oq6d7crbt01ldpe89tkh"
 
@@ -69,7 +70,7 @@ done
 [ "$DOMAIN" = "$EXPECT_DOMAIN" ] || fail "StoryEnvDomainPrefix='$DOMAIN' != beta '$EXPECT_DOMAIN'"
 
 # 4) Dev tripwires must be ABSENT (catches a half-dev/half-beta mix).
-for devv in "$DEV_API" "$DEV_POOL" "$DEV_CLIENT"; do
+for devv in "$DEV_API" "$DEV_API_LEGACY" "$DEV_POOL" "$DEV_CLIENT"; do
   for got in "$API" "$POOL" "$CLIENT"; do
     [ "$got" = "$devv" ] && fail "development identifier leaked into beta archive: $devv"
   done

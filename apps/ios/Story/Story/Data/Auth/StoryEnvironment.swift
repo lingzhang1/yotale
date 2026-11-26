@@ -41,7 +41,7 @@ struct StoryEnvironment: Equatable {
     // ---- hardcoded development defaults (the DEBUG fallback target) ---------------------------------
     static let developmentDefault = StoryEnvironment(
         kind: .development,
-        apiBaseURL: URL(string: "https://ydmju5wdps.us-east-1.awsapprunner.com")!,
+        apiBaseURL: URL(string: "https://api-dev.yotale.ai")!,  // ECS behind the dev ALB (App Runner retired 2026-11-26)
         cognitoRegion: "us-east-1",
         userPoolId: "us-east-1_AzfHOEdA5",
         appClientId: "5rnvp7oq6d7crbt01ldpe89tkh",

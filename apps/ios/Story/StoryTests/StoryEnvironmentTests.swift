@@ -33,7 +33,7 @@ final class StoryEnvironmentTests: XCTestCase {
     func test_betaLabel_withDevApi_isRejected() {
         let mixed = StoryEnvironment(
             kind: .beta,
-            apiBaseURL: URL(string: "https://ydmju5wdps.us-east-1.awsapprunner.com")!,  // DEV API — mismatch
+            apiBaseURL: URL(string: "https://api-dev.yotale.ai")!,  // DEV API — mismatch
             cognitoRegion: "us-east-1",
             userPoolId: "us-east-1_3cPNfbrUl",
             appClientId: "4f3dtn9d0nk5uq1hcvbdc7m73c",
