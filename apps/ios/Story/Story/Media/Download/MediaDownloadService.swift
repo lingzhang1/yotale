@@ -3,15 +3,15 @@ import CryptoKit
 
 // R6 — iOS client for cloud media DOWNLOAD & restoration (/v1/media/{id}/download).
 // Flow: ask the backend for a short-lived presigned GET + the SERVER-AUTHORITATIVE expectation
-// (size_bytes + full-file content_sha256), then STREAM the object to a temp file while hashing, and
-// verify size + full-file sha256 before the caller atomically installs it.
+// (size_bytes + full-file content_sha256), then DOWNLOAD the object to a temp file with a native download task,
+// and verify size + full-file sha256 (read back in chunks) before the caller atomically installs it.
 //
 // AUTH: every request carries the OWNER account's bearer token, passed EXPLICITLY (same rule as upload —
 // never use another account's token). The backend scopes the presign to principal.story_user_id, so an
 // object that is not the caller's returns 404 and no cross-account bytes are ever fetched.
 //
-// NEVER loads a large video into memory (safeguard #2 / req #2): the body is consumed as an async byte
-// stream, 1 MiB at a time, written straight to disk and fed to the hasher incrementally.
+// NEVER loads a large video into memory (safeguard #2 / req #2): URLSession writes the body to disk and the
+// hash is computed from the file 1 MiB at a time.
 
 enum MediaDownloadError: Error, LocalizedError {
     case transport(Error)
@@ -82,7 +82,7 @@ struct CloudMediaRecord {
 
 struct MediaDownloadService: MediaDownloading {
     var baseURL: URL = StoryBackend.baseURL
-    var session: URLSession = StoryBackend.backgroundSession
+    var session: URLSession = StoryBackend.mediaDownloadSession
 
     func presignDownload(accessToken: String, cloudMediaId: String) async throws -> MediaDownloadTarget {
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/media/\(cloudMediaId)/download"))
@@ -143,52 +143,29 @@ struct MediaDownloadService: MediaDownloading {
 
     func download(target: MediaDownloadTarget, to destURL: URL,
                   progress: ((Double) -> Void)? = nil) async throws {
-        // Stream to a sibling .part file, hashing as we go; promote to destURL only after verification.
+        // URLSession writes the body straight to a file (a download task: native speed, nothing held in memory).
+        // It replaces a byte-by-byte AsyncBytes loop that restored originals at about 1 MB/s on device
+        // (dev 2026-11-26, 1.9 GB of originals for one Create).
         let partURL = destURL.appendingPathExtension("part")
         let fm = FileManager.default
         try? fm.removeItem(at: partURL)
         try? fm.removeItem(at: destURL)
-        fm.createFile(atPath: partURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: partURL)
-        var hasher = SHA256()
-        var written = 0
-        let expected = max(target.expectedSize, 1)
-        do {
-            let (bytes, resp): (URLSession.AsyncBytes, URLResponse)
-            do { (bytes, resp) = try await session.bytes(from: target.url) }
-            catch { throw MediaDownloadError.transport(error) }
-            let http = resp as! HTTPURLResponse
-            guard (200...299).contains(http.statusCode) else {
-                throw MediaDownloadError.s3GetFailed(http.statusCode)
-            }
-            var buffer = Data(); buffer.reserveCapacity(1 << 20)
-            for try await byte in bytes {
-                buffer.append(byte)
-                if buffer.count >= (1 << 20) {         // flush every 1 MiB — never hold the whole video
-                    try handle.write(contentsOf: buffer)
-                    hasher.update(data: buffer)
-                    written += buffer.count
-                    buffer.removeAll(keepingCapacity: true)
-                    progress?(min(1.0, Double(written) / Double(expected)))
-                }
-            }
-            if !buffer.isEmpty {
-                try handle.write(contentsOf: buffer)
-                hasher.update(data: buffer)
-                written += buffer.count
-            }
-            try handle.close()
-        } catch {
-            try? handle.close(); try? fm.removeItem(at: partURL)
-            throw (error as? MediaDownloadError) ?? .transport(error)
+        let http = try await Self.downloadFile(session: session, from: target.url, to: partURL, progress: progress)
+        guard (200...299).contains(http.statusCode) else {
+            try? fm.removeItem(at: partURL)
+            throw MediaDownloadError.s3GetFailed(http.statusCode)
         }
 
-        // VERIFY before exposing anything as a valid original (safeguard #1/#2).
+        // VERIFY before exposing anything as a valid original (safeguard #1/#2): size, then the full-file sha256
+        // read back from disk 1 MiB at a time (never the whole video in memory).
+        let written = ((try? fm.attributesOfItem(atPath: partURL.path)[.size]) as? NSNumber)?.intValue ?? -1
         if written != target.expectedSize {
             try? fm.removeItem(at: partURL)
             throw MediaDownloadError.sizeMismatch(expected: target.expectedSize, got: written)
         }
-        let gotSha = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        let gotSha: String
+        do { gotSha = try Self.sha256Hex(of: partURL) }
+        catch { try? fm.removeItem(at: partURL); throw MediaDownloadError.transport(error) }
         if gotSha.lowercased() != target.expectedSha256Hex.lowercased() {
             try? fm.removeItem(at: partURL)
             throw MediaDownloadError.checksumMismatch
@@ -197,6 +174,55 @@ struct MediaDownloadService: MediaDownloading {
         // into the Moment's relativePath). Promotion is a rename on the same volume.
         try? fm.removeItem(at: destURL)
         try fm.moveItem(at: partURL, to: destURL)
-        progress?(1.0)
+        if let progress { await MainActor.run { progress(1.0) } }
+    }
+
+    /// One download task to `partURL`, with progress from the task's own Progress object and cooperative
+    /// cancellation. The system temp file is moved inside the completion handler (it is deleted after it returns).
+    static func downloadFile(session: URLSession, from url: URL, to partURL: URL,
+                             progress: ((Double) -> Void)?) async throws -> HTTPURLResponse {
+        final class Box: @unchecked Sendable { var task: URLSessionDownloadTask?; var observation: NSKeyValueObservation? }
+        let box = Box()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<HTTPURLResponse, Error>) in
+                let task = session.downloadTask(with: url) { tmp, resp, error in
+                    box.observation?.invalidate()
+                    if let error { cont.resume(throwing: MediaDownloadError.transport(error)); return }
+                    guard let tmp, let http = resp as? HTTPURLResponse else {
+                        cont.resume(throwing: MediaDownloadError.transport(URLError(.badServerResponse))); return
+                    }
+                    do {
+                        try? FileManager.default.removeItem(at: partURL)
+                        try FileManager.default.moveItem(at: tmp, to: partURL)
+                        cont.resume(returning: http)
+                    } catch { cont.resume(throwing: MediaDownloadError.transport(error)) }
+                }
+                if let progress {
+                    // Callers write the value into SwiftData models, so deliver on the main queue, and only on a
+                    // whole-percent change so a large file does not flood it.
+                    var lastPct = -1
+                    box.observation = task.progress.observe(\.fractionCompleted) { p, _ in
+                        let v = min(1.0, max(0.0, p.fractionCompleted))
+                        let pct = Int(v * 100)
+                        guard pct != lastPct else { return }
+                        lastPct = pct
+                        DispatchQueue.main.async { progress(v) }
+                    }
+                }
+                box.task = task
+                task.resume()
+            }
+        } onCancel: {
+            box.task?.cancel()
+        }
+    }
+
+    /// Full-file sha256 (hex), streamed from disk in 1 MiB chunks.
+    static func sha256Hex(of url: URL) throws -> String {
+        let h = try FileHandle(forReadingFrom: url)
+        defer { try? h.close() }
+        var hasher = SHA256()
+        while let chunk = try h.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }

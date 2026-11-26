@@ -36,24 +36,37 @@ enum MomentResolver {
     static func resolveEnsuringLocal(moments: [MomentModel],
                                      context: ModelContext,
                                      activeOwner: String?,
-                                     token: @escaping () async -> String?)
+                                     token: @escaping () async -> String?,
+                                     onProgress: (@MainActor (_ done: Int, _ total: Int) -> Void)? = nil)
         async -> (media: [MomentMedia], unavailable: [(momentId: UUID, error: Error)]) {
         var unavailable: [(UUID, Error)] = []
         let tEnsure = RenderTiming.begin("ensure_local_all")
         var downloaded = 0
-        for m in moments {
-            guard let rel = m.asset?.relativePath else { continue }
-            if MediaStore.shared.fileExists(relativePath: rel) { continue }   // already local
+        // Only the cloud-only Moments count toward progress (already-local ones need no download).
+        let toRestore = moments.filter { m in
+            guard let rel = m.asset?.relativePath else { return false }
+            return !MediaStore.shared.fileExists(relativePath: rel)
+        }
+        var done = 0
+        if !toRestore.isEmpty { onProgress?(0, toRestore.count) }
+        for m in toRestore {
             let tOne = RenderTiming.begin("ensure_local_one")
+            let started = CFAbsoluteTimeGetCurrent()
             do {
-                _ = try await MediaResolver.shared.ensureLocal(
+                let url = try await MediaResolver.shared.ensureLocal(
                     moment: m, context: context, activeOwner: activeOwner, token: token)
                 downloaded += 1
-                tOne.end("ok=true")
+                let bytes = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.intValue ?? 0
+                let secs = max(0.001, CFAbsoluteTimeGetCurrent() - started)
+                tOne.end("ok=true bytes=\(bytes) mbps=\(String(format: "%.1f", Double(bytes) / 1_000_000 / secs))")
             } catch {
                 unavailable.append((m.id, error))
-                tOne.end("ok=false")
+                // Error class only: a transport error's description can carry the presigned URL.
+                let ns = error as NSError
+                tOne.end("ok=false error=\(ns.domain):\(ns.code)")
             }
+            done += 1
+            onProgress?(done, toRestore.count)
         }
         tEnsure.end("moments=\(moments.count) downloaded=\(downloaded) failed=\(unavailable.count)")
         return (resolve(moments: moments), unavailable.map { ($0.0, $0.1) })

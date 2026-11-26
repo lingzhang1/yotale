@@ -49,6 +49,19 @@ enum StoryBackend {
         return URLSession(configuration: cfg)
     }()
 
+    /// A DEDICATED session for restoring cloud ORIGINALS (R6 download). Originals reach 100-200 MB, so the 300 s
+    /// total cap on `backgroundSession` killed large downloads mid-way on slower links (dev 2026-11-26: four
+    /// restores failed exactly 5 minutes apart and the Create stalled). Here a STALLED transfer still fails fast
+    /// (60 s without data), but a transfer that keeps moving may take up to an hour. Own connection pool, so a
+    /// restore never queues behind AU or upload traffic.
+    static let mediaDownloadSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 60
+        cfg.timeoutIntervalForResource = 3600
+        cfg.waitsForConnectivity = true
+        return URLSession(configuration: cfg)
+    }()
+
     /// A DEDICATED session for the AI Ideas scene scan (POST /v1/scene-understanding). The user is waiting on the
     /// camera for this call, so it must not queue behind AU, media upload or media download traffic on
     /// `backgroundSession` (2 connections per host). Beta 2026-11-23: the 576 KB scan took 20.2 s to arrive while
