@@ -810,7 +810,8 @@ export class StoryApiStack extends cdk.Stack {
           "ecs:DescribeTasks",
           "elasticloadbalancing:DescribeTargetHealth", "elasticloadbalancing:DescribeTargetGroups",
           "elasticloadbalancing:DescribeLoadBalancers",
-          "wafv2:GetWebACLForResource",
+          // GetWebACLForResource also authorizes wafv2:GetWebACL on the associated web ACL (beta run 45748375052).
+          "wafv2:GetWebACLForResource", "wafv2:GetWebACL",
         ],
         resources: ["*"],   // API LIMITATION: Describe* calls do not support resource-level perms
       }));

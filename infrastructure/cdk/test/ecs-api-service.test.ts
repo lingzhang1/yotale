@@ -128,7 +128,7 @@ describe("ECS Fargate API", () => {
   test("deploy role can read ECS, target health and the ALB web ACL for the post-deploy gate", () => {
     const pol = JSON.stringify(prod.findResources("AWS::IAM::Policy"));
     for (const a of ["ecs:DescribeServices", "ecs:DescribeTaskDefinition", "elasticloadbalancing:DescribeTargetHealth",
-                     "wafv2:GetWebACLForResource"]) expect(pol).toContain(a);
+                     "wafv2:GetWebACLForResource", "wafv2:GetWebACL"]) expect(pol).toContain(a);
     expect(pol).not.toContain("cloudformation:DeleteStack");
   });
 
