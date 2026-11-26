@@ -169,11 +169,14 @@ final class StoryCreationCoordinator {
     }
 
     // Observable surface for Batch B.
-    private(set) var state: State = .idle
+    private(set) var state: State = .idle { didSet { lastActivityAt = .now } }
+    /// Last time this run visibly moved (state or sub-line change). A run that has not moved for
+    /// `staleRunAfter` no longer holds its Story: a new Create cancels it and starts fresh (see claimActive).
+    private(set) var lastActivityAt: Date = .now
     /// Honest, consumer-safe sub-line for the planning phase, driven by the REAL backend job status
     /// (queued -> "Queued for planning", running -> "Planning your Story", and once the critique pass starts
     /// "Refining the edit"). nil outside planning. No model/HTTP/stage-internal names.
-    private(set) var planningSubstatus: String?
+    private(set) var planningSubstatus: String? { didSet { lastActivityAt = .now } }
     /// Duplicate-job guard: true while a creation is in flight for this coordinator's Story.
     private(set) var isCreating: Bool = false
     /// The structured error behind the CURRENT `.failed` state (nil otherwise). The UI reads this to decide
@@ -486,17 +489,41 @@ final class StoryCreationCoordinator {
     // create for that Story (observed as an eternal "Getting your moments ready…" spinner).
     private final class ActiveClaim { weak var owner: StoryCreationCoordinator? }
     private static var activeStories: [UUID: ActiveClaim] = [:]
+    /// A run that has shown no progress for this long is treated as stuck. Dev 2026-11-27: a Create on a bad
+    /// network stopped advancing before it submitted a job, kept the claim all night, and every new Create and
+    /// Retry for that Story was refused ("A video is already being created…") although nothing was running.
+    static let staleRunAfter: TimeInterval = 10 * 60
+
+    /// Pure rule: does an existing holder still own the Story? Only a holder that is creating AND moved recently.
+    static func claimIsLive(holderIsCreating: Bool, holderLastActivity: Date, now: Date = .now) -> Bool {
+        holderIsCreating && now.timeIntervalSince(holderLastActivity) < staleRunAfter
+    }
+
     private static func claimActive(_ id: UUID, by owner: StoryCreationCoordinator) -> Bool {
-        if let existing = activeStories[id] {
-            // A live owner that is genuinely still creating holds the claim; refuse.
-            if let o = existing.owner, o !== owner, o.isCreating { return false }
-            // Otherwise the claim is stale (owner gone / finished) — steal it.
+        if let existing = activeStories[id], let o = existing.owner, o !== owner {
+            // A live owner that is genuinely still creating AND still progressing holds the claim; refuse.
+            if claimIsLive(holderIsCreating: o.isCreating, holderLastActivity: o.lastActivityAt) { return false }
+            // A stuck run: cancel it so it can never persist a duplicate version later, then take over.
+            if o.isCreating { o.abandonStuckRun(storyId: id) }
         }
         let claim = ActiveClaim(); claim.owner = owner
         activeStories[id] = claim
         return true
     }
-    private static func releaseActive(_ id: UUID) { activeStories.removeValue(forKey: id) }
+    /// Releases the claim only if `owner` still holds it, so a cancelled stuck run that finishes late can never
+    /// remove the claim of the run that replaced it.
+    private static func releaseActive(_ id: UUID, by owner: StoryCreationCoordinator) {
+        if let held = activeStories[id]?.owner, held !== owner { return }
+        activeStories.removeValue(forKey: id)
+    }
+
+    /// Cancel a run that stopped making progress (stuck network await). Same path as a user cancel.
+    private func abandonStuckRun(storyId: UUID) {
+        let idleMin = Int(Date.now.timeIntervalSince(lastActivityAt) / 60)
+        MediaEngineV1.beacon("create: stuck run replaced story=\(storyId.uuidString.prefix(8)) idle_min=\(idleMin)")
+        cancelRequested = true
+        task?.cancel()
+    }
 
     /// Keep the device awake during an active Create/Revise so a screen sleep cannot suspend the app and tear
     /// down the in-flight planning/render connection (observed as NSURLError -1005). Cleared when the run ends.
@@ -598,7 +625,7 @@ final class StoryCreationCoordinator {
     // MARK: - Pipeline
 
     private func run(story: StoryModel, outputFormat: String, targetSeconds: Double?) async {
-        defer { isCreating = false; task = nil; Self.setKeepAwake(false, story.id); Self.releaseActive(story.id) }
+        defer { isCreating = false; task = nil; Self.setKeepAwake(false, story.id); Self.releaseActive(story.id, by: self) }
 
         // ---- preparing: gather REAL persisted inputs; missing prerequisite -> honest failure ----
         state = .preparing
@@ -1749,13 +1776,13 @@ extension StoryCreationCoordinator {
                     // The server definitively refused the resend (402 / 429 cap): the row is already ended, so the
                     // Story screen's banner clears and the next attempt mints a new operation.
                     self.isCreating = false; self.task = nil
-                    Self.setKeepAwake(false, story.id); Self.releaseActive(story.id)
+                    Self.setKeepAwake(false, story.id); Self.releaseActive(story.id, by: self)
                     self.finishFailed(error)
                     return
                 case .unreachable:
                     // Could not reach the server (offline): leave the row + bytes for the next foreground/reopen.
                     self.isCreating = false; self.task = nil
-                    Self.setKeepAwake(false, story.id); Self.releaseActive(story.id)
+                    Self.setKeepAwake(false, story.id); Self.releaseActive(story.id, by: self)
                     self.finishFailed(.planTransport("couldn't reach Story — reopen to continue"))
                     return
                 }
@@ -1799,7 +1826,7 @@ extension StoryCreationCoordinator {
     /// Drive a resumed operation to completion. For plan_ready with a saved plan we SKIP planning entirely and
     /// render from the saved plan; otherwise we re-enter the normal run (which reuses jobId -> no re-inference).
     private func resumeRun(story: StoryModel, row: PendingOperationModel) async {
-        defer { isCreating = false; task = nil; Self.setKeepAwake(false, story.id); Self.releaseActive(story.id) }
+        defer { isCreating = false; task = nil; Self.setKeepAwake(false, story.id); Self.releaseActive(story.id, by: self) }
         // Fast render-resume: a saved, completed plan -> render directly (Phase 3), no poll, no re-inference.
         if row.phase == "plan_ready" || row.phase == "rendering", let json = row.planJSON,
            let data = json.data(using: .utf8),
