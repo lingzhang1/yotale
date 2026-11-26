@@ -21,7 +21,7 @@ final class StoryEnvironmentTests: XCTestCase {
         // A beta-labelled env carrying the DEV Cognito pool is the exact "mixed" failure the gate must catch.
         let mixed = StoryEnvironment(
             kind: .beta,
-            apiBaseURL: URL(string: "https://asxtxgjiis.us-east-1.awsapprunner.com")!,
+            apiBaseURL: URL(string: "https://api-beta.yotale.ai")!,
             cognitoRegion: "us-east-1",
             userPoolId: "us-east-1_AzfHOEdA5",            // DEV pool — mismatch
             appClientId: "4f3dtn9d0nk5uq1hcvbdc7m73c",
@@ -45,7 +45,7 @@ final class StoryEnvironmentTests: XCTestCase {
     func test_fullyBeta_isConsistent() throws {
         let beta = StoryEnvironment(
             kind: .beta,
-            apiBaseURL: URL(string: "https://asxtxgjiis.us-east-1.awsapprunner.com")!,
+            apiBaseURL: URL(string: "https://api-beta.yotale.ai")!,
             cognitoRegion: "us-east-1",
             userPoolId: "us-east-1_3cPNfbrUl",
             appClientId: "4f3dtn9d0nk5uq1hcvbdc7m73c",

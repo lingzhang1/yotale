@@ -16,7 +16,7 @@
 set -euo pipefail
 
 EXPECT_ENV="beta"
-EXPECT_API="https://asxtxgjiis.us-east-1.awsapprunner.com"
+EXPECT_API="https://api-beta.yotale.ai"
 EXPECT_POOL="us-east-1_3cPNfbrUl"
 EXPECT_CLIENT="4f3dtn9d0nk5uq1hcvbdc7m73c"
 EXPECT_DOMAIN="story-beta-auth"
