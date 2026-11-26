@@ -11642,6 +11642,17 @@
           }
         }
       }
+    },
+    "Downloading your clips (%lld of %lld)…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在下载你的片段（第 %1$lld 个，共 %2$lld 个）…"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

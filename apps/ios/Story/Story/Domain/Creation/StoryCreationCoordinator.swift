@@ -747,7 +747,10 @@ final class StoryCreationCoordinator {
                         let restored = await MomentResolver.resolveEnsuringLocal(
                             moments: ids.compactMap { momentById[$0] }, context: context,
                             activeOwner: AuthStore.shared?.storyUserId,
-                            token: { await AuthStore.shared?.validAccessToken() })
+                            token: { await AuthStore.shared?.validAccessToken() },
+                            onProgress: { [weak self] done, total in
+                                self?.planningSubstatus = L10n.t("Downloading your clips (\(min(done + 1, total)) of \(total))…")
+                            })
                         var urls: [UUID: URL] = [:]
                         for md in restored.media where ids.contains(md.momentId) {
                             urls[md.momentId] = MediaStore.shared.absoluteURL(for: md.relativePath)
@@ -1048,7 +1051,11 @@ final class StoryCreationCoordinator {
         let restoreResult = await MomentResolver.resolveEnsuringLocal(
             moments: selectedMoments, context: context,
             activeOwner: AuthStore.shared?.storyUserId,
-            token: { await AuthStore.shared?.validAccessToken() })
+            token: { await AuthStore.shared?.validAccessToken() },
+            onProgress: { [weak self] done, total in
+                // Honest sub-line while cloud-only originals download before rendering.
+                self?.planningSubstatus = L10n.t("Downloading your clips (\(min(done + 1, total)) of \(total))…")
+            })
         // The render media set = whatever is now LOCAL for the selected Moments (post-restore), unioned with
         // build.includedMedia (Moments that were already local). Keyed by id so there are no duplicates.
         var renderMediaById = Dictionary(build.includedMedia.map { ($0.momentId, $0) }) { a, _ in a }
@@ -1826,11 +1833,16 @@ extension StoryCreationCoordinator {
         let restoreResult = await MomentResolver.resolveEnsuringLocal(
             moments: selectedMoments, context: context,
             activeOwner: AuthStore.shared?.storyUserId,
-            token: { await AuthStore.shared?.validAccessToken() })
+            token: { await AuthStore.shared?.validAccessToken() },
+            onProgress: { [weak self] done, total in
+                // Honest sub-line while cloud-only originals download before rendering.
+                self?.planningSubstatus = L10n.t("Downloading your clips (\(min(done + 1, total)) of \(total))…")
+            })
         var renderMediaById = Dictionary(build.includedMedia.map { ($0.momentId, $0) }) { a, _ in a }
         for md in restoreResult.media { renderMediaById[md.momentId] = md }
         let renderMedia = Array(renderMediaById.values)
 
+        planningSubstatus = nil
         state = .validating
         let resolver = MomentResolver.urlResolver(for: renderMedia)
         if let reason = Self.validate(plan: plan, resolver: resolver, includedMedia: renderMedia) {
