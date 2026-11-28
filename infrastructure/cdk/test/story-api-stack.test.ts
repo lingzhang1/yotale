@@ -602,8 +602,8 @@ describe("P1-G0 per-environment operational policy defaults (defined once, in CD
     const withMode = (env: string, mode: unknown) => ({
       ...committed, environments: { ...committed.environments, [env]: { ...committed.environments[env], billing_mode: mode } } });
 
-    test("committed posture: beta observe, others off, none enforce without approval; API and worker carry exactly it", () => {
-      const want: Record<string, string> = { development: "off", beta: "observe", gamma: "off", production: "off" };
+    test("committed posture: production enforce (approved), beta observe, others off; API and worker carry exactly it", () => {
+      const want: Record<string, string> = { development: "off", beta: "observe", gamma: "off", production: "enforce" };
       for (const e of Object.keys(want)) {
         expect(committed.environments[e].billing_mode).toBe(want[e]);
         expect(workerEnv(e).STORY_BILLING_MODE).toBe(want[e]);

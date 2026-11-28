@@ -41,11 +41,20 @@
       "require_auth": "1",
       "quota_mode": "enforce",
       "throttle_mode": "enforce",
-      "billing_mode": "off",
+      "billing_mode": "enforce",
       "evidence_persist": "1",
       "xcconfig": "Production"
     }
   },
-  "approved_overrides": [],
+  "approved_overrides": [
+    {
+      "setting": "STORY_BILLING_MODE",
+      "env": "production",
+      "value": "enforce",
+      "approved_by": "owner",
+      "approved_on": "2026-11-28",
+      "reason": "Billing at launch (Ling, 2026-11-28): Free starter limits and YoTale Plus are enforced in production from day one. Production has no existing users, so no grandfather migration is needed. ROLLBACK: set environments.production.billing_mode to observe and remove this entry in one reviewed PR, then deploy production."
+    }
+  ],
   "approved_degradations": []
 }
