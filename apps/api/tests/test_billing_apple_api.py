@@ -177,3 +177,42 @@ def test_off_mode_entitlement_gives_the_purchase_token_and_shows_plus_after_buyi
     after = rig.c.get("/v1/billing/entitlement", headers=_auth("u1")).json()
     assert after["plan"] == "plus" and after["status"] == "plus_active" and after["enforced"] is False
     assert after["billing_mode"] == "off"
+
+
+# ---- production accepts App Review / TestFlight Sandbox purchases (owner 2026-11-28) -----------------------------
+@pytest.fixture()
+def prod_rig(tmp_path, monkeypatch):
+    from billing.apple import PRODUCTION, allowed_environments
+    monkeypatch.setenv("STORY_ENVIRONMENT", "production")
+    monkeypatch.delenv("STORY_BILLING_MODE", raising=False)
+    envs = allowed_environments("production")
+    assert envs == (PRODUCTION, SANDBOX)
+    chain = fx.make_chain()
+    ledger = BillingLedger(ddb=FakeDDB(), table="t", clock=lambda: T0)
+    verifier = AppStoreVerifier(envs, roots_dir=fx.write_root(chain, tmp_path / "roots"), online_checks=False)
+    app = create_app()
+    app.state._jwt_verifier_override = FakeVerifier()
+    app.state._identity_store_override = FakeIdentity()
+    app.state._apple_billing_override = AppleBilling(ledger, verifier, environments=envs, clock=lambda: T0)
+
+    class R:
+        pass
+    r = R()
+    r.c, r.ledger = TestClient(app), ledger
+    r.token = lambda sub: ledger.get_or_create_apple_account_token(f"story-{sub}")
+    r.txn = lambda tok, **kw: fx.sign(chain, fx.txn_payload(token=tok, purchase_ms=T0 * MS, expires_ms=(T0 + 30 * 86400) * MS,
+                                                            signed_ms=T0 * MS, **kw))
+    return r
+
+
+def _store_env(ledger, uid):
+    item = ledger._ddb.items.get(("story-" + uid, f"{ledger.ns}entitlement")) or {}
+    return item.get("b_store_env", {}).get("S")
+
+
+@pytest.mark.parametrize("env", ["Sandbox", "Production"])
+def test_production_accepts_sandbox_and_production_purchases_and_records_the_store_env(prod_rig, env):
+    r = post_txn(prod_rig, "u1", prod_rig.txn(prod_rig.token("u1"), env=env))
+    assert r.status_code == 200, r.text
+    assert r.json()["entitlement"]["plan"] == "plus"
+    assert _store_env(prod_rig.ledger, "u1") == env

@@ -386,12 +386,14 @@ def check_snapshot(snap: Snapshot, manifest: dict, repo: Path = REPO) -> tuple[l
 
     # --- security / operational policy -------------------------------------------------------------------
     for key, setting in (("require_auth", "STORY_REQUIRE_AUTH"), ("quota_mode", "STORY_QUOTA_MODE"),
-                         ("throttle_mode", "STORY_THROTTLE_MODE"), ("user_monthly_usd", "STORY_QUOTA_USER_MONTHLY_USD")):
+                         ("throttle_mode", "STORY_THROTTLE_MODE"), ("user_monthly_usd", "STORY_QUOTA_USER_MONTHLY_USD"),
+                         ("global_monthly_usd", "STORY_QUOTA_GLOBAL_MONTHLY_USD")):
         want = pol.get(key)
         have = svc.get(setting)
         if want is not None and setting in svc and have is not None and have != want:
             code = {"require_auth": "auth_policy", "quota_mode": "quota_policy",
-                    "throttle_mode": "throttle_policy", "user_monthly_usd": "quota_policy"}[key]
+                    "throttle_mode": "throttle_policy", "user_monthly_usd": "quota_policy",
+                    "global_monthly_usd": "quota_policy"}[key]
             v.append(Violation(code, f"{env}: {setting}={have} but release requires {want}"))
     # --- billing posture (Billing V1) --------------------------------------------------------------------
     # off | observe | enforce. The manifest is the single source of truth; the running service and worker must carry

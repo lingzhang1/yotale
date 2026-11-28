@@ -658,7 +658,8 @@ class BillingLedger:
         return self.get_entitlement(uid)  # type: ignore[return-value]
 
     def apply_subscription(self, uid: str, *, status: str, period_id: str, period_start: int, period_end: int,
-                           event_ts: int, grace_end: Optional[int] = None, orig_txn: Optional[str] = None) -> Entitlement:
+                           event_ts: int, grace_end: Optional[int] = None, orig_txn: Optional[str] = None,
+                           store_env: Optional[str] = None) -> Entitlement:
         """Apply a VERIFIED Apple subscription state (B2 calls this after signature verification; the client never does).
 
         * Period boundaries come from Apple, not the calendar. Billing V2: Plus is unlimited (derived at read time), so a new
@@ -678,6 +679,8 @@ class BillingLedger:
                                          "b_sub_pend": _n(period_end), "b_evt_ts": _n(event_ts)}
                 if orig_txn:
                     sets["b_orig_txn"] = _s(orig_txn)
+                if store_env:
+                    sets["b_store_env"] = _s(store_env)   # Apple store environment: Production | Sandbox
                 if grace_end is not None:
                     sets["b_sub_grace_end"] = _n(grace_end)
                 guard = "(attribute_not_exists(b_evt_ts) OR b_evt_ts <= :ets) AND (attribute_not_exists(b_sub_pend) OR b_sub_pend <= :pend)"
@@ -686,6 +689,8 @@ class BillingLedger:
                         "b_period_end": _n(period_end), "b_period_start": _n(period_start), "b_cfg": _s(self.cfg.config_version)}
                 if orig_txn:
                     sets["b_orig_txn"] = _s(orig_txn)
+                if store_env:
+                    sets["b_store_env"] = _s(store_env)   # Apple store environment: Production | Sandbox
                 if grace_end is not None:
                     sets["b_grace_end"] = _n(grace_end)
                 if status == ST_PLUS_EXPIRED:
