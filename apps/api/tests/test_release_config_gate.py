@@ -278,8 +278,12 @@ def test_committed_manifest_has_no_stage_drift():
     assert gate.check_stage_parity(COMMITTED) == []
     assert {p.get("evidence_persist") for p in COMMITTED["environments"].values()} == {"1"}
     for o in COMMITTED["approved_overrides"]:
+        assert o.get("approved_by") and o.get("reason"), "an approval must name who and why"
+        if (o["setting"], o["env"], str(o["value"])) == ("STORY_BILLING_MODE", "production", "enforce"):
+            assert o.get("approved_on"), "the launch billing posture is permanent but dated"   # owner 2026-11-28
+            continue
         assert o["env"] in ("development", "beta")
-        assert o.get("approved_by") and o.get("reason") and o.get("expires"), "an approval must name who, why and when it ends"
+        assert o.get("expires"), "a time-boxed approval must say when it ends"
     assert COMMITTED["approved_degradations"] == []
 
 
@@ -651,9 +655,10 @@ def test_runtime_unknown_provider_fails_explicitly_instead_of_falling_back():
 
 
 # ------------------------------------------------------------------------------------------------ Billing V1 posture
-def test_committed_manifest_billing_posture_beta_observe_others_off_never_unapproved_enforce():
+def test_committed_manifest_billing_posture_never_unapproved_enforce():
+    # Owner 2026-11-28: billing enforced in production from launch; beta observe; dev and gamma off.
     assert {e: p.get("billing_mode") for e, p in COMMITTED["environments"].items()} == {
-        "development": "off", "beta": "observe", "gamma": "off", "production": "off"}
+        "development": "off", "beta": "observe", "gamma": "off", "production": "enforce"}
     approved = {(o.get("setting"), o.get("env"), str(o.get("value"))) for o in COMMITTED.get("approved_overrides", [])}
     for e, p in COMMITTED["environments"].items():
         if p.get("billing_mode") == "enforce":
