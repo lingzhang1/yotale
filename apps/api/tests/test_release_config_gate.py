@@ -707,3 +707,14 @@ def test_enforce_in_the_manifest_requires_an_explicit_owner_approval():
     obs = _with(_snapshot("beta"), svc={"STORY_BILLING_MODE": "observe"}, wrk={"STORY_BILLING_MODE": "observe"})
     assert _codes(obs, manifest("observe", approve=False)) == set()
     assert "billing_policy" in _codes(snap, manifest("off", approve=False))
+
+
+def test_production_global_breaker_is_declared_and_enforced_by_the_gate():
+    # Owner 2026-11-28: production's shared AI spend breaker is $500/month (unlimited Plus); other stages keep $60.
+    assert COMMITTED["environments"]["production"]["global_monthly_usd"] == "500"
+    pol = COMMITTED["environments"]["production"]
+    v = gate.check_snapshot(gate.Snapshot("production", [("STORY_QUOTA_GLOBAL_MONTHLY_USD", "60")], {}), COMMITTED)[0]
+    assert any(x.code == "quota_policy" and "STORY_QUOTA_GLOBAL_MONTHLY_USD" in x.message for x in v)
+    v = gate.check_snapshot(gate.Snapshot("production", [("STORY_QUOTA_GLOBAL_MONTHLY_USD", pol["global_monthly_usd"])], {}),
+                            COMMITTED)[0]
+    assert not any("STORY_QUOTA_GLOBAL_MONTHLY_USD" in x.message and x.code == "quota_policy" for x in v)

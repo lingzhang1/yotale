@@ -103,4 +103,5 @@ def test_bundled_apple_roots_match_pinned_fingerprints():
 
 def test_environment_mapping():
     assert allowed_environments("development") == allowed_environments("beta") == (SANDBOX,)
-    assert allowed_environments("production") == allowed_environments("gamma") == (PRODUCTION,)
+    # Owner 2026-11-28: production accepts App Review / TestFlight Sandbox purchases too, Production first.
+    assert allowed_environments("production") == allowed_environments("gamma") == (PRODUCTION, SANDBOX)

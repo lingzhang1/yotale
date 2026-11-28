@@ -43,7 +43,8 @@
       "throttle_mode": "enforce",
       "billing_mode": "enforce",
       "evidence_persist": "1",
-      "xcconfig": "Production"
+      "xcconfig": "Production",
+      "global_monthly_usd": "500"
     }
   },
   "approved_overrides": [

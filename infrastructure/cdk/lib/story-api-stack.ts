@@ -565,7 +565,10 @@ export class StoryApiStack extends cdk.Stack {
       { name: "STORY_QUOTA_USER_MONTHLY_USD", value: process.env.STORY_QUOTA_USER_MONTHLY_USD ?? userMonthlyUsdDefault },
       { name: "STORY_QUOTA_USER_DAILY_GENS", value: process.env.STORY_QUOTA_USER_DAILY_GENS ?? "500" },
       { name: "STORY_QUOTA_MAX_ACTIVE_JOBS", value: process.env.STORY_QUOTA_MAX_ACTIVE_JOBS ?? "2" },
-      { name: "STORY_QUOTA_GLOBAL_MONTHLY_USD", value: process.env.STORY_QUOTA_GLOBAL_MONTHLY_USD ?? "60" },
+      // Shared spend breaker (all users of the stage). release/release.json environments.<env>.global_monthly_usd sets it per
+      // stage (production $500, owner 2026-11-28: unlimited Plus must not trip a $60 breaker); others keep the $60 default.
+      { name: "STORY_QUOTA_GLOBAL_MONTHLY_USD", value: process.env.STORY_QUOTA_GLOBAL_MONTHLY_USD
+          ?? String(releaseManifest?.environments?.[environment]?.global_monthly_usd ?? "60") },
       // Music provider (Epidemic) — without these the provider is disabled and /v1/music/candidates 404s.
       { name: "STORY_EPIDEMIC_MODE", value: "prototyping" },
       { name: "STORY_MUSIC_PROVIDER", value: "mcp" },

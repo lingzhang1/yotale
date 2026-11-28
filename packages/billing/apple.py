@@ -35,10 +35,13 @@ ROOTS_DIR = Path(__file__).parent / "apple_roots"
 
 
 def allowed_environments(story_environment: str) -> tuple[str, ...]:
-    """TestFlight purchases are Sandbox, so development and beta accept ONLY Sandbox; gamma/production accept ONLY
-    Production. A sandbox purchase on production would grant real entitlements for free, so accepting App Review's sandbox
-    purchases there is an explicit owner decision, not a default."""
-    return (PRODUCTION,) if story_environment.strip().lower() in ("production", "prod", "gamma") else (SANDBOX,)
+    """TestFlight purchases are Sandbox, so development and beta accept ONLY Sandbox. gamma/production accept Production
+    AND Sandbox (owner decision 2026-11-28): App Review and TestFlight testers of the production build buy with Sandbox
+    receipts, and Apple's guidance is that a production server accepts both, Production first. Every applied subscription
+    records its store environment (`b_store_env`), so Sandbox subscribers stay identifiable in reports."""
+    if story_environment.strip().lower() in ("production", "prod", "gamma"):
+        return (PRODUCTION, SANDBOX)
+    return (SANDBOX,)
 
 
 # ---- errors -------------------------------------------------------------------------------------------------------
@@ -255,7 +258,7 @@ class AppleBilling:
             return {"result": "not_active", "entitlement": self.ledger.entitlement_view(uid)}
         self.ledger.apply_subscription(
             uid, status=ST_PLUS_ACTIVE, period_id=period_id(t), period_start=t.purchase_s, period_end=t.expires_s,
-            event_ts=t.signed_s, orig_txn=t.original_transaction_id)
+            event_ts=t.signed_s, orig_txn=t.original_transaction_id, store_env=t.environment)
         log.info("billing_apple_txn", extra={"result": "applied", "env": t.environment})
         return {"result": "applied", "entitlement": self.ledger.entitlement_view(uid)}
 
@@ -308,7 +311,7 @@ class AppleBilling:
             if not self._is_live(t):
                 return "stale_not_live"
             self.ledger.apply_subscription(uid, status=ST_PLUS_ACTIVE, period_id=period_id(t), period_start=t.purchase_s,
-                                           period_end=t.expires_s, event_ts=n.signed_s, orig_txn=t.original_transaction_id)
+                                           period_end=t.expires_s, event_ts=n.signed_s, orig_txn=t.original_transaction_id, store_env=t.environment)
             return "applied_active"
         if n.type == "DID_FAIL_TO_RENEW" and n.subtype == "GRACE_PERIOD":
             grace_end = n.renewal.grace_expires_s if n.renewal else None
@@ -316,12 +319,12 @@ class AppleBilling:
                 return "grace_already_over"
             self.ledger.apply_subscription(uid, status=ST_PLUS_GRACE, period_id=period_id(t), period_start=t.purchase_s,
                                            period_end=t.expires_s or grace_end, event_ts=n.signed_s, grace_end=grace_end,
-                                           orig_txn=t.original_transaction_id)
+                                           orig_txn=t.original_transaction_id, store_env=t.environment)
             return "applied_grace"
         # EXPIRED, GRACE_PERIOD_EXPIRED, REFUND, REVOKE, DID_FAIL_TO_RENEW without grace (billing retry, no access).
         self.ledger.apply_subscription(uid, status=ST_PLUS_EXPIRED, period_id=period_id(t), period_start=t.purchase_s,
                                        period_end=t.expires_s or n.signed_s, event_ts=n.signed_s,
-                                       orig_txn=t.original_transaction_id)
+                                       orig_txn=t.original_transaction_id, store_env=t.environment)
         return "applied_expired"
 
     # ---- reconciliation (missed webhooks) ----------------------------------------------------------------------
@@ -337,13 +340,13 @@ class AppleBilling:
         now = self._now()
         if status_code == self.STATUS_ACTIVE and self._is_live(t):
             self.ledger.apply_subscription(uid, status=ST_PLUS_ACTIVE, period_id=period_id(t), period_start=t.purchase_s,
-                                           period_end=t.expires_s, event_ts=now, orig_txn=t.original_transaction_id)
+                                           period_end=t.expires_s, event_ts=now, orig_txn=t.original_transaction_id, store_env=t.environment)
             return "applied_active"
         if status_code == self.STATUS_GRACE and renewal is not None and (renewal.grace_expires_s or 0) > now:
             self.ledger.apply_subscription(uid, status=ST_PLUS_GRACE, period_id=period_id(t), period_start=t.purchase_s,
                                            period_end=t.expires_s or now, event_ts=now, grace_end=renewal.grace_expires_s,
-                                           orig_txn=t.original_transaction_id)
+                                           orig_txn=t.original_transaction_id, store_env=t.environment)
             return "applied_grace"
         self.ledger.apply_subscription(uid, status=ST_PLUS_EXPIRED, period_id=period_id(t), period_start=t.purchase_s,
-                                       period_end=t.expires_s or now, event_ts=now, orig_txn=t.original_transaction_id)
+                                       period_end=t.expires_s or now, event_ts=now, orig_txn=t.original_transaction_id, store_env=t.environment)
         return "applied_expired"
